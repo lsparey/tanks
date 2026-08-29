@@ -18,6 +18,7 @@
 #include "../scene/Projectile.h"
 #include "../scene/Tank.h"
 #include "../scene/Terrain.h"
+#include "../scene/TreeInstance.h"
 
 class Application {
 public:
@@ -61,11 +62,14 @@ private:
     std::unique_ptr<Mesh> boxMesh_;
     std::unique_ptr<Mesh> shellMesh_;
     std::unique_ptr<Mesh> flashMesh_;
+    std::unique_ptr<Mesh> treeMesh_;
     std::vector<Box> boxes_;
     std::vector<Projectile> projectiles_;
     std::vector<ImpactEffect> impactEffects_;
+    std::vector<TreeInstance> trees_;
 
     void spawnBoxes();
+    void spawnTrees();
     void fireProjectile();
     void updateProjectilesAndCollisions(float deltaTime);
 };

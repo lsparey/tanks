@@ -1,5 +1,42 @@
 #include "Mesh.h"
 
+#include <cmath>
+
+namespace {
+
+constexpr float kPi = 3.14159265358979323846f;
+
+// Appends a tapered cylindrical band (a frustum; use a small nonzero
+// topRadius for a near-pointed cone tip, which avoids the degenerate
+// zero-area triangles a literal topRadius of 0 would produce) between
+// yBottom and yTop. Winding/normals verified via the same right-hand-rule
+// check used for Mesh::cube's faces: for adjacent ring points at increasing
+// angle with yTop > yBottom, triangles (bottom_i, top_i, top_next) and
+// (bottom_i, top_next, bottom_next) are CCW as seen from outside.
+void appendFrustum(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices, float yBottom,
+                    float yTop, float radiusBottom, float radiusTop, glm::vec3 color, int sides) {
+    uint32_t base = static_cast<uint32_t>(vertices.size());
+
+    for (int i = 0; i <= sides; ++i) {
+        float angle = static_cast<float>(i) / static_cast<float>(sides) * 2.0f * kPi;
+        float cx = std::cos(angle);
+        float cz = std::sin(angle);
+        glm::vec3 normal = glm::normalize(glm::vec3(cx, 0.0f, cz));
+        vertices.push_back({glm::vec3(cx * radiusBottom, yBottom, cz * radiusBottom), normal, color});
+        vertices.push_back({glm::vec3(cx * radiusTop, yTop, cz * radiusTop), normal, color});
+    }
+
+    for (int i = 0; i < sides; ++i) {
+        uint32_t bottomCur = base + i * 2;
+        uint32_t topCur = base + i * 2 + 1;
+        uint32_t topNext = base + (i + 1) * 2 + 1;
+        uint32_t bottomNext = base + (i + 1) * 2;
+        indices.insert(indices.end(), {bottomCur, topCur, topNext, bottomCur, topNext, bottomNext});
+    }
+}
+
+}  // namespace
+
 Mesh::Mesh(VulkanContext& ctx, CommandContext& commands, const std::vector<Vertex>& vertices,
            const std::vector<uint32_t>& indices)
     : vertexBuffer_(Buffer::uploadDeviceLocal(ctx, commands, vertices.data(),
@@ -52,6 +89,19 @@ Mesh Mesh::cube(VulkanContext& ctx, CommandContext& commands, glm::vec3 color, f
         }
         indices.insert(indices.end(), {base + 0, base + 1, base + 2, base + 0, base + 2, base + 3});
     }
+
+    return Mesh(ctx, commands, vertices, indices);
+}
+
+Mesh Mesh::tree(VulkanContext& ctx, CommandContext& commands, glm::vec3 trunkColor,
+                 glm::vec3 canopyColor) {
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+
+    appendFrustum(vertices, indices, 0.0f, 1.0f, 0.15f, 0.10f, trunkColor, 6);
+    // Two overlapping cones for a layered pine-canopy silhouette.
+    appendFrustum(vertices, indices, 0.8f, 2.0f, 0.9f, 0.05f, canopyColor, 8);
+    appendFrustum(vertices, indices, 1.6f, 2.6f, 0.55f, 0.02f, canopyColor, 8);
 
     return Mesh(ctx, commands, vertices, indices);
 }

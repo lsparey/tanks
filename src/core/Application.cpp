@@ -63,7 +63,10 @@ Application::Application() {
     boxMesh_ = std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(0.65f, 0.5f, 0.25f)));
     shellMesh_ = std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(1.0f, 0.85f, 0.2f)));
     flashMesh_ = std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(1.0f, 1.0f, 0.9f)));
+    treeMesh_ = std::make_unique<Mesh>(
+        Mesh::tree(*context_, *commands_, glm::vec3(0.32f, 0.22f, 0.12f), glm::vec3(0.13f, 0.32f, 0.10f)));
     spawnBoxes();
+    spawnTrees();
     input_ = std::make_unique<InputManager>(window_);
     lastFrameTime_ = glfwGetTime();
 }
@@ -75,6 +78,7 @@ Application::~Application() {
     whiteTexture_.reset();
     grassTexture_.reset();
     hud_.reset();
+    treeMesh_.reset();
     flashMesh_.reset();
     shellMesh_.reset();
     boxMesh_.reset();
@@ -173,6 +177,41 @@ void Application::spawnBoxes() {
         box.size = 2.0f;
         box.position = glm::vec3(pos.x, terrain_->heightAt(pos.x, pos.y) + box.size * 0.5f, pos.y);
         boxes_.push_back(box);
+    }
+}
+
+void Application::spawnTrees() {
+    constexpr int kTreeCount = 40;
+    constexpr float kEdgeMargin = 3.0f;
+    constexpr float kMinDistanceFromSpawn = 8.0f;
+    constexpr float kMinDistanceBetweenTrees = 3.0f;
+    constexpr int kMaxAttemptsPerTree = 30;
+
+    std::mt19937 rng(std::random_device{}());
+    float half = terrain_->worldSize() * 0.5f - kEdgeMargin;
+    std::uniform_real_distribution<float> coordDist(-half, half);
+    std::uniform_real_distribution<float> yawDist(0.0f, 6.2831853f);
+    std::uniform_real_distribution<float> scaleDist(0.8f, 1.4f);
+
+    std::vector<glm::vec2> placed;
+    for (int i = 0; i < kTreeCount; ++i) {
+        glm::vec2 pos{0.0f, 0.0f};
+        for (int attempt = 0; attempt < kMaxAttemptsPerTree; ++attempt) {
+            glm::vec2 candidate(coordDist(rng), coordDist(rng));
+            bool tooCloseToSpawn = glm::length(candidate) < kMinDistanceFromSpawn;
+            bool tooCloseToOther = std::any_of(placed.begin(), placed.end(), [&](glm::vec2 p) {
+                return glm::length(p - candidate) < kMinDistanceBetweenTrees;
+            });
+            pos = candidate;
+            if (!tooCloseToSpawn && !tooCloseToOther) break;
+        }
+        placed.push_back(pos);
+
+        TreeInstance tree;
+        tree.position = glm::vec3(pos.x, terrain_->heightAt(pos.x, pos.y), pos.y);
+        tree.yaw = yawDist(rng);
+        tree.scale = scaleDist(rng);
+        trees_.push_back(tree);
     }
 }
 
@@ -349,6 +388,15 @@ void Application::drawFrame() {
                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(boxPc), &boxPc);
         boxMesh_->bindAndDraw(frame.commandBuffer);
+    }
+
+    for (const auto& tree : trees_) {
+        Pipeline::PushConstants treePc{};
+        treePc.model = tree.worldMatrix();
+        vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
+                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                            sizeof(treePc), &treePc);
+        treeMesh_->bindAndDraw(frame.commandBuffer);
     }
 
     for (const auto& shell : projectiles_) {

@@ -20,6 +20,12 @@ public:
     static Mesh cube(VulkanContext& ctx, CommandContext& commands, glm::vec3 color,
                       float size = 1.0f);
 
+    // A simple procedural pine tree: a tapered trunk plus two stacked,
+    // overlapping cones for the canopy -- hand-built geometry, same spirit
+    // as cube().
+    static Mesh tree(VulkanContext& ctx, CommandContext& commands, glm::vec3 trunkColor,
+                      glm::vec3 canopyColor);
+
 private:
     Buffer vertexBuffer_;
     Buffer indexBuffer_;
