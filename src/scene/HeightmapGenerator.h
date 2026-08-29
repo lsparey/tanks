@@ -1,10 +1,13 @@
 #pragma once
 
+#include <cstdint>
 #include <vector>
 
 // Produces a flat, row-major grid of height values using a hand-rolled sum
 // of sines ("gentle hills") -- no noise library needed at this prototype's
-// scope.
+// scope. `seed` randomizes the frequencies/phases of those sines (within
+// bounds still tuned to look like gentle hills) so different seeds give
+// different-looking terrain layouts, without needing per-vertex noise.
 class HeightmapGenerator {
 public:
     struct Heightmap {
@@ -15,5 +18,6 @@ public:
         float at(int i, int j) const { return heights[j * resolution + i]; }
     };
 
-    static Heightmap generateHills(int resolution, float worldSize, float amplitude);
+    static Heightmap generateHills(int resolution, float worldSize, float amplitude,
+                                    uint32_t seed);
 };

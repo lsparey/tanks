@@ -11,8 +11,8 @@ constexpr float kTextureRepeatsPerUnit = 1.0f / 3.0f;
 }
 
 Terrain::Terrain(VulkanContext& ctx, CommandContext& commands, int resolution, float worldSize,
-                  float amplitude)
-    : heightmap_(HeightmapGenerator::generateHills(resolution, worldSize, amplitude)),
+                  float amplitude, uint32_t seed)
+    : heightmap_(HeightmapGenerator::generateHills(resolution, worldSize, amplitude, seed)),
       normals_(computeNormals(heightmap_)),
       mesh_(buildMesh(ctx, commands, heightmap_, normals_)) {}
 

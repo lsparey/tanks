@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <iostream>
+#include <random>
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -54,8 +55,9 @@ Application::Application() {
     grassMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*grassTexture_);
     whiteMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*whiteTexture_);
 
+    uint32_t terrainSeed = std::random_device{}();
     terrain_ = std::make_unique<Terrain>(*context_, *commands_, /*resolution=*/64,
-                                          /*worldSize=*/60.0f, /*amplitude=*/3.0f);
+                                          /*worldSize=*/60.0f, /*amplitude=*/3.0f, terrainSeed);
     tank_ = std::make_unique<Tank>(*context_, *commands_,
                                     std::string(ASSET_ROOT) + "/assets/models/tank.x");
     boxMesh_ = std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(0.65f, 0.5f, 0.25f)));
@@ -142,12 +144,34 @@ void Application::mainLoop() {
 }
 
 void Application::spawnBoxes() {
-    const float positions[][2] = {{8, 6}, {-10, 4}, {5, -12}, {-6, -8}, {14, -3}, {-14, -14},
-                                   {2, 16}, {-4, 12}};
-    for (const auto& p : positions) {
+    constexpr int kBoxCount = 8;
+    constexpr float kEdgeMargin = 6.0f;          // keep boxes off the very edge of the terrain
+    constexpr float kMinDistanceFromSpawn = 10.0f;  // tank starts at the origin
+    constexpr float kMinDistanceBetweenBoxes = 6.0f;
+    constexpr int kMaxAttemptsPerBox = 50;
+
+    std::mt19937 rng(std::random_device{}());
+    float half = terrain_->worldSize() * 0.5f - kEdgeMargin;
+    std::uniform_real_distribution<float> coordDist(-half, half);
+
+    std::vector<glm::vec2> placed;
+    for (int i = 0; i < kBoxCount; ++i) {
+        glm::vec2 pos{0.0f, 0.0f};
+        for (int attempt = 0; attempt < kMaxAttemptsPerBox; ++attempt) {
+            glm::vec2 candidate(coordDist(rng), coordDist(rng));
+            bool tooCloseToSpawn = glm::length(candidate) < kMinDistanceFromSpawn;
+            bool tooCloseToOther =
+                std::any_of(placed.begin(), placed.end(), [&](glm::vec2 p) {
+                    return glm::length(p - candidate) < kMinDistanceBetweenBoxes;
+                });
+            pos = candidate;
+            if (!tooCloseToSpawn && !tooCloseToOther) break;
+        }
+        placed.push_back(pos);
+
         Box box;
         box.size = 2.0f;
-        box.position = glm::vec3(p[0], terrain_->heightAt(p[0], p[1]) + box.size * 0.5f, p[1]);
+        box.position = glm::vec3(pos.x, terrain_->heightAt(pos.x, pos.y) + box.size * 0.5f, pos.y);
         boxes_.push_back(box);
     }
 }

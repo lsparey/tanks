@@ -13,12 +13,13 @@
 class Terrain {
 public:
     Terrain(VulkanContext& ctx, CommandContext& commands, int resolution, float worldSize,
-            float amplitude);
+            float amplitude, uint32_t seed);
 
     void bindAndDraw(VkCommandBuffer cmd) const { mesh_.bindAndDraw(cmd); }
 
     float heightAt(float worldX, float worldZ) const;
     glm::vec3 normalAt(float worldX, float worldZ) const;
+    float worldSize() const { return heightmap_.worldSize; }
 
 private:
     static Mesh buildMesh(VulkanContext& ctx, CommandContext& commands,
