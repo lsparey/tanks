@@ -314,6 +314,7 @@ void Application::drawFrame() {
                              pipeline_->layout(), 1, 1, &whiteMaterialSet_, 0, nullptr);
     Pipeline::PushConstants tankPc{};
     tankPc.model = tank_->worldMatrix();
+    tankPc.specularStrength = 0.6f;
     vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                         sizeof(tankPc), &tankPc);
