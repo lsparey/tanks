@@ -1,0 +1,9 @@
+{
+  "name": "luke-game",
+  "version": "0.1.0",
+  "dependencies": [
+    "glfw3",
+    "glm",
+    "assimp"
+  ]
+}

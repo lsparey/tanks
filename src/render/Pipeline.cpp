@@ -1,0 +1,284 @@
+#include "Pipeline.h"
+
+#include <fstream>
+#include <stdexcept>
+#include <vector>
+
+#include "Vertex.h"
+#include "VulkanCheck.h"
+
+namespace {
+
+std::vector<char> readFile(const std::string& path) {
+    std::ifstream file(path, std::ios::ate | std::ios::binary);
+    if (!file.is_open()) {
+        throw std::runtime_error("failed to open file: " + path);
+    }
+    size_t size = static_cast<size_t>(file.tellg());
+    std::vector<char> buffer(size);
+    file.seekg(0);
+    file.read(buffer.data(), static_cast<std::streamsize>(size));
+    return buffer;
+}
+
+}  // namespace
+
+Pipeline::Pipeline(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthFormat)
+    : ctx_(ctx),
+      uniformBuffer_(ctx, sizeof(FrameUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) {
+    createDescriptorSetLayout();
+    createMaterialSetLayout();
+    createDescriptorPoolAndSet();
+    createPipelineLayout();
+    createPipeline(colorFormat, depthFormat);
+}
+
+Pipeline::~Pipeline() {
+    if (pipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(ctx_.device(), pipeline_, nullptr);
+    if (pipelineLayout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(ctx_.device(), pipelineLayout_, nullptr);
+    if (descriptorPool_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorPool(ctx_.device(), descriptorPool_, nullptr);
+    if (materialSetLayout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(ctx_.device(), materialSetLayout_, nullptr);
+    if (descriptorSetLayout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(ctx_.device(), descriptorSetLayout_, nullptr);
+}
+
+void Pipeline::updateFrameUBO(const FrameUBO& ubo) { uniformBuffer_.copyData(&ubo, sizeof(ubo)); }
+
+void Pipeline::createDescriptorSetLayout() {
+    VkDescriptorSetLayoutBinding binding{};
+    binding.binding = 0;
+    binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    binding.descriptorCount = 1;
+    binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings = &binding;
+
+    VK_CHECK(
+        vkCreateDescriptorSetLayout(ctx_.device(), &layoutInfo, nullptr, &descriptorSetLayout_));
+}
+
+void Pipeline::createMaterialSetLayout() {
+    VkDescriptorSetLayoutBinding binding{};
+    binding.binding = 0;
+    binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    binding.descriptorCount = 1;
+    binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings = &binding;
+
+    VK_CHECK(vkCreateDescriptorSetLayout(ctx_.device(), &layoutInfo, nullptr, &materialSetLayout_));
+}
+
+void Pipeline::createDescriptorPoolAndSet() {
+    constexpr uint32_t kMaxMaterialSets = 8;
+
+    VkDescriptorPoolSize poolSizes[2]{};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSizes[0].descriptorCount = 1;
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[1].descriptorCount = kMaxMaterialSets;
+
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 2;
+    poolInfo.pPoolSizes = poolSizes;
+    poolInfo.maxSets = 1 + kMaxMaterialSets;
+
+    VK_CHECK(vkCreateDescriptorPool(ctx_.device(), &poolInfo, nullptr, &descriptorPool_));
+
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = descriptorPool_;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &descriptorSetLayout_;
+
+    VK_CHECK(vkAllocateDescriptorSets(ctx_.device(), &allocInfo, &descriptorSet_));
+
+    VkDescriptorBufferInfo bufferInfo{};
+    bufferInfo.buffer = uniformBuffer_.handle();
+    bufferInfo.offset = 0;
+    bufferInfo.range = sizeof(FrameUBO);
+
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = descriptorSet_;
+    write.dstBinding = 0;
+    write.dstArrayElement = 0;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    write.descriptorCount = 1;
+    write.pBufferInfo = &bufferInfo;
+
+    vkUpdateDescriptorSets(ctx_.device(), 1, &write, 0, nullptr);
+}
+
+VkDescriptorSet Pipeline::allocateMaterialDescriptorSet(const Texture& texture) {
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = descriptorPool_;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &materialSetLayout_;
+
+    VkDescriptorSet set;
+    VK_CHECK(vkAllocateDescriptorSets(ctx_.device(), &allocInfo, &set));
+
+    VkDescriptorImageInfo imageInfo{};
+    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imageInfo.imageView = texture.view();
+    imageInfo.sampler = texture.sampler();
+
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = set;
+    write.dstBinding = 0;
+    write.dstArrayElement = 0;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.descriptorCount = 1;
+    write.pImageInfo = &imageInfo;
+
+    vkUpdateDescriptorSets(ctx_.device(), 1, &write, 0, nullptr);
+    return set;
+}
+
+void Pipeline::createPipelineLayout() {
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = sizeof(PushConstants);
+
+    VkDescriptorSetLayout setLayouts[] = {descriptorSetLayout_, materialSetLayout_};
+
+    VkPipelineLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layoutInfo.setLayoutCount = 2;
+    layoutInfo.pSetLayouts = setLayouts;
+    layoutInfo.pushConstantRangeCount = 1;
+    layoutInfo.pPushConstantRanges = &pushConstantRange;
+
+    VK_CHECK(vkCreatePipelineLayout(ctx_.device(), &layoutInfo, nullptr, &pipelineLayout_));
+}
+
+VkShaderModule Pipeline::loadShaderModule(const char* relativePath) {
+    std::string path = std::string(ASSET_ROOT) + "/shaders/" + relativePath;
+    std::vector<char> code = readFile(path);
+
+    VkShaderModuleCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    createInfo.codeSize = code.size();
+    createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+
+    VkShaderModule module;
+    VK_CHECK(vkCreateShaderModule(ctx_.device(), &createInfo, nullptr, &module));
+    return module;
+}
+
+void Pipeline::createPipeline(VkFormat colorFormat, VkFormat depthFormat) {
+    VkShaderModule vertModule = loadShaderModule("basic.vert.spv");
+    VkShaderModule fragModule = loadShaderModule("basic.frag.spv");
+
+    VkPipelineShaderStageCreateInfo vertStage{};
+    vertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertStage.module = vertModule;
+    vertStage.pName = "main";
+
+    VkPipelineShaderStageCreateInfo fragStage{};
+    fragStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragStage.module = fragModule;
+    fragStage.pName = "main";
+
+    VkPipelineShaderStageCreateInfo stages[] = {vertStage, fragStage};
+
+    auto bindingDescription = Vertex::bindingDescription();
+    auto attributeDescriptions = Vertex::attributeDescriptions();
+
+    VkPipelineVertexInputStateCreateInfo vertexInput{};
+    vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInput.vertexBindingDescriptionCount = 1;
+    vertexInput.pVertexBindingDescriptions = &bindingDescription;
+    vertexInput.vertexAttributeDescriptionCount =
+        static_cast<uint32_t>(attributeDescriptions.size());
+    vertexInput.pVertexAttributeDescriptions = attributeDescriptions.data();
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    // Front face is CCW as seen from outside a mesh; combined with the
+    // negative-viewport-height trick used at draw time to correct Vulkan's
+    // flipped-Y NDC without needing to also flip winding here.
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+    VkPipelineMultisampleStateCreateInfo multisampling{};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+
+    VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+    colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                           VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    colorBlendAttachment.blendEnable = VK_FALSE;
+
+    VkPipelineColorBlendStateCreateInfo colorBlending{};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+
+    VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamicState{};
+    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicState.dynamicStateCount = 2;
+    dynamicState.pDynamicStates = dynamicStates;
+
+    VkPipelineRenderingCreateInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachmentFormats = &colorFormat;
+    renderingInfo.depthAttachmentFormat = depthFormat;
+
+    VkGraphicsPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.pNext = &renderingInfo;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = stages;
+    pipelineInfo.pVertexInputState = &vertexInput;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.pDynamicState = &dynamicState;
+    pipelineInfo.layout = pipelineLayout_;
+
+    VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+                                        &pipeline_));
+
+    vkDestroyShaderModule(ctx_.device(), vertModule, nullptr);
+    vkDestroyShaderModule(ctx_.device(), fragModule, nullptr);
+}
