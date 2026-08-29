@@ -1,6 +1,8 @@
 #pragma once
 
+#include <memory>
 #include <string>
+#include <vector>
 
 #include "../render/CommandContext.h"
 #include "../render/Mesh.h"
@@ -9,30 +11,44 @@
 class InputManager;
 class Terrain;
 
-// The player tank, loaded from a model file via ModelLoader/Assimp. Treated
-// as a single rigid mesh: the source .x file has no frame hierarchy or
-// joints (verified by inspection), so there's no separately-animatable
-// turret/gun to drive -- the whole hull rotates together to aim.
+// The player tank, loaded from a model file via ModelLoader/Assimp.
 //
-// Orientation isn't a generic Transform (Euler angles): the hull needs to
-// stay aligned to the terrain normal under it while yaw remains driver-
-// controlled, so it's built directly from an explicit forward/up/right
-// basis each frame instead.
+// The source .x file has no Frame/node hierarchy, but it does have five
+// named materials (Tracks, Base, Detail, Turret, Barrel) -- Assimp always
+// splits a mesh into one sub-mesh per material, so the turret and barrel
+// come out as separate geometry automatically. Everything except the
+// "Turret"/"Barrel" materials is merged into one rigid hull mesh; the
+// turret (and the barrel riding on it) get their own yaw, driven by Q/E,
+// applied as a rotation about the model's local Y axis before the hull's
+// own placement -- the same scheme (and the same hardcoded pivot-at-origin
+// assumption) used by the original DirectX9 project this asset came from.
 class Tank {
 public:
+    struct DrawPart {
+        const Mesh* mesh;
+        glm::mat4 worldMatrix;
+    };
+
     Tank(VulkanContext& ctx, CommandContext& commands, const std::string& modelPath);
 
-    void bindAndDraw(VkCommandBuffer cmd) const { mesh_.bindAndDraw(cmd); }
-
-    // Arcade steering (W/S throttle, A/D yaw) plus terrain ground-clamping:
-    // samples terrain height/normal under the hull and aligns pitch/roll to
-    // the slope while yaw stays under driver control.
+    // Arcade steering (W/S throttle, A/D yaw) plus terrain ground-clamping,
+    // plus turret traverse (Q/E, independent of hull yaw).
     void update(const InputManager& input, float deltaTime, const Terrain& terrain);
+
+    // One entry per renderable part with its own world matrix -- just the
+    // hull if the model had no separate turret/barrel materials, otherwise
+    // hull + turret + barrel.
+    std::vector<DrawPart> drawParts() const;
 
     glm::vec3 position() const { return position_; }
     glm::vec3 forward() const { return forward_; }
-
-    glm::mat4 worldMatrix() const;
+    // Firing/aim direction: hull forward rotated by the turret's yaw.
+    // Equal to forward() if the model had no separate turret to rotate.
+    glm::vec3 aimDirection() const;
+    // World-space position of the barrel's muzzle tip, tracking the
+    // turret's current yaw. Falls back to an approximate point along
+    // aimDirection() if the model had no separate barrel material.
+    glm::vec3 muzzleWorldPosition() const;
 
     // Baked-in correction for the source model's own axes/scale/pivot,
     // applied before the computed world orientation. Tuned once by
@@ -40,9 +56,17 @@ public:
     glm::mat4& modelCorrection() { return modelCorrection_; }
 
 private:
-    static Mesh loadMesh(VulkanContext& ctx, CommandContext& commands, const std::string& path);
+    void load(VulkanContext& ctx, CommandContext& commands, const std::string& path);
+    glm::mat4 hullWorldMatrix() const;
+    glm::mat4 turretWorldMatrix() const;
 
-    Mesh mesh_;
+    std::unique_ptr<Mesh> hullMesh_;
+    std::unique_ptr<Mesh> turretMesh_;  // null if the model had no separate turret material
+    std::unique_ptr<Mesh> barrelMesh_;  // null if the model had no separate barrel material
+    // Local-space muzzle tip, valid only when barrelMesh_ is non-null: the
+    // barrel part's vertex farthest from the local origin (the turret's
+    // pivot, which sits near the barrel's mount/breech end, not its tip).
+    glm::vec3 muzzleLocal_{0.0f};
 
     glm::vec3 position_{0.0f};
     float yaw_ = 0.0f;  // radians; yaw=0 means local forward (+Z) points world +Z
@@ -50,8 +74,11 @@ private:
     glm::vec3 up_{0.0f, 1.0f, 0.0f};
     glm::vec3 right_{1.0f, 0.0f, 0.0f};
 
-    float moveSpeed_ = 6.0f;           // m/s
-    float turnSpeedRadians_ = 1.2f;    // rad/s
+    float turretYaw_ = 0.0f;  // radians, relative to the hull, about local +Y
+
+    float moveSpeed_ = 6.0f;                 // m/s
+    float turnSpeedRadians_ = 1.2f;          // rad/s, hull
+    float turretTurnSpeedRadians_ = 1.5f;    // rad/s, turret
 
     glm::mat4 modelCorrection_{1.0f};
 };

@@ -1,8 +1,10 @@
 #include "ModelLoader.h"
 
 #include <stdexcept>
+#include <utility>
 
 #include <assimp/Importer.hpp>
+#include <assimp/material.h>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 
@@ -24,6 +26,13 @@ glm::vec3 materialDiffuseColor(const aiScene* scene, unsigned int materialIndex)
     return {color.r, color.g, color.b};
 }
 
+std::string materialName(const aiScene* scene, unsigned int materialIndex) {
+    if (materialIndex >= scene->mNumMaterials) return "";
+    aiString name;
+    scene->mMaterials[materialIndex]->Get(AI_MATKEY_NAME, name);
+    return name.C_Str();
+}
+
 void processNode(const aiScene* scene, const aiNode* node, const glm::mat4& parentTransform,
                   ModelLoader::Result& result) {
     glm::mat4 nodeTransform = parentTransform * toGlm(node->mTransformation);
@@ -33,7 +42,9 @@ void processNode(const aiScene* scene, const aiNode* node, const glm::mat4& pare
         const aiMesh* mesh = scene->mMeshes[node->mMeshes[m]];
         glm::vec3 color = materialDiffuseColor(scene, mesh->mMaterialIndex);
 
-        uint32_t baseVertex = static_cast<uint32_t>(result.vertices.size());
+        ModelLoader::Part part;
+        part.materialName = materialName(scene, mesh->mMaterialIndex);
+
         for (unsigned int v = 0; v < mesh->mNumVertices; ++v) {
             glm::vec3 position = glm::vec3(nodeTransform * glm::vec4(toGlm(mesh->mVertices[v]), 1.0f));
             glm::vec3 normal = mesh->HasNormals()
@@ -42,15 +53,17 @@ void processNode(const aiScene* scene, const aiNode* node, const glm::mat4& pare
             glm::vec2 uv = mesh->HasTextureCoords(0)
                                ? glm::vec2(mesh->mTextureCoords[0][v].x, mesh->mTextureCoords[0][v].y)
                                : glm::vec2(0.0f);
-            result.vertices.push_back({position, normal, color, uv});
+            part.vertices.push_back({position, normal, color, uv});
         }
 
         for (unsigned int f = 0; f < mesh->mNumFaces; ++f) {
             const aiFace& face = mesh->mFaces[f];
             for (unsigned int idx = 0; idx < face.mNumIndices; ++idx) {
-                result.indices.push_back(baseVertex + face.mIndices[idx]);
+                part.indices.push_back(face.mIndices[idx]);
             }
         }
+
+        result.parts.push_back(std::move(part));
     }
 
     for (unsigned int c = 0; c < node->mNumChildren; ++c) {

@@ -39,7 +39,13 @@ void main() {
     float lighting = 0.2 + 0.8 * diffuse;
 
     // Everything below is gated by specularStrength (0 for terrain/other
-    // matte objects), so only opted-in draws (the tank) get these.
+    // matte objects), so only opted-in draws (the tank) get these. Real
+    // metals have low diffuse reflectance, so the base color is darkened a
+    // little here rather than left at full brightness before the reflective
+    // terms are layered on -- otherwise those terms just wash the color out
+    // toward white instead of reading as a highlight on top of it.
+    vec3 base = albedo * lighting * mix(1.0, 0.75, pc.specularStrength);
+
     vec3 viewDir = normalize(frame.cameraPos.xyz - fragWorldPos);
 
     // Blinn-Phong specular -- a lower exponent than a glossy/chrome look
@@ -47,11 +53,12 @@ void main() {
     // brushed metal rather than polished plastic.
     vec3 halfDir = normalize(toLight + viewDir);
     float specAngle = max(dot(normal, halfDir), 0.0);
-    float specular = pow(specAngle, 20.0) * pc.specularStrength;
+    float specular = pow(specAngle, 20.0) * pc.specularStrength * 0.6;
 
     // Fresnel/rim term: surfaces brighten at grazing view angles, a cheap
-    // but very characteristic cue for metal.
-    float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 3.0) * pc.specularStrength;
+    // but very characteristic cue for metal. Kept subtle and tinted toward
+    // neutral gray rather than white so it doesn't bleach the paint color.
+    float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 3.0) * pc.specularStrength * 0.18;
 
     // Fake environment reflection: no real cubemap, just a two-tone
     // sky/ground gradient sampled by the reflection vector's vertical
@@ -62,7 +69,7 @@ void main() {
     vec3 groundTint = vec3(0.12, 0.11, 0.10);
     vec3 envColor = mix(groundTint, skyTint, clamp(reflectDir.y * 0.5 + 0.5, 0.0, 1.0));
 
-    vec3 result = albedo * lighting + vec3(specular) + fresnel * vec3(0.9) +
-                  envColor * pc.specularStrength * 0.35;
+    vec3 result =
+        base + vec3(specular) + fresnel * vec3(0.6) + envColor * pc.specularStrength * 0.10;
     outColor = vec4(result, 1.0);
 }

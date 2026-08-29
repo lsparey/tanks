@@ -124,7 +124,8 @@ void Application::mainLoop() {
 
         tank_->update(*input_, deltaTime, *terrain_);
 
-        bool fireDown = glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        bool fireDown = glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS ||
+                        glfwGetKey(window_, GLFW_KEY_SPACE) == GLFW_PRESS;
         if (fireDown && !prevFireDown_) fireProjectile();
         prevFireDown_ = fireDown;
 
@@ -152,18 +153,12 @@ void Application::spawnBoxes() {
 }
 
 void Application::fireProjectile() {
-    // Measured from the model's own vertex data: the barrel tip is a small
-    // centered cluster at local (x~0, y~1.3, z~-3.37) -- see Tank::worldMatrix
-    // for why local -Z is the barrel end.
-    constexpr float kMuzzleForwardOffset = 3.3f;
-    constexpr float kMuzzleHeightOffset = 1.3f;
     constexpr float kShellSpeed = 25.0f;
 
     Projectile shell;
-    shell.position = tank_->position() + tank_->forward() * kMuzzleForwardOffset +
-                      glm::vec3(0.0f, kMuzzleHeightOffset, 0.0f);
+    shell.position = tank_->muzzleWorldPosition();
     shell.previousPosition = shell.position;
-    shell.velocity = tank_->forward() * kShellSpeed;
+    shell.velocity = tank_->aimDirection() * kShellSpeed;
     projectiles_.push_back(shell);
 }
 
@@ -312,13 +307,15 @@ void Application::drawFrame() {
 
     vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                              pipeline_->layout(), 1, 1, &whiteMaterialSet_, 0, nullptr);
-    Pipeline::PushConstants tankPc{};
-    tankPc.model = tank_->worldMatrix();
-    tankPc.specularStrength = 0.6f;
-    vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
-                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                        sizeof(tankPc), &tankPc);
-    tank_->bindAndDraw(frame.commandBuffer);
+    for (const auto& part : tank_->drawParts()) {
+        Pipeline::PushConstants tankPc{};
+        tankPc.model = part.worldMatrix;
+        tankPc.specularStrength = 0.6f;
+        vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
+                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                            sizeof(tankPc), &tankPc);
+        part.mesh->bindAndDraw(frame.commandBuffer);
+    }
 
     for (const auto& box : boxes_) {
         if (!box.alive) continue;
@@ -360,7 +357,7 @@ void Application::drawFrame() {
     // screen space, rather than a fixed screen-center crosshair -- with a
     // third-person chase camera that looks at the tank rather than down the
     // barrel, screen center doesn't correspond to where a shot will go.
-    glm::vec3 aimWorldPoint = tank_->position() + tank_->forward() * 25.0f +
+    glm::vec3 aimWorldPoint = tank_->position() + tank_->aimDirection() * 25.0f +
                                glm::vec3(0.0f, 1.3f, 0.0f);
     glm::vec4 aimClip = ubo.proj * ubo.view * glm::vec4(aimWorldPoint, 1.0f);
     if (aimClip.w > 0.01f) {
