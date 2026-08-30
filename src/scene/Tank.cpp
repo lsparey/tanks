@@ -30,6 +30,14 @@ Tank::Tank(VulkanContext& ctx, CommandContext& commands, const std::string& mode
 void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string& path) {
     ModelLoader::Result result = ModelLoader::load(path);
 
+    // The .x file's baked material colors read a bit too light/washed-out
+    // for the dull-metal look this tank is going for; darken uniformly
+    // rather than touching ModelLoader (which is generic, not tank-specific).
+    constexpr float kColorDarken = 0.7f;
+    for (auto& part : result.parts) {
+        for (auto& vertex : part.vertices) vertex.color *= kColorDarken;
+    }
+
     std::vector<Vertex> hullVertices;
     std::vector<uint32_t> hullIndices;
     ModelLoader::Part* turretPart = nullptr;
@@ -46,6 +54,20 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
             for (uint32_t idx : part.indices) hullIndices.push_back(base + idx);
         }
     }
+
+    // Local-space X extent of the hull, i.e. the tank's actual outer width
+    // (left track's outer edge to the right track's outer edge) -- used by
+    // Application to size TrackMark decals so they line up with the real
+    // hull instead of a guessed constant. Local X is what basis(right_, ...)
+    // maps to world "right" in hullWorldMatrix, same reasoning muzzleLocal_
+    // above relies on for the barrel's local Z axis.
+    float minX = hullVertices.empty() ? 0.0f : hullVertices[0].position.x;
+    float maxX = minX;
+    for (const auto& v : hullVertices) {
+        minX = std::min(minX, v.position.x);
+        maxX = std::max(maxX, v.position.x);
+    }
+    hullWidth_ = maxX - minX;
 
     hullMesh_ = std::make_unique<Mesh>(ctx, commands, hullVertices, hullIndices);
     hullBLAS_ = std::make_unique<AccelerationStructure>(AccelerationStructure::buildBLAS(ctx, commands, *hullMesh_));

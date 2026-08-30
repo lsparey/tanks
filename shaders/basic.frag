@@ -16,6 +16,10 @@ layout(set = 0, binding = 0) uniform FrameUBO {
 } frame;
 
 layout(set = 1, binding = 0) uniform sampler2D materialTex;
+// Only sampled/blended in when pc.heightBlend is nonzero (terrain); every
+// other draw binds the same texture as materialTex here and this is simply
+// never read.
+layout(set = 1, binding = 1) uniform sampler2D materialTexLow;
 layout(set = 2, binding = 0) uniform accelerationStructureEXT sceneTLAS;
 layout(set = 3, binding = 0) uniform sampler2D historyShadow;
 
@@ -23,6 +27,8 @@ layout(push_constant) uniform PushConstants {
     mat4 model;
     float unlit;
     float specularStrength;
+    float heightBlend;
+    float opacity;
 } pc;
 
 layout(location = 0) out vec4 outColor;
@@ -121,11 +127,27 @@ float traceAO(vec3 origin, vec3 normal, float seedBase) {
 }
 
 void main() {
-    vec3 texColor = texture(materialTex, fragUV).rgb;
+    vec4 texSample = texture(materialTex, fragUV);
+    vec3 texColor = texSample.rgb;
+    if (pc.heightBlend > 0.5) {
+        // Terrain: fade to the low-point (rock/gravel) texture in valleys.
+        // Thresholds are tuned against the heightmap's actual amplitude
+        // (+-3 world units, see HeightmapGenerator) -- below -1.3, fully
+        // rock; above -0.4, fully grass; smoothstep between so the seam
+        // doesn't read as a hard line.
+        vec3 texColorLow = texture(materialTexLow, fragUV).rgb;
+        float rockiness = 1.0 - smoothstep(-1.3, -0.4, fragWorldPos.y);
+        texColor = mix(texColor, texColorLow, rockiness);
+    }
     vec3 albedo = fragColor * texColor;
+    // Texture alpha times the per-draw opacity (PushConstants::opacity) --
+    // both are 1.0 for every opaque draw in the scene, so this only actually
+    // does something for fading ground decals like TrackMark, whose texture
+    // has a soft alpha falloff and whose opacity decreases as it ages.
+    float finalAlpha = texSample.a * pc.opacity;
 
     if (pc.unlit > 0.5) {
-        outColor = vec4(albedo, 1.0);
+        outColor = vec4(albedo, finalAlpha);
         outShadowHistory = vec4(1.0, 1.0, 50000.0, 0.0);
         return;
     }
@@ -310,5 +332,5 @@ void main() {
 
     vec3 result =
         base + vec3(specular) + fresnel * vec3(0.6) + envColor * pc.specularStrength * 0.10;
-    outColor = vec4(result, 1.0);
+    outColor = vec4(result, finalAlpha);
 }

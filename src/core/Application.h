@@ -22,6 +22,7 @@
 #include "../scene/Projectile.h"
 #include "../scene/Tank.h"
 #include "../scene/Terrain.h"
+#include "../scene/TrackMark.h"
 #include "../scene/TreeInstance.h"
 
 class Application {
@@ -64,8 +65,11 @@ private:
 
     std::unique_ptr<HudRenderer> hud_;
     std::unique_ptr<Texture> grassTexture_;
+    std::unique_ptr<Texture> rockTexture_;
+    std::unique_ptr<Texture> trackTexture_;
     std::unique_ptr<Texture> whiteTexture_;
-    VkDescriptorSet grassMaterialSet_ = VK_NULL_HANDLE;
+    VkDescriptorSet terrainMaterialSet_ = VK_NULL_HANDLE;
+    VkDescriptorSet trackMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet whiteMaterialSet_ = VK_NULL_HANDLE;
     std::unique_ptr<Mesh> boxMesh_;
     std::unique_ptr<Mesh> shellMesh_;
@@ -73,10 +77,14 @@ private:
     std::unique_ptr<Mesh> treeMesh_;
     std::unique_ptr<Mesh> debrisChunkMesh_;
     std::unique_ptr<Mesh> debrisEmberMesh_;
+    std::unique_ptr<Mesh> trackMarkMesh_;
     std::vector<Box> boxes_;
     std::vector<Projectile> projectiles_;
     std::vector<ImpactEffect> impactEffects_;
     std::vector<DebrisParticle> debris_;
+    std::vector<TrackMark> trackMarks_;
+    glm::vec3 lastTrackMarkPosition_{0.0f};
+    bool hasTrackMarkAnchor_ = false;
     std::vector<TreeInstance> trees_;
 
     // Ray tracing: one BLAS per shared mesh (built once), plus a TLAS
@@ -92,6 +100,7 @@ private:
     void spawnBoxes();
     void spawnTrees();
     void spawnExplosion(glm::vec3 position);
+    void updateTrackMarks(float deltaTime);
     void fireProjectile();
     void updateProjectilesAndCollisions(float deltaTime);
     void buildAccelerationStructures();

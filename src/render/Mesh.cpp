@@ -94,6 +94,20 @@ Mesh Mesh::cube(VulkanContext& ctx, CommandContext& commands, glm::vec3 color, f
     return Mesh(ctx, commands, vertices, indices);
 }
 
+Mesh Mesh::quad(VulkanContext& ctx, CommandContext& commands, glm::vec3 color) {
+    constexpr float h = 0.5f;
+    // Same corner order/winding as cube()'s +Y face (CCW as seen from
+    // above), just flattened to Y=0.
+    std::vector<Vertex> vertices = {
+        {{-h, 0.0f, -h}, {0.0f, 1.0f, 0.0f}, color, {0.0f, 0.0f}},
+        {{-h, 0.0f, h}, {0.0f, 1.0f, 0.0f}, color, {0.0f, 1.0f}},
+        {{h, 0.0f, h}, {0.0f, 1.0f, 0.0f}, color, {1.0f, 1.0f}},
+        {{h, 0.0f, -h}, {0.0f, 1.0f, 0.0f}, color, {1.0f, 0.0f}},
+    };
+    std::vector<uint32_t> indices = {0, 1, 2, 0, 2, 3};
+    return Mesh(ctx, commands, vertices, indices);
+}
+
 Mesh Mesh::tree(VulkanContext& ctx, CommandContext& commands, glm::vec3 trunkColor,
                  glm::vec3 canopyColor) {
     std::vector<Vertex> vertices;

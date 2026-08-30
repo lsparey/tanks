@@ -72,16 +72,25 @@ void Pipeline::createDescriptorSetLayout() {
 }
 
 void Pipeline::createMaterialSetLayout() {
-    VkDescriptorSetLayoutBinding binding{};
-    binding.binding = 0;
-    binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    // Binding 1 (the "low point" texture) is only actually sampled by
+    // basic.frag when a draw's heightBlend push constant is nonzero
+    // (terrain); every other draw still needs a valid descriptor bound
+    // there (Vulkan requires it even if the shader branch skips reading it),
+    // so callers just bind the same texture into both.
+    VkDescriptorSetLayoutBinding bindings[2]{};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 1;
-    layoutInfo.pBindings = &binding;
+    layoutInfo.bindingCount = 2;
+    layoutInfo.pBindings = bindings;
 
     VK_CHECK(vkCreateDescriptorSetLayout(ctx_.device(), &layoutInfo, nullptr, &materialSetLayout_));
 }
@@ -125,7 +134,8 @@ void Pipeline::createDescriptorPoolAndSet() {
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[0].descriptorCount = 1;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = kMaxMaterialSets + kHistorySets;
+    // Each material set now has 2 bindings (primary + height-blend texture).
+    poolSizes[1].descriptorCount = kMaxMaterialSets * 2 + kHistorySets;
     poolSizes[2].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     poolSizes[2].descriptorCount = kTLASSets;
 
@@ -222,7 +232,8 @@ void Pipeline::updateHistoryDescriptor(size_t frameIndex, VkImageView historyVie
     vkUpdateDescriptorSets(ctx_.device(), 1, &write, 0, nullptr);
 }
 
-VkDescriptorSet Pipeline::allocateMaterialDescriptorSet(const Texture& texture) {
+VkDescriptorSet Pipeline::allocateMaterialDescriptorSet(const Texture& primary,
+                                                          const Texture& secondary) {
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = descriptorPool_;
@@ -232,21 +243,27 @@ VkDescriptorSet Pipeline::allocateMaterialDescriptorSet(const Texture& texture) 
     VkDescriptorSet set;
     VK_CHECK(vkAllocateDescriptorSets(ctx_.device(), &allocInfo, &set));
 
-    VkDescriptorImageInfo imageInfo{};
-    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imageInfo.imageView = texture.view();
-    imageInfo.sampler = texture.sampler();
+    VkDescriptorImageInfo imageInfos[2]{};
+    imageInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imageInfos[0].imageView = primary.view();
+    imageInfos[0].sampler = primary.sampler();
+    imageInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imageInfos[1].imageView = secondary.view();
+    imageInfos[1].sampler = secondary.sampler();
 
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = set;
-    write.dstBinding = 0;
-    write.dstArrayElement = 0;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.descriptorCount = 1;
-    write.pImageInfo = &imageInfo;
+    VkWriteDescriptorSet writes[2]{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = set;
+    writes[0].dstBinding = 0;
+    writes[0].dstArrayElement = 0;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].descriptorCount = 1;
+    writes[0].pImageInfo = &imageInfos[0];
+    writes[1] = writes[0];
+    writes[1].dstBinding = 1;
+    writes[1].pImageInfo = &imageInfos[1];
 
-    vkUpdateDescriptorSets(ctx_.device(), 1, &write, 0, nullptr);
+    vkUpdateDescriptorSets(ctx_.device(), 2, writes, 0, nullptr);
     return set;
 }
 
@@ -341,10 +358,20 @@ void Pipeline::createPipeline(VkFormat colorFormat, VkFormat depthFormat, VkForm
     depthStencil.depthWriteEnable = VK_TRUE;
     depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
 
+    // Standard alpha blending -- a no-op for every draw that outputs alpha=1
+    // (everything except fading ground decals like TrackMark, see
+    // PushConstants::opacity), so this doesn't change how existing opaque
+    // geometry looks: result = src*1 + dst*0 = src, same as no blending.
     VkPipelineColorBlendAttachmentState colorBlendAttachment{};
     colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    colorBlendAttachment.blendEnable = VK_FALSE;
+    colorBlendAttachment.blendEnable = VK_TRUE;
+    colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+    colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
 
     // Second color attachment: this frame's blended shadow value (R), AO
     // value (G), and a view-distance proxy (B, for next frame's

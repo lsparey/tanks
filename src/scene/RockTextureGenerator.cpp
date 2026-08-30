@@ -1,4 +1,4 @@
-#include "GrassTextureGenerator.h"
+#include "RockTextureGenerator.h"
 
 #include <cmath>
 
@@ -47,22 +47,24 @@ float fbm(float x, float y, int octaves) {
 
 }  // namespace
 
-std::vector<uint8_t> GrassTextureGenerator::generate(uint32_t size) {
+std::vector<uint8_t> RockTextureGenerator::generate(uint32_t size) {
     std::vector<uint8_t> pixels(static_cast<size_t>(size) * size * 4);
 
-    const glm::vec3 darkGreen(0.10f, 0.28f, 0.07f);
-    const glm::vec3 midGreen(0.22f, 0.47f, 0.14f);
-    const glm::vec3 lightGreen(0.38f, 0.63f, 0.24f);
+    const glm::vec3 darkGrey(0.20f, 0.19f, 0.18f);
+    const glm::vec3 midGrey(0.38f, 0.37f, 0.35f);
+    const glm::vec3 lightGrey(0.56f, 0.55f, 0.53f);
 
     for (uint32_t y = 0; y < size; ++y) {
         for (uint32_t x = 0; x < size; ++x) {
-            float patches = fbm(static_cast<float>(x) * 0.05f, static_cast<float>(y) * 0.05f, 4);
+            float patches = fbm(static_cast<float>(x) * 0.045f, static_cast<float>(y) * 0.045f, 4);
+            // Higher frequency and more weight than grass's speckle layer --
+            // gravel reads as individual pebbles, not a soft blade texture.
             float speckle =
-                fbm(static_cast<float>(x) * 0.35f + 91.7f, static_cast<float>(y) * 0.35f + 13.2f, 2);
-            float t = glm::clamp(patches * 0.7f + speckle * 0.3f, 0.0f, 1.0f);
+                fbm(static_cast<float>(x) * 0.6f + 91.7f, static_cast<float>(y) * 0.6f + 13.2f, 3);
+            float t = glm::clamp(patches * 0.55f + speckle * 0.45f, 0.0f, 1.0f);
 
-            glm::vec3 color = t < 0.5f ? glm::mix(darkGreen, midGreen, t * 2.0f)
-                                        : glm::mix(midGreen, lightGreen, (t - 0.5f) * 2.0f);
+            glm::vec3 color = t < 0.5f ? glm::mix(darkGrey, midGrey, t * 2.0f)
+                                        : glm::mix(midGrey, lightGrey, (t - 0.5f) * 2.0f);
             color *= 0.75f;
 
             size_t idx = (static_cast<size_t>(y) * size + x) * 4;

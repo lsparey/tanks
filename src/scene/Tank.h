@@ -44,6 +44,8 @@ public:
 
     glm::vec3 position() const { return position_; }
     glm::vec3 forward() const { return forward_; }
+    // Hull's local-space X extent (outer edge to outer edge) -- see load().
+    float hullWidth() const { return hullWidth_; }
     // Firing/aim direction: hull forward rotated by the turret's yaw.
     // Equal to forward() if the model had no separate turret to rotate.
     glm::vec3 aimDirection() const;
@@ -75,6 +77,7 @@ private:
     // barrel part's vertex farthest from the local origin (the turret's
     // pivot, which sits near the barrel's mount/breech end, not its tip).
     glm::vec3 muzzleLocal_{0.0f};
+    float hullWidth_ = 0.0f;
 
     glm::vec3 position_{0.0f};
     float yaw_ = 0.0f;  // radians; yaw=0 means local forward (+Z) points world +Z

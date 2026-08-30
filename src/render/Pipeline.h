@@ -14,10 +14,11 @@
 // descriptor set (set 0) it's bound to. Per-object data goes through a push
 // constant (the model matrix + an unlit flag); per-frame data (view/proj/
 // light) goes through the set-0 UBO, updated once per frame via
-// updateFrameUBO. Set 1 is a single combined-image-sampler binding for
-// whatever texture a given draw call wants (grass for terrain, a plain
-// white 1x1 texture for everything else so their vertex colors are
-// unaffected) -- allocated per-texture via allocateMaterialDescriptorSet.
+// updateFrameUBO. Set 1 is two combined-image-sampler bindings for whatever
+// textures a given draw call wants (grass+rock for terrain, blended by
+// world-space height via the heightBlend push constant; a plain white 1x1
+// texture in both slots for everything else so their vertex colors are
+// unaffected) -- allocated per-texture-pair via allocateMaterialDescriptorSet.
 // Set 2 is a single acceleration-structure binding (the scene TLAS), read
 // by basic.frag via VK_KHR_ray_query for shadow rays. Its handle changes
 // every frame (SceneAccelerationStructure rebuilds in place per
@@ -43,6 +44,16 @@ public:
         glm::mat4 model;
         float unlit = 0.0f;             // nonzero: skip lighting, draw fragColor at full brightness
         float specularStrength = 0.0f;  // 0: matte, higher: shinier/more metallic highlight
+        // nonzero: blend between the material set's two textures by world-space
+        // height (low points -> the second texture) instead of just sampling
+        // the first -- see basic.frag. Only terrain sets this.
+        float heightBlend = 0.0f;
+        // Multiplies the material texture's own alpha to get the final
+        // output alpha -- 1.0 (opaque) for everything except fading ground
+        // decals like TrackMark. The main color attachment blends normally
+        // (SRC_ALPHA/ONE_MINUS_SRC_ALPHA), which is a no-op for anything
+        // that stays fully opaque, so this doesn't affect existing draws.
+        float opacity = 1.0f;
     };
 
     Pipeline(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthFormat, VkFormat historyFormat);
@@ -52,7 +63,10 @@ public:
     Pipeline& operator=(const Pipeline&) = delete;
 
     void updateFrameUBO(const FrameUBO& ubo);
-    VkDescriptorSet allocateMaterialDescriptorSet(const Texture& texture);
+    // secondary is only sampled when a draw's PushConstants::heightBlend is
+    // nonzero (terrain); everything else can pass the same texture for both
+    // and ignore it.
+    VkDescriptorSet allocateMaterialDescriptorSet(const Texture& primary, const Texture& secondary);
     void updateTLASDescriptor(size_t frameIndex, VkAccelerationStructureKHR tlas);
     void updateHistoryDescriptor(size_t frameIndex, VkImageView historyView, VkSampler historySampler);
 

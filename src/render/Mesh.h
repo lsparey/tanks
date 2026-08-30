@@ -27,6 +27,11 @@ public:
     static Mesh cube(VulkanContext& ctx, CommandContext& commands, glm::vec3 color,
                       float size = 1.0f);
 
+    // A flat 1x1 quad in the local XZ plane (Y=0, normal +Y), UV spanning
+    // 0..1 -- used for ground decals (see TrackMark), which scale it to the
+    // desired footprint via their world matrix rather than baking a size in.
+    static Mesh quad(VulkanContext& ctx, CommandContext& commands, glm::vec3 color);
+
     // A simple procedural pine tree: a tapered trunk plus two stacked,
     // overlapping cones for the canopy -- hand-built geometry, same spirit
     // as cube().

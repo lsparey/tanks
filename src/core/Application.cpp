@@ -9,6 +9,8 @@
 #include "../render/VulkanCheck.h"
 #include "../scene/CollisionSystem.h"
 #include "../scene/GrassTextureGenerator.h"
+#include "../scene/RockTextureGenerator.h"
+#include "../scene/TrackTextureGenerator.h"
 
 namespace {
 
@@ -60,11 +62,21 @@ Application::Application() {
     std::vector<uint8_t> grassPixels = GrassTextureGenerator::generate(256);
     grassTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 256, 256, grassPixels, /*repeat=*/true));
+    std::vector<uint8_t> rockPixels = RockTextureGenerator::generate(256);
+    rockTexture_ = std::make_unique<Texture>(
+        Texture::fromPixels(*context_, *commands_, 256, 256, rockPixels, /*repeat=*/true));
+    std::vector<uint8_t> trackPixels = TrackTextureGenerator::generate(128);
+    trackTexture_ = std::make_unique<Texture>(
+        Texture::fromPixels(*context_, *commands_, 128, 128, trackPixels, /*repeat=*/false));
     std::vector<uint8_t> whitePixel = {255, 255, 255, 255};
     whiteTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 1, 1, whitePixel, /*repeat=*/false));
-    grassMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*grassTexture_);
-    whiteMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*whiteTexture_);
+    // Terrain blends grass and rock by height (see heightBlend in
+    // PushConstants/basic.frag); everything else just binds white into both
+    // slots since only the primary is ever sampled for them.
+    terrainMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*grassTexture_, *rockTexture_);
+    trackMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*trackTexture_, *trackTexture_);
+    whiteMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*whiteTexture_, *whiteTexture_);
 
     uint32_t terrainSeed = std::random_device{}();
     terrain_ = std::make_unique<Terrain>(*context_, *commands_, /*resolution=*/64,
@@ -84,6 +96,9 @@ Application::Application() {
         std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(0.32f, 0.22f, 0.12f)));
     debrisEmberMesh_ =
         std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(1.0f, 0.55f, 0.1f)));
+    // White so the track texture's own baked-in brown color shows through
+    // unmodified (same reasoning as terrain's kTerrainColor).
+    trackMarkMesh_ = std::make_unique<Mesh>(Mesh::quad(*context_, *commands_, glm::vec3(1.0f)));
     spawnBoxes();
     spawnTrees();
     buildAccelerationStructures();
@@ -101,8 +116,13 @@ Application::~Application() {
     boxBLAS_.reset();
     treeBLAS_.reset();
     whiteTexture_.reset();
+    trackTexture_.reset();
+    rockTexture_.reset();
     grassTexture_.reset();
     hud_.reset();
+    trackMarkMesh_.reset();
+    debrisEmberMesh_.reset();
+    debrisChunkMesh_.reset();
     treeMesh_.reset();
     flashMesh_.reset();
     shellMesh_.reset();
@@ -154,6 +174,7 @@ void Application::mainLoop() {
         prevFKeyDown_ = fDown;
 
         tank_->update(*input_, deltaTime, *terrain_);
+        updateTrackMarks(deltaTime);
 
         bool fireDown = glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS ||
                         glfwGetKey(window_, GLFW_KEY_SPACE) == GLFW_PRESS;
@@ -288,6 +309,41 @@ void Application::spawnExplosion(glm::vec3 position) {
     }
 }
 
+void Application::updateTrackMarks(float deltaTime) {
+    // Drop a new mark roughly every kTrackMarkSpacing units of travel --
+    // well under TrackMark's own length (1.8) so consecutive marks overlap
+    // generously and merge into one continuous strip instead of a chain of
+    // separate blobs with visible gaps between them. The anchor is the
+    // position of the last mark dropped, not the tank's own start position,
+    // so this also naturally stops spawning while the tank is stationary.
+    constexpr float kTrackMarkSpacing = 0.55f;
+    glm::vec3 pos = tank_->position();
+    if (!hasTrackMarkAnchor_ || glm::length(pos - lastTrackMarkPosition_) >= kTrackMarkSpacing) {
+        // Tilt to the local terrain normal (instead of assuming flat ground)
+        // so the decal hugs sloped terrain rather than poking through it;
+        // project the tank's forward onto that normal's tangent plane the
+        // same way Tank itself derives forward_ from flatForward and up_.
+        glm::vec3 normal = terrain_->normalAt(pos.x, pos.z);
+        glm::vec3 rawForward = tank_->forward();
+        glm::vec3 projectedForward =
+            glm::normalize(rawForward - normal * glm::dot(rawForward, normal));
+
+        TrackMark mark;
+        mark.position = glm::vec3(pos.x, terrain_->heightAt(pos.x, pos.z) + 0.05f, pos.z);
+        mark.up = normal;
+        mark.forward = projectedForward;
+        mark.width = tank_->hullWidth();
+        trackMarks_.push_back(mark);
+        lastTrackMarkPosition_ = pos;
+        hasTrackMarkAnchor_ = true;
+    }
+
+    for (auto& mark : trackMarks_) mark.update(deltaTime);
+    trackMarks_.erase(std::remove_if(trackMarks_.begin(), trackMarks_.end(),
+                                      [](const TrackMark& m) { return !m.alive; }),
+                       trackMarks_.end());
+}
+
 void Application::buildAccelerationStructures() {
     treeBLAS_ = std::make_unique<AccelerationStructure>(
         AccelerationStructure::buildBLAS(*context_, *commands_, *treeMesh_));
@@ -329,10 +385,12 @@ std::vector<AccelerationStructure::Instance> Application::gatherRayTracingInstan
     for (const auto& shell : projectiles_) {
         instances.push_back({shellBLAS_->deviceAddress(), shell.worldMatrix()});
     }
-    // Impact-flash effects and explosion debris are deliberately excluded --
-    // all short-lived (well under a couple seconds) and numerous enough
-    // (debris spawns 15 particles per explosion) that the added TLAS churn
-    // isn't worth it just so they can cast their own tiny shadows.
+    // Impact-flash effects, explosion debris, and track marks are
+    // deliberately excluded -- short-lived-to-moderately-lived and numerous
+    // enough (debris spawns 15 particles per explosion; a mark drops every
+    // ~1.1 units of tank travel) that the added TLAS churn isn't worth it
+    // just so they can cast their own (in the marks' case, essentially flat
+    // and invisible anyway) shadows.
     return instances;
 }
 
@@ -610,13 +668,31 @@ void Application::drawFrame() {
                              pipeline_->layout(), 3, 1, &historySet, 0, nullptr);
 
     vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                             pipeline_->layout(), 1, 1, &grassMaterialSet_, 0, nullptr);
+                             pipeline_->layout(), 1, 1, &terrainMaterialSet_, 0, nullptr);
     Pipeline::PushConstants terrainPc{};
     terrainPc.model = glm::mat4(1.0f);
+    terrainPc.heightBlend = 1.0f;
     vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                         sizeof(terrainPc), &terrainPc);
     terrain_->bindAndDraw(frame.commandBuffer);
+
+    // Track marks: flat, fading ground decals drawn right after terrain so
+    // they composite on top of it. Lit (not unlit) so they still receive
+    // the scene's real ray-traced shadow/AO like any other ground surface,
+    // rather than writing a placeholder into the history buffer that would
+    // otherwise interrupt terrain's temporal accumulation wherever they sit.
+    vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                             pipeline_->layout(), 1, 1, &trackMaterialSet_, 0, nullptr);
+    for (const auto& mark : trackMarks_) {
+        Pipeline::PushConstants markPc{};
+        markPc.model = mark.worldMatrix();
+        markPc.opacity = mark.opacity();
+        vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
+                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                            sizeof(markPc), &markPc);
+        trackMarkMesh_->bindAndDraw(frame.commandBuffer);
+    }
 
     vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                              pipeline_->layout(), 1, 1, &whiteMaterialSet_, 0, nullptr);

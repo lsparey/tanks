@@ -30,6 +30,8 @@ add_executable(luke-game
     src/scene/InputManager.cpp
     src/scene/HeightmapGenerator.cpp
     src/scene/GrassTextureGenerator.cpp
+    src/scene/RockTextureGenerator.cpp
+    src/scene/TrackTextureGenerator.cpp
     src/scene/Terrain.cpp
     src/scene/Tank.cpp
     src/scene/CollisionSystem.cpp
