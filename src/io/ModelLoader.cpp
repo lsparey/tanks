@@ -75,8 +75,21 @@ void processNode(const aiScene* scene, const aiNode* node, const glm::mat4& pare
 
 ModelLoader::Result ModelLoader::load(const std::string& path) {
     Assimp::Importer importer;
-    const aiScene* scene = importer.ReadFile(
-        path, aiProcess_Triangulate | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices);
+    // tank.x already carries per-vertex normals baked in by its original
+    // MilkShape3D export, and they're smoothed/averaged across the hull's
+    // angled panels (near 1:1 normal-to-vertex count, not the many-more
+    // normals you'd expect from genuine hard edges) -- so GenSmoothNormals
+    // was never actually running (Assimp skips normal generation entirely
+    // when a mesh already has normals) and the baked-in smoothing was what
+    // made flat angled panels look rounded. GenNormals + ForceGenNormals
+    // discards those and recomputes flat per-face normals instead (Assimp
+    // duplicates vertices per face-corner as needed to do this), so angled
+    // panels get a hard edge again. JoinIdenticalVertices still runs after
+    // and stays safe -- adjacent faces now differ in normal, so it won't
+    // re-merge across the edges this just introduced.
+    const aiScene* scene =
+        importer.ReadFile(path, aiProcess_Triangulate | aiProcess_GenNormals |
+                                     aiProcess_ForceGenNormals | aiProcess_JoinIdenticalVertices);
 
     if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode) {
         throw std::runtime_error("failed to load model '" + path + "': " + importer.GetErrorString());
