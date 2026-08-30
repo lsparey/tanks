@@ -1,4 +1,4 @@
-# luke-game
+# tanks
 
 A from-scratch 3D tank prototype: drive a tank over procedural terrain and
 shoot procedural boxes. Built directly on Vulkan (no engine) with GLFW, GLM,
