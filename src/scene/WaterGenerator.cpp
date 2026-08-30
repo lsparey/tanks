@@ -135,8 +135,12 @@ std::unique_ptr<Mesh> WaterGenerator::buildMesh(VulkanContext& ctx, CommandConte
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
 
-    const glm::vec3 shallowColor(0.35f, 0.55f, 0.55f);
-    const glm::vec3 deepColor(0.04f, 0.10f, 0.20f);
+    // A natural pond/lake reads as a muted green-teal near the shore
+    // (sediment/algae, light bouncing off the shallow bed) fading to a
+    // desaturated blue-grey in deep water, rather than a bright saturated
+    // teal-to-navy gradient.
+    const glm::vec3 shallowColor(0.24f, 0.38f, 0.34f);
+    const glm::vec3 deepColor(0.05f, 0.11f, 0.16f);
 
     auto worldXZ = [&](int i, int j) {
         float x = (static_cast<float>(i) / (n - 1) - 0.5f) * hm.worldSize;

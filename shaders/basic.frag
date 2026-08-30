@@ -423,7 +423,8 @@ void main() {
     // per-frame counter already reused for shadow/AO jitter, just repurposed
     // here as an animation phase.
     vec3 shadingNormal = normal;
-    if (pc.waveStrength > 0.001) {
+    bool isWater = pc.waveStrength > 0.001;
+    if (isWater) {
         float t = frame.cameraPos.w;
         float wave1 = sin(fragWorldPos.x * 1.3 + t * 0.035) * cos(fragWorldPos.z * 1.7 - t * 0.025);
         float wave2 = sin(fragWorldPos.x * 3.1 - t * 0.065 + 1.7) * cos(fragWorldPos.z * 2.3 + t * 0.045);
@@ -433,10 +434,13 @@ void main() {
 
     // Blinn-Phong specular -- a lower exponent than a glossy/chrome look
     // would use gives a broader, softer highlight, reading as duller,
-    // brushed metal rather than polished plastic.
+    // brushed metal rather than polished plastic. Water gets a much
+    // tighter, brighter exponent instead -- a real sun-glint on water is a
+    // small, sharp highlight, not a broad sheen.
     vec3 halfDir = normalize(toLight + viewDir);
     float specAngle = max(dot(shadingNormal, halfDir), 0.0);
-    float specular = pow(specAngle, 20.0) * pc.specularStrength * 0.6 * shadowFactor;
+    float specExponent = isWater ? 150.0 : 20.0;
+    float specular = pow(specAngle, specExponent) * pc.specularStrength * 0.6 * shadowFactor;
 
     // Fresnel/rim term: surfaces brighten at grazing view angles, a cheap
     // but very characteristic cue for metal. Kept subtle and tinted toward
@@ -459,7 +463,25 @@ void main() {
     // reflection direction wobbles with the fake waves too.
     vec3 reflectDir = reflect(-viewDir, shadingNormal);
     vec3 envColor = skyColor(reflectDir);
-    if (pc.reflectivity > 0.01) {
+
+    // Water specifically: real water's reflectivity and transparency are
+    // both strongly view-angle dependent (Fresnel) -- near-mirror at
+    // grazing angles, mostly see-through when looking straight down into
+    // it. A flat reflectivity/opacity made it look like tinted plastic
+    // rather than water. Schlick's approximation with F0 ~ water's real
+    // ~0.02-0.03 normal-incidence reflectance drives both terms together:
+    // grazing views read as a reflective sheet (reflectivity and alpha
+    // both push toward 1), steep/overhead views let the lake bed and its
+    // own duller color show through.
+    float effectiveReflectivity = pc.reflectivity;
+    if (isWater) {
+        float cosTheta = clamp(dot(shadingNormal, viewDir), 0.0, 1.0);
+        float waterFresnel = mix(0.03, 1.0, pow(1.0 - cosTheta, 5.0));
+        effectiveReflectivity = mix(pc.reflectivity * 0.25, 1.0, waterFresnel);
+        finalAlpha = mix(pc.opacity * 0.55, 1.0, waterFresnel);
+    }
+
+    if (effectiveReflectivity > 0.01) {
         vec3 reflectionHit;
         vec3 reflOrigin = fragWorldPos + normal * kShadowBias;
         if (traceReflection(reflOrigin, reflectDir, kShadowTMax, reflectionHit)) {
@@ -467,6 +489,6 @@ void main() {
         }
     }
 
-    vec3 result = base + vec3(specular) + fresnel * vec3(0.6) + envColor * pc.reflectivity;
+    vec3 result = base + vec3(specular) + fresnel * vec3(0.6) + envColor * effectiveReflectivity;
     outColor = vec4(result, finalAlpha);
 }

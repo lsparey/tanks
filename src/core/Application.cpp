@@ -123,10 +123,12 @@ Application::Application() {
     trackMarkMesh_ = std::make_unique<Mesh>(Mesh::quad(*context_, *commands_, glm::vec3(1.0f)));
     // A handful of distinct rock shapes/shades (see Mesh::rock), reused
     // across many cluster instances via meshVariant rather than generating
-    // unique geometry per rock.
+    // unique geometry per rock. Mix of neutral grey and warmer brown-grey
+    // tones -- real rock outcrops are rarely uniformly neutral, and an
+    // all-grey cluster reads a bit like painted concrete.
     const glm::vec3 rockShades[] = {
-        {0.45f, 0.44f, 0.42f}, {0.35f, 0.34f, 0.33f}, {0.52f, 0.50f, 0.47f},
-        {0.40f, 0.39f, 0.38f}, {0.48f, 0.46f, 0.43f},
+        {0.42f, 0.41f, 0.39f}, {0.33f, 0.30f, 0.26f}, {0.48f, 0.44f, 0.38f},
+        {0.37f, 0.36f, 0.35f}, {0.45f, 0.39f, 0.31f},
     };
     for (size_t i = 0; i < sizeof(rockShades) / sizeof(rockShades[0]); ++i) {
         rockMeshes_.push_back(std::make_unique<Mesh>(

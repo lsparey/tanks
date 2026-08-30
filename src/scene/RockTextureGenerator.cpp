@@ -73,9 +73,12 @@ float fbm(float x, float y, int octaves, float basePeriod) {
 std::vector<uint8_t> RockTextureGenerator::generate(uint32_t size) {
     std::vector<uint8_t> pixels(static_cast<size_t>(size) * size * 4);
 
-    const glm::vec3 darkGrey(0.20f, 0.19f, 0.18f);
-    const glm::vec3 midGrey(0.38f, 0.37f, 0.35f);
-    const glm::vec3 lightGrey(0.56f, 0.55f, 0.53f);
+    // Real gravel/rock rarely reads as pure neutral grey -- a slight
+    // warm/brown tint (R > G > B) is what actually sells "dirt and stone"
+    // rather than "concrete".
+    const glm::vec3 darkGrey(0.22f, 0.19f, 0.15f);
+    const glm::vec3 midGrey(0.40f, 0.36f, 0.30f);
+    const glm::vec3 lightGrey(0.58f, 0.53f, 0.45f);
 
     for (uint32_t y = 0; y < size; ++y) {
         for (uint32_t x = 0; x < size; ++x) {

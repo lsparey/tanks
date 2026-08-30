@@ -78,9 +78,12 @@ float fbm(float x, float y, int octaves, float basePeriod) {
 std::vector<uint8_t> GrassTextureGenerator::generate(uint32_t size) {
     std::vector<uint8_t> pixels(static_cast<size_t>(size) * size * 4);
 
-    const glm::vec3 darkGreen(0.10f, 0.28f, 0.07f);
-    const glm::vec3 midGreen(0.22f, 0.47f, 0.14f);
-    const glm::vec3 lightGreen(0.38f, 0.63f, 0.24f);
+    // Real grass reads as desaturated/olive rather than a pure saturated
+    // green -- R and G kept closer together, B pulled well down, with a bit
+    // of yellow-brown creeping into the lighter tone (sun-bleached blades).
+    const glm::vec3 darkGreen(0.14f, 0.19f, 0.07f);
+    const glm::vec3 midGreen(0.28f, 0.34f, 0.14f);
+    const glm::vec3 lightGreen(0.44f, 0.46f, 0.20f);
 
     for (uint32_t y = 0; y < size; ++y) {
         for (uint32_t x = 0; x < size; ++x) {
