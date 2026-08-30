@@ -73,20 +73,30 @@ private:
     std::unique_ptr<Texture> rockTextureB_;
     std::unique_ptr<Texture> trackTexture_;
     std::unique_ptr<Texture> cloudTexture_;
+    std::unique_ptr<Texture> barkTexture_;
+    std::unique_ptr<Texture> leafTexture_;
     std::unique_ptr<Texture> whiteTexture_;
     VkDescriptorSet terrainMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet trackMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet cloudMaterialSet_ = VK_NULL_HANDLE;
+    VkDescriptorSet rockMaterialSet_ = VK_NULL_HANDLE;
+    VkDescriptorSet barkMaterialSet_ = VK_NULL_HANDLE;
+    VkDescriptorSet leafMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet whiteMaterialSet_ = VK_NULL_HANDLE;
     std::unique_ptr<Mesh> boxMesh_;
     std::unique_ptr<Mesh> shellMesh_;
     std::unique_ptr<Mesh> flashMesh_;
-    std::unique_ptr<Mesh> treeMesh_;
     std::unique_ptr<Mesh> debrisChunkMesh_;
     std::unique_ptr<Mesh> debrisEmberMesh_;
     std::unique_ptr<Mesh> trackMarkMesh_;
     std::unique_ptr<Mesh> waterMesh_;  // null if no qualifying low-lying basin exists this run
     std::vector<std::unique_ptr<Mesh>> rockMeshes_;  // small pool of distinct rock shapes
+    // Small pool of distinct fractal branch structures, one bark + one
+    // leaves mesh per variant (see Mesh::treeBark/treeLeaves) -- matching
+    // indices in each vector share the same seed, so their branch tips line
+    // up.
+    std::vector<std::unique_ptr<Mesh>> treeBarkMeshes_;
+    std::vector<std::unique_ptr<Mesh>> treeLeafMeshes_;
     std::unique_ptr<Mesh> cloudDomeMesh_;
     std::vector<Box> boxes_;
     std::vector<Projectile> projectiles_;
@@ -105,10 +115,11 @@ private:
     // rebuilt every frame from the current scene state (see
     // gatherRayTracingInstances). Tank's own BLAS per part live on Tank
     // itself since it owns those meshes.
-    std::unique_ptr<AccelerationStructure> treeBLAS_;
     std::unique_ptr<AccelerationStructure> boxBLAS_;
     std::unique_ptr<AccelerationStructure> shellBLAS_;
-    std::vector<std::unique_ptr<AccelerationStructure>> rockBLAS_;  // one per rockMeshes_ variant
+    std::vector<std::unique_ptr<AccelerationStructure>> rockBLAS_;      // one per rockMeshes_ variant
+    std::vector<std::unique_ptr<AccelerationStructure>> treeBarkBLAS_;  // one per treeBarkMeshes_ variant
+    std::vector<std::unique_ptr<AccelerationStructure>> treeLeafBLAS_;  // one per treeLeafMeshes_ variant
     std::unique_ptr<SceneAccelerationStructure> sceneAS_;
     std::unique_ptr<HistoryBuffer> historyBuffer_;
 

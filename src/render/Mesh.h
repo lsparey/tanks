@@ -32,16 +32,28 @@ public:
     // desired footprint via their world matrix rather than baking a size in.
     static Mesh quad(VulkanContext& ctx, CommandContext& commands, glm::vec3 color);
 
-    // A simple procedural pine tree: a tapered trunk plus two stacked,
-    // overlapping cones for the canopy -- hand-built geometry, same spirit
-    // as cube().
-    static Mesh tree(VulkanContext& ctx, CommandContext& commands, glm::vec3 trunkColor,
-                      glm::vec3 canopyColor);
+    // A procedural tree, built as a recursive fractal branching structure
+    // (trunk splits into a few branches, each of which splits again,
+    // several levels deep) rather than a fixed trunk+2-cones shape --
+    // returned as two separate meshes since bark and foliage need
+    // different textures/materials: treeBark is the trunk/branch skeleton
+    // (cylindrical UV for a tiling bark texture), treeLeaves is the small
+    // cone clusters at each branch tip (for a foliage texture). Call both
+    // with the same `seed` to get the matching pair for one tree -- the
+    // branch structure (and therefore where the leaf clusters end up) is
+    // fully determined by seed, so two calls with the same seed reproduce
+    // the identical skeleton.
+    static Mesh treeBark(VulkanContext& ctx, CommandContext& commands, glm::vec3 tint, uint32_t seed);
+    static Mesh treeLeaves(VulkanContext& ctx, CommandContext& commands, glm::vec3 tint, uint32_t seed);
 
-    // A procedural boulder: an icosahedron with each vertex's radius
-    // jittered by `seed` for an irregular, lumpy silhouette, flat per-face
-    // normals (same faceted-shading approach as cube()), and a slight
-    // per-face color jitter around baseColor. Different seeds give visibly
+    // A procedural boulder: a once-subdivided icosahedron (80 faces) with
+    // each vertex's radius displaced by multi-octave (fractal) 3D noise for
+    // an irregular, organic-looking lumpy silhouette -- notably more
+    // detailed than a single random jitter per base icosahedron vertex.
+    // Flat per-face normals (same faceted-shading approach as cube()), a
+    // slight per-face color jitter around baseColor, and a spherical UV so
+    // an actual rock texture (see Application's rockMaterialSet_) wraps
+    // around it instead of flat vertex color. Different seeds give visibly
     // different rocks from the same call, so a handful of variants (see
     // Application's rockMeshes_) reads as varied rubble rather than the
     // same shape copy-pasted everywhere.

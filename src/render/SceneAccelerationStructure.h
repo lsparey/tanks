@@ -23,7 +23,12 @@
 // slot's TLAS held last time it was this slot's turn.
 class SceneAccelerationStructure {
 public:
-    static constexpr uint32_t kMaxInstances = 128;
+    // Bumped from 128 as rock clusters, tree bark, and other static detail
+    // grew the typical/worst-case instance count -- cheap to reserve extra
+    // headroom (each slot is a fixed-size instance buffer sized at
+    // construction) rather than risk silently dropping instances under
+    // AccelerationStructure::recordRebuildTLAS's clamp-to-capacity.
+    static constexpr uint32_t kMaxInstances = 256;
 
     SceneAccelerationStructure(VulkanContext& ctx, CommandContext& commands,
                                 const std::vector<AccelerationStructure::Instance>& initialInstances);

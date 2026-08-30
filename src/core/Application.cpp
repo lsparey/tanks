@@ -7,9 +7,11 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "../render/VulkanCheck.h"
+#include "../scene/BarkTextureGenerator.h"
 #include "../scene/CloudTextureGenerator.h"
 #include "../scene/CollisionSystem.h"
 #include "../scene/GrassTextureGenerator.h"
+#include "../scene/LeafTextureGenerator.h"
 #include "../scene/RockTextureGenerator.h"
 #include "../scene/TrackTextureGenerator.h"
 #include "../scene/WaterGenerator.h"
@@ -95,19 +97,33 @@ Application::Application() {
     // well outside [0,1] near the horizon, so this needs to tile.
     cloudTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 256, 256, cloudPixels, /*repeat=*/true));
+    std::vector<uint8_t> barkPixels = BarkTextureGenerator::generate(128);
+    barkTexture_ = std::make_unique<Texture>(
+        Texture::fromPixels(*context_, *commands_, 128, 128, barkPixels, /*repeat=*/true));
+    std::vector<uint8_t> leafPixels = LeafTextureGenerator::generate(128);
+    leafTexture_ = std::make_unique<Texture>(
+        Texture::fromPixels(*context_, *commands_, 128, 128, leafPixels, /*repeat=*/true));
     std::vector<uint8_t> whitePixel = {255, 255, 255, 255};
     whiteTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 1, 1, whitePixel, /*repeat=*/false));
     // Terrain patch-blends grass A/B and gravel A/B, then blends that by
     // height (see heightBlend in PushConstants/basic.frag); everything else
-    // just binds white into all four slots since only the first is ever
-    // sampled for them.
+    // just binds a single texture into all four slots since only the first
+    // is ever sampled for them.
     terrainMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*grassTextureA_, *grassTextureB_,
                                                                     *rockTextureA_, *rockTextureB_);
     trackMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*trackTexture_, *trackTexture_,
                                                                   *trackTexture_, *trackTexture_);
     cloudMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*cloudTexture_, *cloudTexture_,
                                                                   *cloudTexture_, *cloudTexture_);
+    // Reuses the same gravel texture already generated for terrain -- rocks
+    // are visually the same kind of material, just as standalone boulders.
+    rockMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*rockTextureA_, *rockTextureA_,
+                                                                 *rockTextureA_, *rockTextureA_);
+    barkMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*barkTexture_, *barkTexture_,
+                                                                 *barkTexture_, *barkTexture_);
+    leafMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*leafTexture_, *leafTexture_,
+                                                                 *leafTexture_, *leafTexture_);
     whiteMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*whiteTexture_, *whiteTexture_,
                                                                   *whiteTexture_, *whiteTexture_);
 
@@ -122,8 +138,6 @@ Application::Application() {
     boxMesh_ = std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(0.65f, 0.5f, 0.25f)));
     shellMesh_ = std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(1.0f, 0.85f, 0.2f)));
     flashMesh_ = std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(1.0f, 1.0f, 0.9f)));
-    treeMesh_ = std::make_unique<Mesh>(
-        Mesh::tree(*context_, *commands_, glm::vec3(0.32f, 0.22f, 0.12f), glm::vec3(0.13f, 0.32f, 0.10f)));
     // Explosion debris: a darker, splintered-looking chunk of the box
     // (normally lit, so it tumbles through the scene's light/shadow like
     // real debris) and a small, bright unlit ember (a spark/fire glow that
@@ -135,18 +149,33 @@ Application::Application() {
     // White so the track texture's own baked-in brown color shows through
     // unmodified (same reasoning as terrain's kTerrainColor).
     trackMarkMesh_ = std::make_unique<Mesh>(Mesh::quad(*context_, *commands_, glm::vec3(1.0f)));
-    // A handful of distinct rock shapes/shades (see Mesh::rock), reused
+    // A handful of distinct rock shapes/tints (see Mesh::rock), reused
     // across many cluster instances via meshVariant rather than generating
-    // unique geometry per rock. Mix of neutral grey and warmer brown-grey
-    // tones -- real rock outcrops are rarely uniformly neutral, and an
-    // all-grey cluster reads a bit like painted concrete.
+    // unique geometry per rock. Rocks now sample an actual gravel texture
+    // (rockMaterialSet_), so these tints are kept close to white -- a slight
+    // per-variant warm/cool/brightness variation on top of the texture's
+    // own color/detail, rather than the previous flat, fully-colored look.
     const glm::vec3 rockShades[] = {
-        {0.42f, 0.41f, 0.39f}, {0.33f, 0.30f, 0.26f}, {0.48f, 0.44f, 0.38f},
-        {0.37f, 0.36f, 0.35f}, {0.45f, 0.39f, 0.31f},
+        {1.0f, 0.98f, 0.95f}, {0.85f, 0.83f, 0.80f}, {1.05f, 1.0f, 0.92f},
+        {0.90f, 0.90f, 0.90f}, {1.05f, 0.95f, 0.82f},
     };
     for (size_t i = 0; i < sizeof(rockShades) / sizeof(rockShades[0]); ++i) {
         rockMeshes_.push_back(std::make_unique<Mesh>(
             Mesh::rock(*context_, *commands_, rockShades[i], static_cast<uint32_t>(i) + 1)));
+    }
+    // A small pool of distinct fractal branch structures (see
+    // Mesh::treeBark/treeLeaves) -- matching seeds so each variant's bark
+    // and leaves share the same branch skeleton. Tints kept close to white
+    // since bark/leaf color now comes from real textures.
+    constexpr int kTreeVariantCount = 4;
+    const glm::vec3 barkTint(0.95f, 0.92f, 0.88f);
+    const glm::vec3 leafTint(0.92f, 1.0f, 0.88f);
+    for (int i = 0; i < kTreeVariantCount; ++i) {
+        uint32_t seed = static_cast<uint32_t>(i) + 1;
+        treeBarkMeshes_.push_back(
+            std::make_unique<Mesh>(Mesh::treeBark(*context_, *commands_, barkTint, seed)));
+        treeLeafMeshes_.push_back(
+            std::make_unique<Mesh>(Mesh::treeLeaves(*context_, *commands_, leafTint, seed)));
     }
     // White so the cloud texture's own baked-in white/grey shading shows
     // through unmodified; uvScale tuned by eye for plausible-looking cloud
@@ -182,11 +211,14 @@ Application::~Application() {
     // Destroy in dependency order before the GLFW window disappears.
     historyBuffer_.reset();
     sceneAS_.reset();
+    treeLeafBLAS_.clear();
+    treeBarkBLAS_.clear();
     rockBLAS_.clear();
     shellBLAS_.reset();
     boxBLAS_.reset();
-    treeBLAS_.reset();
     whiteTexture_.reset();
+    leafTexture_.reset();
+    barkTexture_.reset();
     cloudTexture_.reset();
     trackTexture_.reset();
     rockTextureB_.reset();
@@ -197,10 +229,11 @@ Application::~Application() {
     cloudDomeMesh_.reset();
     waterMesh_.reset();
     rockMeshes_.clear();
+    treeLeafMeshes_.clear();
+    treeBarkMeshes_.clear();
     trackMarkMesh_.reset();
     debrisEmberMesh_.reset();
     debrisChunkMesh_.reset();
-    treeMesh_.reset();
     flashMesh_.reset();
     shellMesh_.reset();
     boxMesh_.reset();
@@ -315,6 +348,7 @@ void Application::spawnTrees(const WaterGenerator::FloodField& waterField) {
     std::uniform_real_distribution<float> coordDist(-half, half);
     std::uniform_real_distribution<float> yawDist(0.0f, 6.2831853f);
     std::uniform_real_distribution<float> scaleDist(0.8f, 1.4f);
+    std::uniform_int_distribution<int> variantDist(0, static_cast<int>(treeBarkMeshes_.size()) - 1);
 
     std::vector<glm::vec2> placed;
     for (int i = 0; i < kTreeCount; ++i) {
@@ -335,6 +369,7 @@ void Application::spawnTrees(const WaterGenerator::FloodField& waterField) {
         tree.position = glm::vec3(pos.x, terrain_->heightAt(pos.x, pos.y), pos.y);
         tree.yaw = yawDist(rng);
         tree.scale = scaleDist(rng);
+        tree.meshVariant = variantDist(rng);
         trees_.push_back(tree);
     }
 }
@@ -483,14 +518,20 @@ void Application::updateTrackMarks(float deltaTime) {
 }
 
 void Application::buildAccelerationStructures() {
-    treeBLAS_ = std::make_unique<AccelerationStructure>(
-        AccelerationStructure::buildBLAS(*context_, *commands_, *treeMesh_));
     boxBLAS_ = std::make_unique<AccelerationStructure>(
         AccelerationStructure::buildBLAS(*context_, *commands_, *boxMesh_));
     shellBLAS_ = std::make_unique<AccelerationStructure>(
         AccelerationStructure::buildBLAS(*context_, *commands_, *shellMesh_));
     for (const auto& mesh : rockMeshes_) {
         rockBLAS_.push_back(std::make_unique<AccelerationStructure>(
+            AccelerationStructure::buildBLAS(*context_, *commands_, *mesh)));
+    }
+    for (const auto& mesh : treeBarkMeshes_) {
+        treeBarkBLAS_.push_back(std::make_unique<AccelerationStructure>(
+            AccelerationStructure::buildBLAS(*context_, *commands_, *mesh)));
+    }
+    for (const auto& mesh : treeLeafMeshes_) {
+        treeLeafBLAS_.push_back(std::make_unique<AccelerationStructure>(
             AccelerationStructure::buildBLAS(*context_, *commands_, *mesh)));
     }
 
@@ -515,7 +556,8 @@ std::vector<AccelerationStructure::Instance> Application::gatherRayTracingInstan
     std::vector<AccelerationStructure::Instance> instances;
     instances.push_back({terrain_->blasAddress(), glm::mat4(1.0f)});
     for (const auto& tree : trees_) {
-        instances.push_back({treeBLAS_->deviceAddress(), tree.worldMatrix()});
+        instances.push_back({treeBarkBLAS_[tree.meshVariant]->deviceAddress(), tree.worldMatrix()});
+        instances.push_back({treeLeafBLAS_[tree.meshVariant]->deviceAddress(), tree.worldMatrix()});
     }
     for (const auto& rock : rocks_) {
         instances.push_back({rockBLAS_[rock.meshVariant]->deviceAddress(), rock.worldMatrix()});
@@ -913,15 +955,33 @@ void Application::drawFrame() {
         boxMesh_->bindAndDraw(frame.commandBuffer);
     }
 
+    // Trees: bark and leaves are separate meshes/materials (see
+    // Mesh::treeBark/treeLeaves), so each gets its own pass over all tree
+    // instances rather than switching material sets per-instance.
+    vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                             pipeline_->layout(), 1, 1, &barkMaterialSet_, 0, nullptr);
     for (const auto& tree : trees_) {
         Pipeline::PushConstants treePc{};
         treePc.model = tree.worldMatrix();
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(treePc), &treePc);
-        treeMesh_->bindAndDraw(frame.commandBuffer);
+        treeBarkMeshes_[tree.meshVariant]->bindAndDraw(frame.commandBuffer);
     }
 
+    vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                             pipeline_->layout(), 1, 1, &leafMaterialSet_, 0, nullptr);
+    for (const auto& tree : trees_) {
+        Pipeline::PushConstants leafPc{};
+        leafPc.model = tree.worldMatrix();
+        vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
+                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                            sizeof(leafPc), &leafPc);
+        treeLeafMeshes_[tree.meshVariant]->bindAndDraw(frame.commandBuffer);
+    }
+
+    vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                             pipeline_->layout(), 1, 1, &rockMaterialSet_, 0, nullptr);
     for (const auto& rock : rocks_) {
         Pipeline::PushConstants rockPc{};
         rockPc.model = rock.worldMatrix();
@@ -931,6 +991,10 @@ void Application::drawFrame() {
         rockMeshes_[rock.meshVariant]->bindAndDraw(frame.commandBuffer);
     }
 
+    // Shells/effects/debris below all use vertex-color-only shading like
+    // boxes did, so switch back to the plain white material.
+    vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                             pipeline_->layout(), 1, 1, &whiteMaterialSet_, 0, nullptr);
     for (const auto& shell : projectiles_) {
         Pipeline::PushConstants shellPc{};
         shellPc.model = shell.worldMatrix();
