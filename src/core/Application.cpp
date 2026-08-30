@@ -76,6 +76,14 @@ Application::Application() {
     flashMesh_ = std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(1.0f, 1.0f, 0.9f)));
     treeMesh_ = std::make_unique<Mesh>(
         Mesh::tree(*context_, *commands_, glm::vec3(0.32f, 0.22f, 0.12f), glm::vec3(0.13f, 0.32f, 0.10f)));
+    // Explosion debris: a darker, splintered-looking chunk of the box
+    // (normally lit, so it tumbles through the scene's light/shadow like
+    // real debris) and a small, bright unlit ember (a spark/fire glow that
+    // ignores lighting entirely) -- see DebrisParticle and spawnExplosion.
+    debrisChunkMesh_ =
+        std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(0.32f, 0.22f, 0.12f)));
+    debrisEmberMesh_ =
+        std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(1.0f, 0.55f, 0.1f)));
     spawnBoxes();
     spawnTrees();
     buildAccelerationStructures();
@@ -232,6 +240,54 @@ void Application::spawnTrees() {
     }
 }
 
+void Application::spawnExplosion(glm::vec3 position) {
+    constexpr int kChunkCount = 7;
+    constexpr int kEmberCount = 8;
+
+    std::mt19937 rng(std::random_device{}());
+    std::uniform_real_distribution<float> unit(-1.0f, 1.0f);
+    std::uniform_real_distribution<float> upBias(0.35f, 1.0f);  // mostly outward+upward, not downward
+
+    auto randomDirection = [&]() {
+        return glm::normalize(glm::vec3(unit(rng), upBias(rng), unit(rng)));
+    };
+    auto randomAxis = [&]() { return glm::normalize(glm::vec3(unit(rng), unit(rng), unit(rng))); };
+
+    for (int i = 0; i < kChunkCount; ++i) {
+        std::uniform_real_distribution<float> speedDist(2.0f, 5.0f);
+        std::uniform_real_distribution<float> scaleDist(0.25f, 0.5f);
+        std::uniform_real_distribution<float> lifeDist(0.7f, 1.1f);
+        std::uniform_real_distribution<float> spinDist(-8.0f, 8.0f);
+
+        DebrisParticle chunk;
+        chunk.position = position;
+        chunk.velocity = randomDirection() * speedDist(rng);
+        chunk.rotationAxis = randomAxis();
+        chunk.rotationSpeed = spinDist(rng);
+        chunk.baseScale = scaleDist(rng);
+        chunk.initialLifetime = chunk.lifetimeRemaining = lifeDist(rng);
+        chunk.ember = false;
+        debris_.push_back(chunk);
+    }
+
+    for (int i = 0; i < kEmberCount; ++i) {
+        std::uniform_real_distribution<float> speedDist(4.0f, 8.0f);
+        std::uniform_real_distribution<float> scaleDist(0.1f, 0.2f);
+        std::uniform_real_distribution<float> lifeDist(0.3f, 0.55f);
+        std::uniform_real_distribution<float> spinDist(-16.0f, 16.0f);
+
+        DebrisParticle ember;
+        ember.position = position;
+        ember.velocity = randomDirection() * speedDist(rng);
+        ember.rotationAxis = randomAxis();
+        ember.rotationSpeed = spinDist(rng);
+        ember.baseScale = scaleDist(rng);
+        ember.initialLifetime = ember.lifetimeRemaining = lifeDist(rng);
+        ember.ember = true;
+        debris_.push_back(ember);
+    }
+}
+
 void Application::buildAccelerationStructures() {
     treeBLAS_ = std::make_unique<AccelerationStructure>(
         AccelerationStructure::buildBLAS(*context_, *commands_, *treeMesh_));
@@ -273,8 +329,10 @@ std::vector<AccelerationStructure::Instance> Application::gatherRayTracingInstan
     for (const auto& shell : projectiles_) {
         instances.push_back({shellBLAS_->deviceAddress(), shell.worldMatrix()});
     }
-    // Impact-flash effects are deliberately excluded -- too short-lived
-    // (~0.3s) to matter for shadows/AO, not worth the instance churn.
+    // Impact-flash effects and explosion debris are deliberately excluded --
+    // all short-lived (well under a couple seconds) and numerous enough
+    // (debris spawns 15 particles per explosion) that the added TLAS churn
+    // isn't worth it just so they can cast their own tiny shadows.
     return instances;
 }
 
@@ -309,9 +367,11 @@ void Application::updateProjectilesAndCollisions(float deltaTime) {
                                                          box.aabbMin(), box.aabbMax(), &t)) {
                 box.alive = false;
                 shell.alive = false;
+                glm::vec3 hitPoint = glm::mix(shell.previousPosition, shell.position, t);
                 ImpactEffect effect;
-                effect.position = glm::mix(shell.previousPosition, shell.position, t);
+                effect.position = hitPoint;
                 impactEffects_.push_back(effect);
+                spawnExplosion(hitPoint);
                 break;
             }
         }
@@ -327,6 +387,11 @@ void Application::updateProjectilesAndCollisions(float deltaTime) {
         std::remove_if(impactEffects_.begin(), impactEffects_.end(),
                         [](const ImpactEffect& e) { return !e.alive; }),
         impactEffects_.end());
+
+    for (auto& particle : debris_) particle.update(deltaTime);
+    debris_.erase(std::remove_if(debris_.begin(), debris_.end(),
+                                  [](const DebrisParticle& d) { return !d.alive; }),
+                  debris_.end());
 }
 
 void Application::drawFrame() {
@@ -601,6 +666,17 @@ void Application::drawFrame() {
                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(effectPc), &effectPc);
         flashMesh_->bindAndDraw(frame.commandBuffer);
+    }
+
+    for (const auto& particle : debris_) {
+        Pipeline::PushConstants debrisPc{};
+        debrisPc.model = particle.worldMatrix();
+        debrisPc.unlit = particle.ember ? 1.0f : 0.0f;
+        vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
+                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                            sizeof(debrisPc), &debrisPc);
+        const Mesh& mesh = particle.ember ? *debrisEmberMesh_ : *debrisChunkMesh_;
+        mesh.bindAndDraw(frame.commandBuffer);
     }
 
     uint32_t aliveBoxCount = 0;

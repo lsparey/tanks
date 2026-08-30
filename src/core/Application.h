@@ -16,6 +16,7 @@
 #include "../render/VulkanContext.h"
 #include "../scene/Box.h"
 #include "../scene/Camera.h"
+#include "../scene/DebrisParticle.h"
 #include "../scene/ImpactEffect.h"
 #include "../scene/InputManager.h"
 #include "../scene/Projectile.h"
@@ -70,9 +71,12 @@ private:
     std::unique_ptr<Mesh> shellMesh_;
     std::unique_ptr<Mesh> flashMesh_;
     std::unique_ptr<Mesh> treeMesh_;
+    std::unique_ptr<Mesh> debrisChunkMesh_;
+    std::unique_ptr<Mesh> debrisEmberMesh_;
     std::vector<Box> boxes_;
     std::vector<Projectile> projectiles_;
     std::vector<ImpactEffect> impactEffects_;
+    std::vector<DebrisParticle> debris_;
     std::vector<TreeInstance> trees_;
 
     // Ray tracing: one BLAS per shared mesh (built once), plus a TLAS
@@ -87,6 +91,7 @@ private:
 
     void spawnBoxes();
     void spawnTrees();
+    void spawnExplosion(glm::vec3 position);
     void fireProjectile();
     void updateProjectilesAndCollisions(float deltaTime);
     void buildAccelerationStructures();
