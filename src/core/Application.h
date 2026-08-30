@@ -75,12 +75,14 @@ private:
     std::unique_ptr<Texture> cloudTexture_;
     std::unique_ptr<Texture> barkTexture_;
     std::unique_ptr<Texture> leafTexture_;
+    std::unique_ptr<Texture> crateTexture_;
     std::unique_ptr<Texture> whiteTexture_;
     VkDescriptorSet terrainMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet trackMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet cloudMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet rockMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet barkMaterialSet_ = VK_NULL_HANDLE;
+    VkDescriptorSet crateMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet leafMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet whiteMaterialSet_ = VK_NULL_HANDLE;
     std::unique_ptr<Mesh> boxMesh_;
@@ -127,6 +129,7 @@ private:
     void spawnTrees(const WaterGenerator::FloodField& waterField);
     void spawnRocks(const WaterGenerator::FloodField& waterField);
     void spawnExplosion(glm::vec3 position);
+    void destroyBox(Box& box);
     void updateTrackMarks(float deltaTime);
     void fireProjectile();
     void updateProjectilesAndCollisions(float deltaTime);

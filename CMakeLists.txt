@@ -36,6 +36,7 @@ add_executable(luke-game
     src/scene/CloudTextureGenerator.cpp
     src/scene/BarkTextureGenerator.cpp
     src/scene/LeafTextureGenerator.cpp
+    src/scene/CrateTextureGenerator.cpp
     src/scene/Terrain.cpp
     src/scene/Tank.cpp
     src/scene/CollisionSystem.cpp

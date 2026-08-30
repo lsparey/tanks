@@ -10,6 +10,7 @@
 #include "../scene/BarkTextureGenerator.h"
 #include "../scene/CloudTextureGenerator.h"
 #include "../scene/CollisionSystem.h"
+#include "../scene/CrateTextureGenerator.h"
 #include "../scene/GrassTextureGenerator.h"
 #include "../scene/LeafTextureGenerator.h"
 #include "../scene/RockTextureGenerator.h"
@@ -103,6 +104,11 @@ Application::Application() {
     std::vector<uint8_t> leafPixels = LeafTextureGenerator::generate(128);
     leafTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 128, 128, leafPixels, /*repeat=*/true));
+    std::vector<uint8_t> cratePixels = CrateTextureGenerator::generate(128);
+    // Mapped exactly once per cube face (see Mesh::cube's UV), not tiled,
+    // so CLAMP rather than REPEAT.
+    crateTexture_ = std::make_unique<Texture>(
+        Texture::fromPixels(*context_, *commands_, 128, 128, cratePixels, /*repeat=*/false));
     std::vector<uint8_t> whitePixel = {255, 255, 255, 255};
     whiteTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 1, 1, whitePixel, /*repeat=*/false));
@@ -124,6 +130,8 @@ Application::Application() {
                                                                  *barkTexture_, *barkTexture_);
     leafMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*leafTexture_, *leafTexture_,
                                                                  *leafTexture_, *leafTexture_);
+    crateMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*crateTexture_, *crateTexture_,
+                                                                  *crateTexture_, *crateTexture_);
     whiteMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*whiteTexture_, *whiteTexture_,
                                                                   *whiteTexture_, *whiteTexture_);
 
@@ -135,7 +143,9 @@ Application::Application() {
     waterMesh_ = WaterGenerator::buildMesh(*context_, *commands_, *terrain_, waterField);
     tank_ = std::make_unique<Tank>(*context_, *commands_,
                                     std::string(ASSET_ROOT) + "/assets/models/tank.x");
-    boxMesh_ = std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(0.65f, 0.5f, 0.25f)));
+    // Near-white so the crate texture's own wood color/detail shows through
+    // unmodified (same reasoning as the bark/leaf/rock tints).
+    boxMesh_ = std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(1.0f)));
     shellMesh_ = std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(1.0f, 0.85f, 0.2f)));
     flashMesh_ = std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(1.0f, 1.0f, 0.9f)));
     // Explosion debris: a darker, splintered-looking chunk of the box
@@ -217,6 +227,7 @@ Application::~Application() {
     shellBLAS_.reset();
     boxBLAS_.reset();
     whiteTexture_.reset();
+    crateTexture_.reset();
     leafTexture_.reset();
     barkTexture_.reset();
     cloudTexture_.reset();
@@ -313,6 +324,7 @@ void Application::spawnBoxes() {
     std::mt19937 rng(std::random_device{}());
     float half = terrain_->worldSize() * 0.5f - kEdgeMargin;
     std::uniform_real_distribution<float> coordDist(-half, half);
+    std::uniform_real_distribution<float> yawDist(0.0f, 6.2831853f);
 
     std::vector<glm::vec2> placed;
     for (int i = 0; i < kBoxCount; ++i) {
@@ -332,6 +344,8 @@ void Application::spawnBoxes() {
         Box box;
         box.size = 2.0f;
         box.position = glm::vec3(pos.x, terrain_->heightAt(pos.x, pos.y) + box.size * 0.5f, pos.y);
+        box.up = terrain_->normalAt(pos.x, pos.y);
+        box.yaw = yawDist(rng);
         boxes_.push_back(box);
     }
 }
@@ -480,6 +494,14 @@ void Application::spawnExplosion(glm::vec3 position) {
         ember.ember = true;
         debris_.push_back(ember);
     }
+}
+
+void Application::destroyBox(Box& box) {
+    box.alive = false;
+    ImpactEffect effect;
+    effect.position = box.position;
+    impactEffects_.push_back(effect);
+    spawnExplosion(box.position);
 }
 
 void Application::updateTrackMarks(float deltaTime) {
@@ -631,6 +653,28 @@ void Application::updateProjectilesAndCollisions(float deltaTime) {
         std::remove_if(projectiles_.begin(), projectiles_.end(),
                         [](const Projectile& p) { return !p.alive; }),
         projectiles_.end());
+
+    // The tank drives through crates rather than being blocked by them
+    // (unlike trees/rocks, boxes are never added to obstacles_) -- instead,
+    // getting close enough destroys them, same explosion as a shell hit.
+    // Circle (tank, XZ only)-vs-AABB overlap: clamp the tank's position to
+    // the box's AABB to find the nearest point on it, then check the
+    // distance to that point against the tank's own collision radius
+    // (matches the radius Tank::update uses for tree/rock collision).
+    float tankCollisionRadius = tank_->hullWidth() * 0.6f;
+    glm::vec3 tankPos = tank_->position();
+    for (auto& box : boxes_) {
+        if (!box.alive) continue;
+        glm::vec3 aabbMin = box.aabbMin();
+        glm::vec3 aabbMax = box.aabbMax();
+        float closestX = glm::clamp(tankPos.x, aabbMin.x, aabbMax.x);
+        float closestZ = glm::clamp(tankPos.z, aabbMin.z, aabbMax.z);
+        float dx = tankPos.x - closestX;
+        float dz = tankPos.z - closestZ;
+        if (dx * dx + dz * dz < tankCollisionRadius * tankCollisionRadius) {
+            destroyBox(box);
+        }
+    }
 
     for (auto& effect : impactEffects_) effect.update(deltaTime);
     impactEffects_.erase(
@@ -945,6 +989,8 @@ void Application::drawFrame() {
         part.mesh->bindAndDraw(frame.commandBuffer);
     }
 
+    vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                             pipeline_->layout(), 1, 1, &crateMaterialSet_, 0, nullptr);
     for (const auto& box : boxes_) {
         if (!box.alive) continue;
         Pipeline::PushConstants boxPc{};

@@ -229,10 +229,17 @@ Mesh Mesh::cube(VulkanContext& ctx, CommandContext& commands, glm::vec3 color, f
     vertices.reserve(24);
     indices.reserve(36);
 
+    // Standard per-face 0..1 UV unwrap (corner order -> (0,0),(1,0),(1,1),
+    // (0,1)) -- doesn't correspond to any particular world axis per face,
+    // but that's fine for a texture without a required orientation (see
+    // CrateTextureGenerator); meshes that don't sample a real texture
+    // (bound to the shared plain white texture) are unaffected either way.
+    const glm::vec2 faceUVs[4] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 1.0f}};
+
     for (const auto& face : faces) {
         uint32_t base = static_cast<uint32_t>(vertices.size());
-        for (const auto& corner : face.corners) {
-            vertices.push_back({corner, face.normal, color});
+        for (int i = 0; i < 4; ++i) {
+            vertices.push_back({face.corners[i], face.normal, color, faceUVs[i]});
         }
         indices.insert(indices.end(), {base + 0, base + 1, base + 2, base + 0, base + 2, base + 3});
     }
