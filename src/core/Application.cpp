@@ -264,7 +264,7 @@ Application::~Application() {
 void Application::initWindow() {
     glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    window_ = glfwCreateWindow(kWindowWidth, kWindowHeight, "luke-game", nullptr, nullptr);
+    window_ = glfwCreateWindow(kWindowWidth, kWindowHeight, "tanks", nullptr, nullptr);
     glfwSetWindowUserPointer(window_, this);
     glfwSetFramebufferSizeCallback(window_, framebufferResizeCallback);
 }

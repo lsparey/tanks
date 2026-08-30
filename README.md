@@ -35,7 +35,7 @@ milestone M5; not required to build/run M1-M4).
 ```bash
 cmake --preset default
 cmake --build --preset default
-./build/luke-game
+./build/tanks
 ```
 
 The first configure will take a while: vcpkg builds GLFW, GLM, and Assimp
