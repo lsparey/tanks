@@ -48,11 +48,16 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
     }
 
     hullMesh_ = std::make_unique<Mesh>(ctx, commands, hullVertices, hullIndices);
+    hullBLAS_ = std::make_unique<AccelerationStructure>(AccelerationStructure::buildBLAS(ctx, commands, *hullMesh_));
     if (turretPart) {
         turretMesh_ = std::make_unique<Mesh>(ctx, commands, turretPart->vertices, turretPart->indices);
+        turretBLAS_ =
+            std::make_unique<AccelerationStructure>(AccelerationStructure::buildBLAS(ctx, commands, *turretMesh_));
     }
     if (barrelPart) {
         barrelMesh_ = std::make_unique<Mesh>(ctx, commands, barrelPart->vertices, barrelPart->indices);
+        barrelBLAS_ =
+            std::make_unique<AccelerationStructure>(AccelerationStructure::buildBLAS(ctx, commands, *barrelMesh_));
 
         // The muzzle tip is the barrel-part vertex farthest from the local
         // origin. A plain "farthest from the part's own centroid" heuristic
@@ -120,14 +125,18 @@ glm::mat4 Tank::turretWorldMatrix() const {
 
 std::vector<Tank::DrawPart> Tank::drawParts() const {
     std::vector<DrawPart> parts;
-    parts.push_back({hullMesh_.get(), hullWorldMatrix()});
+    parts.push_back({hullMesh_.get(), hullWorldMatrix(), hullBLAS_->deviceAddress()});
 
     if (turretMesh_ || barrelMesh_) {
         glm::mat4 turretWorld = turretWorldMatrix();
-        if (turretMesh_) parts.push_back({turretMesh_.get(), turretWorld});
+        if (turretMesh_) {
+            parts.push_back({turretMesh_.get(), turretWorld, turretBLAS_->deviceAddress()});
+        }
         // The barrel isn't independently elevated yet -- it just rides
         // along with the turret's yaw, so it shares the same matrix.
-        if (barrelMesh_) parts.push_back({barrelMesh_.get(), turretWorld});
+        if (barrelMesh_) {
+            parts.push_back({barrelMesh_.get(), turretWorld, barrelBLAS_->deviceAddress()});
+        }
     }
     return parts;
 }

@@ -45,6 +45,7 @@ Mesh::Mesh(VulkanContext& ctx, CommandContext& commands, const std::vector<Verte
       indexBuffer_(Buffer::uploadDeviceLocal(ctx, commands, indices.data(),
                                               sizeof(uint32_t) * indices.size(),
                                               VK_BUFFER_USAGE_INDEX_BUFFER_BIT)),
+      vertexCount_(static_cast<uint32_t>(vertices.size())),
       indexCount_(static_cast<uint32_t>(indices.size())) {}
 
 void Mesh::bindAndDraw(VkCommandBuffer cmd) const {

@@ -17,6 +17,13 @@ public:
 
     void bindAndDraw(VkCommandBuffer cmd) const;
 
+    // Exposed so a BLAS can be built directly from this mesh's existing GPU
+    // buffers (see AccelerationStructure::buildBLAS) without a second copy.
+    const Buffer& vertexBuffer() const { return vertexBuffer_; }
+    const Buffer& indexBuffer() const { return indexBuffer_; }
+    uint32_t vertexCount() const { return vertexCount_; }
+    uint32_t indexCount() const { return indexCount_; }
+
     static Mesh cube(VulkanContext& ctx, CommandContext& commands, glm::vec3 color,
                       float size = 1.0f);
 
@@ -29,5 +36,6 @@ public:
 private:
     Buffer vertexBuffer_;
     Buffer indexBuffer_;
+    uint32_t vertexCount_;
     uint32_t indexCount_;
 };

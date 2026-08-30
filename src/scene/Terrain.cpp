@@ -14,7 +14,8 @@ Terrain::Terrain(VulkanContext& ctx, CommandContext& commands, int resolution, f
                   float amplitude, uint32_t seed)
     : heightmap_(HeightmapGenerator::generateHills(resolution, worldSize, amplitude, seed)),
       normals_(computeNormals(heightmap_)),
-      mesh_(buildMesh(ctx, commands, heightmap_, normals_)) {}
+      mesh_(buildMesh(ctx, commands, heightmap_, normals_)),
+      blas_(AccelerationStructure::buildBLAS(ctx, commands, mesh_)) {}
 
 std::vector<glm::vec3> Terrain::computeNormals(const HeightmapGenerator::Heightmap& hm) {
     std::vector<glm::vec3> normals(static_cast<size_t>(hm.resolution) * hm.resolution);

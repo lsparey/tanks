@@ -11,7 +11,7 @@ function(compile_shaders TARGET_NAME)
         set(SHADER_OUTPUT "${CMAKE_SOURCE_DIR}/shaders/${SHADER_SOURCE}.spv")
         add_custom_command(
             OUTPUT ${SHADER_OUTPUT}
-            COMMAND ${GLSLC_EXECUTABLE} ${SHADER_INPUT} -o ${SHADER_OUTPUT}
+            COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.3 ${SHADER_INPUT} -o ${SHADER_OUTPUT}
             DEPENDS ${SHADER_INPUT}
             COMMENT "Compiling shader ${SHADER_SOURCE}"
             VERBATIM

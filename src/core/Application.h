@@ -4,10 +4,13 @@
 
 #include <vector>
 
+#include "../render/AccelerationStructure.h"
 #include "../render/CommandContext.h"
+#include "../render/HistoryBuffer.h"
 #include "../render/HudRenderer.h"
 #include "../render/Mesh.h"
 #include "../render/Pipeline.h"
+#include "../render/SceneAccelerationStructure.h"
 #include "../render/Swapchain.h"
 #include "../render/Texture.h"
 #include "../render/VulkanContext.h"
@@ -44,6 +47,10 @@ private:
     bool followTank_ = true;
     bool prevFKeyDown_ = false;
     bool prevFireDown_ = false;
+    glm::mat4 prevViewProj_{1.0f};
+    glm::vec3 prevCameraPos_{0.0f};
+    bool firstFrame_ = true;
+    uint32_t frameCounter_ = 0;
 
     std::unique_ptr<VulkanContext> context_;
     std::unique_ptr<Swapchain> swapchain_;
@@ -68,8 +75,21 @@ private:
     std::vector<ImpactEffect> impactEffects_;
     std::vector<TreeInstance> trees_;
 
+    // Ray tracing: one BLAS per shared mesh (built once), plus a TLAS
+    // rebuilt every frame from the current scene state (see
+    // gatherRayTracingInstances). Tank's own BLAS per part live on Tank
+    // itself since it owns those meshes.
+    std::unique_ptr<AccelerationStructure> treeBLAS_;
+    std::unique_ptr<AccelerationStructure> boxBLAS_;
+    std::unique_ptr<AccelerationStructure> shellBLAS_;
+    std::unique_ptr<SceneAccelerationStructure> sceneAS_;
+    std::unique_ptr<HistoryBuffer> historyBuffer_;
+
     void spawnBoxes();
     void spawnTrees();
     void fireProjectile();
     void updateProjectilesAndCollisions(float deltaTime);
+    void buildAccelerationStructures();
+    std::vector<AccelerationStructure::Instance> gatherRayTracingInstances() const;
+    void recreateSwapchainDependentResources();
 };

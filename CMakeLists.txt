@@ -21,6 +21,11 @@ add_executable(luke-game
     src/render/Pipeline.cpp
     src/render/HudRenderer.cpp
     src/render/Texture.cpp
+    src/render/SingleTimeCommands.cpp
+    src/render/AccelerationStructure.cpp
+    src/render/RayTracingFunctions.cpp
+    src/render/SceneAccelerationStructure.cpp
+    src/render/HistoryBuffer.cpp
     src/scene/Camera.cpp
     src/scene/InputManager.cpp
     src/scene/HeightmapGenerator.cpp

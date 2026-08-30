@@ -41,10 +41,21 @@ Application::Application() {
     context_ = std::make_unique<VulkanContext>(window_);
     swapchain_ = std::make_unique<Swapchain>(*context_, window_);
     commands_ = std::make_unique<CommandContext>(*context_);
+    historyBuffer_ = std::make_unique<HistoryBuffer>(*context_, *commands_, swapchain_->extent());
     pipeline_ = std::make_unique<Pipeline>(*context_, swapchain_->imageFormat(),
-                                            swapchain_->depthFormat());
+                                            swapchain_->depthFormat(), historyBuffer_->format());
     hud_ = std::make_unique<HudRenderer>(*context_, swapchain_->imageFormat(),
                                           swapchain_->depthFormat());
+
+    // Each frame-in-flight slot reads the OTHER slot's history image (last
+    // frame's temporally-accumulated result); like the TLAS descriptor,
+    // this only needs writing once since the image views are stable until
+    // a resize recreates them.
+    for (size_t i = 0; i < CommandContext::kFramesInFlight; ++i) {
+        size_t readSlot = 1 - i;
+        pipeline_->updateHistoryDescriptor(i, historyBuffer_->imageView(readSlot),
+                                            historyBuffer_->sampler());
+    }
 
     std::vector<uint8_t> grassPixels = GrassTextureGenerator::generate(256);
     grassTexture_ = std::make_unique<Texture>(
@@ -67,6 +78,7 @@ Application::Application() {
         Mesh::tree(*context_, *commands_, glm::vec3(0.32f, 0.22f, 0.12f), glm::vec3(0.13f, 0.32f, 0.10f)));
     spawnBoxes();
     spawnTrees();
+    buildAccelerationStructures();
     input_ = std::make_unique<InputManager>(window_);
     lastFrameTime_ = glfwGetTime();
 }
@@ -75,6 +87,11 @@ Application::~Application() {
     if (context_) vkDeviceWaitIdle(context_->device());
 
     // Destroy in dependency order before the GLFW window disappears.
+    historyBuffer_.reset();
+    sceneAS_.reset();
+    shellBLAS_.reset();
+    boxBLAS_.reset();
+    treeBLAS_.reset();
     whiteTexture_.reset();
     grassTexture_.reset();
     hud_.reset();
@@ -215,6 +232,62 @@ void Application::spawnTrees() {
     }
 }
 
+void Application::buildAccelerationStructures() {
+    treeBLAS_ = std::make_unique<AccelerationStructure>(
+        AccelerationStructure::buildBLAS(*context_, *commands_, *treeMesh_));
+    boxBLAS_ = std::make_unique<AccelerationStructure>(
+        AccelerationStructure::buildBLAS(*context_, *commands_, *boxMesh_));
+    shellBLAS_ = std::make_unique<AccelerationStructure>(
+        AccelerationStructure::buildBLAS(*context_, *commands_, *shellMesh_));
+
+    auto initialInstances = gatherRayTracingInstances();
+    sceneAS_ =
+        std::make_unique<SceneAccelerationStructure>(*context_, *commands_, initialInstances);
+
+    // Each frame-in-flight slot's TLAS handle never changes after this --
+    // recordRebuildTLAS rebuilds its contents in place every frame, but
+    // reuses the same VkAccelerationStructureKHR object -- so the
+    // descriptor only needs writing once per slot here, not every frame.
+    for (size_t i = 0; i < CommandContext::kFramesInFlight; ++i) {
+        pipeline_->updateTLASDescriptor(i, sceneAS_->handle(i));
+    }
+
+    std::cout << "Ray tracing scene ready: " << initialInstances.size()
+              << " initial instances (capacity " << SceneAccelerationStructure::kMaxInstances << ")"
+              << std::endl;
+}
+
+std::vector<AccelerationStructure::Instance> Application::gatherRayTracingInstances() const {
+    std::vector<AccelerationStructure::Instance> instances;
+    instances.push_back({terrain_->blasAddress(), glm::mat4(1.0f)});
+    for (const auto& tree : trees_) {
+        instances.push_back({treeBLAS_->deviceAddress(), tree.worldMatrix()});
+    }
+    for (const auto& part : tank_->drawParts()) {
+        instances.push_back({part.blasAddress, part.worldMatrix});
+    }
+    for (const auto& box : boxes_) {
+        if (!box.alive) continue;
+        instances.push_back({boxBLAS_->deviceAddress(), box.worldMatrix()});
+    }
+    for (const auto& shell : projectiles_) {
+        instances.push_back({shellBLAS_->deviceAddress(), shell.worldMatrix()});
+    }
+    // Impact-flash effects are deliberately excluded -- too short-lived
+    // (~0.3s) to matter for shadows/AO, not worth the instance churn.
+    return instances;
+}
+
+void Application::recreateSwapchainDependentResources() {
+    swapchain_->recreate();
+    historyBuffer_->recreate(*commands_, swapchain_->extent());
+    for (size_t i = 0; i < CommandContext::kFramesInFlight; ++i) {
+        size_t readSlot = 1 - i;
+        pipeline_->updateHistoryDescriptor(i, historyBuffer_->imageView(readSlot),
+                                            historyBuffer_->sampler());
+    }
+}
+
 void Application::fireProjectile() {
     constexpr float kShellSpeed = 25.0f;
 
@@ -261,12 +334,27 @@ void Application::drawFrame() {
 
     VK_CHECK(vkWaitForFences(context_->device(), 1, &frame.inFlight, VK_TRUE, UINT64_MAX));
 
+    // Also wait on the OTHER frame-in-flight slot's fence before touching
+    // the history buffer. This slot's write target (historyBuffer_->image
+    // (currentFrame_)) was the OTHER slot's *read* input last frame (see
+    // updateHistoryDescriptor's readSlot = 1-i pairing); waiting only on
+    // this slot's own fence guarantees this slot's prior *write* finished,
+    // but says nothing about whether the other slot's GPU work (which reads
+    // this same image) has completed yet. Without this, that read can race
+    // with this frame's write to the same image -- a real write-after-read
+    // hazard that showed up as unstable, noisy shadow accumulation even
+    // while the camera/tank were both stationary. Two frames-in-flight
+    // means this costs little (it's rarely still pending by the time we get
+    // here) while making the history ping-pong actually safe.
+    auto& otherFrame = commands_->frame(1 - currentFrame_);
+    VK_CHECK(vkWaitForFences(context_->device(), 1, &otherFrame.inFlight, VK_TRUE, UINT64_MAX));
+
     uint32_t imageIndex = 0;
     VkResult acquireResult =
         vkAcquireNextImageKHR(context_->device(), swapchain_->handle(), UINT64_MAX,
                                frame.imageAvailable, VK_NULL_HANDLE, &imageIndex);
     if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
-        swapchain_->recreate();
+        recreateSwapchainDependentResources();
         return;
     }
     if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
@@ -282,19 +370,54 @@ void Application::drawFrame() {
     Pipeline::FrameUBO ubo{};
     ubo.view = camera_.viewMatrix();
     ubo.proj = camera_.projMatrix(aspect);
+    // On the very first frame there's no real "previous" matrix yet --
+    // using the leftover identity default would make reprojection treat
+    // world position as if it were already clip space, which can land
+    // inside the [0,1] UV bounds check near the world origin and read
+    // scrambled, unrelated history-texture pixels there. Self-reproject
+    // (this frame onto itself) instead, which is always valid and just
+    // reads the neutral 1.0 the history buffer was cleared to.
+    if (firstFrame_) {
+        prevViewProj_ = ubo.proj * ubo.view;
+        prevCameraPos_ = camera_.position();
+        firstFrame_ = false;
+    }
+    ubo.prevViewProj = prevViewProj_;
+    ubo.prevCameraPos = glm::vec4(prevCameraPos_, 0.0f);
     ubo.lightDir = glm::vec4(glm::normalize(glm::vec3(-0.4f, -1.0f, -0.3f)), 0.0f);
-    ubo.cameraPos = glm::vec4(camera_.position(), 0.0f);
+    // cameraPos.w rides along as a per-frame varying seed for the shadow
+    // jitter in basic.frag -- without it, the jitter is a pure function of
+    // gl_FragCoord alone, so a static camera+tank gets the IDENTICAL 3
+    // sample directions every frame. Temporal accumulation then has nothing
+    // to actually average over time: it just converges immediately to
+    // whichever single noisy 3-sample dice-roll each pixel happened to get,
+    // which reads as a fixed, blotchy, overly dark pattern rather than a
+    // smooth soft shadow. Varying the seed each frame is what lets many
+    // frames' worth of *different* samples actually accumulate into
+    // something smooth.
+    ubo.cameraPos = glm::vec4(camera_.position(), static_cast<float>(frameCounter_ % 1024));
     pipeline_->updateFrameUBO(ubo);
+    prevViewProj_ = ubo.proj * ubo.view;
+    prevCameraPos_ = camera_.position();
+    ++frameCounter_;
 
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     VK_CHECK(vkBeginCommandBuffer(frame.commandBuffer, &beginInfo));
 
-    VkImage colorImage = swapchain_->image(imageIndex);
+    // Rebuild this frame-in-flight slot's TLAS from the current scene state
+    // (acceleration structure builds can't happen inside a dynamic
+    // rendering scope, so this must be before vkCmdBeginRendering). Read by
+    // basic.frag via ray query for shadow tracing.
+    sceneAS_->rebuild(frame.commandBuffer, currentFrame_, gatherRayTracingInstances());
 
-    // Both attachments are fully overwritten this frame (LOAD_OP_CLEAR), so
-    // treating oldLayout as UNDEFINED is correct regardless of prior layout:
-    // it tells the driver not to preserve contents, matching the clear.
+    VkImage colorImage = swapchain_->image(imageIndex);
+    VkImage historyWriteImage = historyBuffer_->image(currentFrame_);
+
+    // All three attachments are fully overwritten this frame (LOAD_OP_CLEAR),
+    // so treating oldLayout as UNDEFINED is correct regardless of prior
+    // layout: it tells the driver not to preserve contents, matching the
+    // clear.
     VkImageMemoryBarrier2 toAttachments[] = {
         imageBarrier(colorImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
@@ -305,11 +428,28 @@ void Application::drawFrame() {
                      VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                      VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
                      VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT),
+        // This slot's previous content (from 2 frames ago) was already
+        // transitioned to SHADER_READ_ONLY_OPTIMAL for the OTHER slot's use
+        // as history input last frame; oldLayout=UNDEFINED just discards it,
+        // which is fine since we're about to clear+overwrite it here.
+        imageBarrier(historyWriteImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                     0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
     };
+
+    VkMemoryBarrier2 asToShaderBarrier{};
+    asToShaderBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+    asToShaderBarrier.srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+    asToShaderBarrier.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+    asToShaderBarrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    asToShaderBarrier.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
 
     VkDependencyInfo depInfo{};
     depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    depInfo.imageMemoryBarrierCount = 2;
+    depInfo.memoryBarrierCount = 1;
+    depInfo.pMemoryBarriers = &asToShaderBarrier;
+    depInfo.imageMemoryBarrierCount = 3;
     depInfo.pImageMemoryBarriers = toAttachments;
     vkCmdPipelineBarrier2(frame.commandBuffer, &depInfo);
 
@@ -320,6 +460,18 @@ void Application::drawFrame() {
     colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     colorAttachment.clearValue.color = {{0.45f, 0.65f, 0.85f, 1.0f}};
+
+    VkRenderingAttachmentInfo historyAttachment{};
+    historyAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    historyAttachment.imageView = historyBuffer_->imageView(currentFrame_);
+    historyAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    historyAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    historyAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    historyAttachment.clearValue.color.float32[0] = 1.0f;      // neutral: "fully lit" where nothing draws
+    historyAttachment.clearValue.color.float32[1] = 1.0f;      // neutral: "no AO occlusion"
+    historyAttachment.clearValue.color.float32[2] = 50000.0f;  // huge distance: always fails disocclusion check
+
+    VkRenderingAttachmentInfo colorAttachments[] = {colorAttachment, historyAttachment};
 
     VkRenderingAttachmentInfo depthAttachment{};
     depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -333,8 +485,8 @@ void Application::drawFrame() {
     renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
     renderingInfo.renderArea = {{0, 0}, extent};
     renderingInfo.layerCount = 1;
-    renderingInfo.colorAttachmentCount = 1;
-    renderingInfo.pColorAttachments = &colorAttachment;
+    renderingInfo.colorAttachmentCount = 2;
+    renderingInfo.pColorAttachments = colorAttachments;
     renderingInfo.pDepthAttachment = &depthAttachment;
 
     vkCmdBeginRendering(frame.commandBuffer, &renderingInfo);
@@ -358,6 +510,14 @@ void Application::drawFrame() {
     VkDescriptorSet descriptorSet = pipeline_->descriptorSet();
     vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                              pipeline_->layout(), 0, 1, &descriptorSet, 0, nullptr);
+
+    VkDescriptorSet tlasSet = pipeline_->tlasDescriptorSet(currentFrame_);
+    vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                             pipeline_->layout(), 2, 1, &tlasSet, 0, nullptr);
+
+    VkDescriptorSet historySet = pipeline_->historyDescriptorSet(currentFrame_);
+    vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                             pipeline_->layout(), 3, 1, &historySet, 0, nullptr);
 
     vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                              pipeline_->layout(), 1, 1, &grassMaterialSet_, 0, nullptr);
@@ -450,6 +610,53 @@ void Application::drawFrame() {
         float x = kTicksStartX + kTickSpacing * static_cast<float>(i);
         hud_->addQuad({x, kTicksY}, {kTickHalf / aspect, kTickHalf}, tickColor);
     }
+
+    vkCmdEndRendering(frame.commandBuffer);
+
+    // HudRenderer's pipeline declares a single color attachment, which is
+    // incompatible with the 2-color-attachment scope above -- end that scope
+    // and start a fresh one-color-attachment scope for it. The color image
+    // stays in COLOR_ATTACHMENT_OPTIMAL throughout (no layout change), but
+    // still needs an execution/memory barrier ordering the 3D pass's writes
+    // before the HUD pass's; the history image transitions to
+    // SHADER_READ_ONLY_OPTIMAL here too, ready to be the *other* slot's
+    // input starting next frame.
+    VkImageMemoryBarrier2 betweenScenesBarriers[] = {
+        imageBarrier(colorImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
+        imageBarrier(historyWriteImage, VK_IMAGE_ASPECT_COLOR_BIT,
+                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                     VK_ACCESS_2_SHADER_READ_BIT),
+    };
+    VkDependencyInfo betweenScenesDepInfo{};
+    betweenScenesDepInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    betweenScenesDepInfo.imageMemoryBarrierCount = 2;
+    betweenScenesDepInfo.pImageMemoryBarriers = betweenScenesBarriers;
+    vkCmdPipelineBarrier2(frame.commandBuffer, &betweenScenesDepInfo);
+
+    VkRenderingAttachmentInfo hudColorAttachment{};
+    hudColorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    hudColorAttachment.imageView = swapchain_->imageView(imageIndex);
+    hudColorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    hudColorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    hudColorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+    VkRenderingInfo hudRenderingInfo{};
+    hudRenderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    hudRenderingInfo.renderArea = {{0, 0}, extent};
+    hudRenderingInfo.layerCount = 1;
+    hudRenderingInfo.colorAttachmentCount = 1;
+    hudRenderingInfo.pColorAttachments = &hudColorAttachment;
+
+    vkCmdBeginRendering(frame.commandBuffer, &hudRenderingInfo);
+    vkCmdSetViewport(frame.commandBuffer, 0, 1, &viewport);
+    vkCmdSetScissor(frame.commandBuffer, 0, 1, &scissor);
     hud_->render(frame.commandBuffer);
 
     vkCmdEndRendering(frame.commandBuffer);
@@ -507,7 +714,7 @@ void Application::drawFrame() {
     if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR ||
         framebufferResized_) {
         framebufferResized_ = false;
-        swapchain_->recreate();
+        recreateSwapchainDependentResources();
     } else if (presentResult != VK_SUCCESS) {
         throw std::runtime_error("failed to present swapchain image");
     }

@@ -2,6 +2,7 @@
 
 #include <glm/glm.hpp>
 
+#include "../render/AccelerationStructure.h"
 #include "../render/CommandContext.h"
 #include "../render/Mesh.h"
 #include "../render/VulkanContext.h"
@@ -21,6 +22,10 @@ public:
     glm::vec3 normalAt(float worldX, float worldZ) const;
     float worldSize() const { return heightmap_.worldSize; }
 
+    // Terrain never changes after generation, so its BLAS is built once here
+    // rather than managed externally.
+    VkDeviceAddress blasAddress() const { return blas_.deviceAddress(); }
+
 private:
     static Mesh buildMesh(VulkanContext& ctx, CommandContext& commands,
                            const HeightmapGenerator::Heightmap& heightmap,
@@ -33,4 +38,5 @@ private:
     HeightmapGenerator::Heightmap heightmap_;
     std::vector<glm::vec3> normals_;
     Mesh mesh_;
+    AccelerationStructure blas_;
 };

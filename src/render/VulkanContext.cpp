@@ -6,6 +6,8 @@
 #include <set>
 #include <vector>
 
+#include "RayTracingFunctions.h"
+#include "RayTracingSupport.h"
 #include "VulkanCheck.h"
 
 namespace {
@@ -22,6 +24,9 @@ const std::vector<const char*> kValidationLayers = {
 
 const std::vector<const char*> kDeviceExtensions = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+    VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
+    VK_KHR_RAY_QUERY_EXTENSION_NAME,
+    VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
 };
 
 struct QueueFamilyIndices {
@@ -158,6 +163,10 @@ int scoreDevice(VkPhysicalDevice device, VkSurfaceKHR surface) {
     if (props.apiVersion < VK_API_VERSION_1_3) return -1;
     if (!checkDeviceExtensionSupport(device)) return -1;
     if (!supportsVulkan13Features(device)) return -1;
+    // Ray tracing (via VK_KHR_ray_query, not a full ray-tracing pipeline) is
+    // a hard requirement for this project going forward -- there's no
+    // raster-only fallback path, by design.
+    if (!queryRayTracingSupport(device)) return -1;
     if (!findQueueFamilies(device, surface).isComplete()) return -1;
 
     uint32_t formatCount = 0, presentModeCount = 0;
@@ -261,7 +270,8 @@ void VulkanContext::pickPhysicalDevice() {
 
     if (best == VK_NULL_HANDLE || bestScore < 0) {
         throw std::runtime_error(
-            "no suitable Vulkan 1.3 device with dynamic rendering + synchronization2 found");
+            "no suitable device found: need Vulkan 1.3 (dynamic rendering + "
+            "synchronization2) with VK_KHR_ray_query + VK_KHR_acceleration_structure support");
     }
 
     physicalDevice_ = best;
@@ -269,6 +279,8 @@ void VulkanContext::pickPhysicalDevice() {
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(physicalDevice_, &props);
     std::cout << "Selected GPU: " << props.deviceName << std::endl;
+    std::cout << "Ray query support: " << (queryRayTracingSupport(physicalDevice_) ? "yes" : "no")
+               << std::endl;
 
     QueueFamilyIndices indices = findQueueFamilies(physicalDevice_, surface_);
     graphicsQueueFamily_ = indices.graphicsFamily.value();
@@ -288,14 +300,24 @@ void VulkanContext::createLogicalDevice() {
         queueCreateInfos.push_back(queueCreateInfo);
     }
 
+    RayTracingFeatureChain rtFeatures;
+    rtFeatures.bufferDeviceAddress.bufferDeviceAddress = VK_TRUE;
+    rtFeatures.accelerationStructure.accelerationStructure = VK_TRUE;
+    rtFeatures.rayQuery.rayQuery = VK_TRUE;
+
     VkPhysicalDeviceVulkan13Features features13{};
     features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
     features13.dynamicRendering = VK_TRUE;
     features13.synchronization2 = VK_TRUE;
+    features13.pNext = &rtFeatures.bufferDeviceAddress;
 
     VkPhysicalDeviceFeatures2 features2{};
     features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     features2.pNext = &features13;
+    // Needed because Pipeline's two color attachments (final color + the
+    // single-channel shadow-history output) don't share the same write
+    // mask -- without this, only identical pAttachments entries are legal.
+    features2.features.independentBlend = VK_TRUE;
 
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -313,4 +335,6 @@ void VulkanContext::createLogicalDevice() {
 
     vkGetDeviceQueue(device_, graphicsQueueFamily_, 0, &graphicsQueue_);
     vkGetDeviceQueue(device_, presentQueueFamily_, 0, &presentQueue_);
+
+    loadRayTracingFunctions(device_);
 }

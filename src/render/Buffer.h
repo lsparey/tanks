@@ -18,6 +18,9 @@ public:
 
     VkBuffer handle() const { return buffer_; }
     VkDeviceSize size() const { return size_; }
+    // Only valid for buffers created with VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+    // (uploadDeviceLocal always sets this, for acceleration-structure builds).
+    VkDeviceAddress deviceAddress() const;
 
     // Only valid for host-visible buffers.
     void copyData(const void* data, VkDeviceSize size);

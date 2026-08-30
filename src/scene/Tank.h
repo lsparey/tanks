@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "../render/AccelerationStructure.h"
 #include "../render/CommandContext.h"
 #include "../render/Mesh.h"
 #include "../render/VulkanContext.h"
@@ -27,6 +28,7 @@ public:
     struct DrawPart {
         const Mesh* mesh;
         glm::mat4 worldMatrix;
+        VkDeviceAddress blasAddress;
     };
 
     Tank(VulkanContext& ctx, CommandContext& commands, const std::string& modelPath);
@@ -63,6 +65,12 @@ private:
     std::unique_ptr<Mesh> hullMesh_;
     std::unique_ptr<Mesh> turretMesh_;  // null if the model had no separate turret material
     std::unique_ptr<Mesh> barrelMesh_;  // null if the model had no separate barrel material
+    // BLAS per rigid part, built once at load time alongside the meshes
+    // above -- geometry never deforms, only the per-frame world matrix
+    // (from hullWorldMatrix()/turretWorldMatrix()) changes.
+    std::unique_ptr<AccelerationStructure> hullBLAS_;
+    std::unique_ptr<AccelerationStructure> turretBLAS_;
+    std::unique_ptr<AccelerationStructure> barrelBLAS_;
     // Local-space muzzle tip, valid only when barrelMesh_ is non-null: the
     // barrel part's vertex farthest from the local origin (the turret's
     // pivot, which sits near the barrel's mount/breech end, not its tip).

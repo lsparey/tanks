@@ -23,15 +23,18 @@ std::vector<char> readFile(const std::string& path) {
 
 }  // namespace
 
-Pipeline::Pipeline(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthFormat)
+Pipeline::Pipeline(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthFormat,
+                   VkFormat historyFormat)
     : ctx_(ctx),
       uniformBuffer_(ctx, sizeof(FrameUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) {
     createDescriptorSetLayout();
     createMaterialSetLayout();
+    createTLASSetLayout();
+    createHistorySetLayout();
     createDescriptorPoolAndSet();
     createPipelineLayout();
-    createPipeline(colorFormat, depthFormat);
+    createPipeline(colorFormat, depthFormat, historyFormat);
 }
 
 Pipeline::~Pipeline() {
@@ -40,6 +43,10 @@ Pipeline::~Pipeline() {
         vkDestroyPipelineLayout(ctx_.device(), pipelineLayout_, nullptr);
     if (descriptorPool_ != VK_NULL_HANDLE)
         vkDestroyDescriptorPool(ctx_.device(), descriptorPool_, nullptr);
+    if (historySetLayout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(ctx_.device(), historySetLayout_, nullptr);
+    if (tlasSetLayout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(ctx_.device(), tlasSetLayout_, nullptr);
     if (materialSetLayout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(ctx_.device(), materialSetLayout_, nullptr);
     if (descriptorSetLayout_ != VK_NULL_HANDLE)
@@ -79,20 +86,54 @@ void Pipeline::createMaterialSetLayout() {
     VK_CHECK(vkCreateDescriptorSetLayout(ctx_.device(), &layoutInfo, nullptr, &materialSetLayout_));
 }
 
+void Pipeline::createTLASSetLayout() {
+    VkDescriptorSetLayoutBinding binding{};
+    binding.binding = 0;
+    binding.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    binding.descriptorCount = 1;
+    binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings = &binding;
+
+    VK_CHECK(vkCreateDescriptorSetLayout(ctx_.device(), &layoutInfo, nullptr, &tlasSetLayout_));
+}
+
+void Pipeline::createHistorySetLayout() {
+    VkDescriptorSetLayoutBinding binding{};
+    binding.binding = 0;
+    binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    binding.descriptorCount = 1;
+    binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings = &binding;
+
+    VK_CHECK(vkCreateDescriptorSetLayout(ctx_.device(), &layoutInfo, nullptr, &historySetLayout_));
+}
+
 void Pipeline::createDescriptorPoolAndSet() {
     constexpr uint32_t kMaxMaterialSets = 8;
+    constexpr uint32_t kTLASSets = CommandContext::kFramesInFlight;
+    constexpr uint32_t kHistorySets = CommandContext::kFramesInFlight;
 
-    VkDescriptorPoolSize poolSizes[2]{};
+    VkDescriptorPoolSize poolSizes[3]{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[0].descriptorCount = 1;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = kMaxMaterialSets;
+    poolSizes[1].descriptorCount = kMaxMaterialSets + kHistorySets;
+    poolSizes[2].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    poolSizes[2].descriptorCount = kTLASSets;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = 2;
+    poolInfo.poolSizeCount = 3;
     poolInfo.pPoolSizes = poolSizes;
-    poolInfo.maxSets = 1 + kMaxMaterialSets;
+    poolInfo.maxSets = 1 + kMaxMaterialSets + kTLASSets + kHistorySets;
 
     VK_CHECK(vkCreateDescriptorPool(ctx_.device(), &poolInfo, nullptr, &descriptorPool_));
 
@@ -117,6 +158,66 @@ void Pipeline::createDescriptorPoolAndSet() {
     write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     write.descriptorCount = 1;
     write.pBufferInfo = &bufferInfo;
+
+    vkUpdateDescriptorSets(ctx_.device(), 1, &write, 0, nullptr);
+
+    // TLAS sets are allocated now but not written -- the TLAS doesn't exist
+    // yet at Pipeline construction time. Application writes the current
+    // frame's TLAS handle into its slot every frame via updateTLASDescriptor.
+    for (auto& set : tlasDescriptorSets_) {
+        VkDescriptorSetAllocateInfo tlasAllocInfo{};
+        tlasAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        tlasAllocInfo.descriptorPool = descriptorPool_;
+        tlasAllocInfo.descriptorSetCount = 1;
+        tlasAllocInfo.pSetLayouts = &tlasSetLayout_;
+        VK_CHECK(vkAllocateDescriptorSets(ctx_.device(), &tlasAllocInfo, &set));
+    }
+
+    // Same story: allocated now, written later once HistoryBuffer exists
+    // (and rewritten whenever it's recreated on resize).
+    for (auto& set : historyDescriptorSets_) {
+        VkDescriptorSetAllocateInfo historyAllocInfo{};
+        historyAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        historyAllocInfo.descriptorPool = descriptorPool_;
+        historyAllocInfo.descriptorSetCount = 1;
+        historyAllocInfo.pSetLayouts = &historySetLayout_;
+        VK_CHECK(vkAllocateDescriptorSets(ctx_.device(), &historyAllocInfo, &set));
+    }
+}
+
+void Pipeline::updateTLASDescriptor(size_t frameIndex, VkAccelerationStructureKHR tlas) {
+    VkWriteDescriptorSetAccelerationStructureKHR asWrite{};
+    asWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+    asWrite.accelerationStructureCount = 1;
+    asWrite.pAccelerationStructures = &tlas;
+
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.pNext = &asWrite;
+    write.dstSet = tlasDescriptorSets_[frameIndex];
+    write.dstBinding = 0;
+    write.dstArrayElement = 0;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    write.descriptorCount = 1;
+
+    vkUpdateDescriptorSets(ctx_.device(), 1, &write, 0, nullptr);
+}
+
+void Pipeline::updateHistoryDescriptor(size_t frameIndex, VkImageView historyView,
+                                        VkSampler historySampler) {
+    VkDescriptorImageInfo imageInfo{};
+    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imageInfo.imageView = historyView;
+    imageInfo.sampler = historySampler;
+
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = historyDescriptorSets_[frameIndex];
+    write.dstBinding = 0;
+    write.dstArrayElement = 0;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.descriptorCount = 1;
+    write.pImageInfo = &imageInfo;
 
     vkUpdateDescriptorSets(ctx_.device(), 1, &write, 0, nullptr);
 }
@@ -155,11 +256,12 @@ void Pipeline::createPipelineLayout() {
     pushConstantRange.offset = 0;
     pushConstantRange.size = sizeof(PushConstants);
 
-    VkDescriptorSetLayout setLayouts[] = {descriptorSetLayout_, materialSetLayout_};
+    VkDescriptorSetLayout setLayouts[] = {descriptorSetLayout_, materialSetLayout_, tlasSetLayout_,
+                                           historySetLayout_};
 
     VkPipelineLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    layoutInfo.setLayoutCount = 2;
+    layoutInfo.setLayoutCount = 4;
     layoutInfo.pSetLayouts = setLayouts;
     layoutInfo.pushConstantRangeCount = 1;
     layoutInfo.pPushConstantRanges = &pushConstantRange;
@@ -181,7 +283,7 @@ VkShaderModule Pipeline::loadShaderModule(const char* relativePath) {
     return module;
 }
 
-void Pipeline::createPipeline(VkFormat colorFormat, VkFormat depthFormat) {
+void Pipeline::createPipeline(VkFormat colorFormat, VkFormat depthFormat, VkFormat historyFormat) {
     VkShaderModule vertModule = loadShaderModule("basic.vert.spv");
     VkShaderModule fragModule = loadShaderModule("basic.frag.spv");
 
@@ -244,10 +346,22 @@ void Pipeline::createPipeline(VkFormat colorFormat, VkFormat depthFormat) {
                                            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
     colorBlendAttachment.blendEnable = VK_FALSE;
 
+    // Second color attachment: this frame's blended shadow value (R), AO
+    // value (G), and a view-distance proxy (B, for next frame's
+    // disocclusion check), written alongside the final lit color so next
+    // frame's temporal-accumulation read has something fresh to sample.
+    VkPipelineColorBlendAttachmentState historyBlendAttachment{};
+    historyBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    historyBlendAttachment.blendEnable = VK_FALSE;
+
+    VkPipelineColorBlendAttachmentState colorBlendAttachments[] = {colorBlendAttachment,
+                                                                    historyBlendAttachment};
+
     VkPipelineColorBlendStateCreateInfo colorBlending{};
     colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    colorBlending.attachmentCount = 1;
-    colorBlending.pAttachments = &colorBlendAttachment;
+    colorBlending.attachmentCount = 2;
+    colorBlending.pAttachments = colorBlendAttachments;
 
     VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dynamicState{};
@@ -255,10 +369,11 @@ void Pipeline::createPipeline(VkFormat colorFormat, VkFormat depthFormat) {
     dynamicState.dynamicStateCount = 2;
     dynamicState.pDynamicStates = dynamicStates;
 
+    VkFormat colorAttachmentFormats[] = {colorFormat, historyFormat};
     VkPipelineRenderingCreateInfo renderingInfo{};
     renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    renderingInfo.colorAttachmentCount = 1;
-    renderingInfo.pColorAttachmentFormats = &colorFormat;
+    renderingInfo.colorAttachmentCount = 2;
+    renderingInfo.pColorAttachmentFormats = colorAttachmentFormats;
     renderingInfo.depthAttachmentFormat = depthFormat;
 
     VkGraphicsPipelineCreateInfo pipelineInfo{};
