@@ -27,6 +27,7 @@ const std::vector<const char*> kDeviceExtensions = {
     VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
     VK_KHR_RAY_QUERY_EXTENSION_NAME,
     VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
+    VK_KHR_RAY_TRACING_POSITION_FETCH_EXTENSION_NAME,
 };
 
 struct QueueFamilyIndices {
@@ -320,6 +321,7 @@ void VulkanContext::createLogicalDevice() {
     rtFeatures.bufferDeviceAddress.bufferDeviceAddress = VK_TRUE;
     rtFeatures.accelerationStructure.accelerationStructure = VK_TRUE;
     rtFeatures.rayQuery.rayQuery = VK_TRUE;
+    rtFeatures.positionFetch.rayTracingPositionFetch = VK_TRUE;
 
     VkPhysicalDeviceVulkan13Features features13{};
     features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;

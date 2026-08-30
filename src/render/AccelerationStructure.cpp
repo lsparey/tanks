@@ -41,7 +41,16 @@ AccelerationStructure AccelerationStructure::buildFromGeometry(
     VkAccelerationStructureBuildGeometryInfoKHR buildInfo{};
     buildInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
     buildInfo.type = type;
-    buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    // ALLOW_DATA_ACCESS is required by VK_KHR_ray_tracing_position_fetch on
+    // any acceleration structure whose triangle positions get fetched
+    // (rayQueryGetIntersectionTriangleVertexPositionsEXT in basic.frag, for
+    // RT reflections) -- without it, fetched positions are undefined by
+    // spec. This function builds both BLAS (which need it) and the
+    // one-time initial TLAS (which doesn't contain triangle geometry, so
+    // the flag is simply irrelevant/harmless there); simpler to set it
+    // unconditionally here than to thread a "needs position fetch" bool in.
+    buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
+                       VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_DATA_ACCESS_BIT_KHR;
     buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
     buildInfo.geometryCount = 1;
     buildInfo.pGeometries = &geometry;

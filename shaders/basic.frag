@@ -1,5 +1,6 @@
 #version 460
 #extension GL_EXT_ray_query : require
+#extension GL_EXT_ray_tracing_position_fetch : require
 
 layout(location = 0) in vec3 fragNormal;
 layout(location = 1) in vec3 fragColor;
@@ -29,6 +30,7 @@ layout(push_constant) uniform PushConstants {
     float specularStrength;
     float heightBlend;
     float opacity;
+    float reflectivity;
 } pc;
 
 layout(location = 0) out vec4 outColor;
@@ -50,6 +52,45 @@ float traceShadow(vec3 origin, vec3 direction, float tMax) {
     return rayQueryGetIntersectionTypeEXT(rayQuery, true) == gl_RayQueryCommittedIntersectionNoneEXT
                ? 1.0
                : 0.0;
+}
+
+// Traces a closest-hit reflection ray (no TerminateOnFirstHit -- reflections
+// need the *nearest* surface along the ray, not just any occluder). On a
+// hit, uses GL_EXT_ray_tracing_position_fetch to read the hit triangle's
+// actual vertex positions straight out of the acceleration structure
+// (transformed to world space via the hit instance's object-to-world
+// matrix), computes its true flat normal, and shades it with a simple
+// unshadowed diffuse term -- giving the reflection real geometric occlusion
+// awareness (nearby trees/rocks/terrain show up as darker patches) instead
+// of a flat gradient, without needing a second, much larger system (per-
+// BLAS vertex-color fetch) just to know the hit surface's exact albedo.
+// Returns false on a miss, leaving the caller's existing fake sky/ground
+// gradient as the fallback.
+bool traceReflection(vec3 origin, vec3 direction, float tMax, out vec3 hitColor) {
+    rayQueryEXT rayQuery;
+    rayQueryInitializeEXT(rayQuery, sceneTLAS, gl_RayFlagsOpaqueEXT, 0xFF, origin, 0.001, direction,
+                           tMax);
+    while (rayQueryProceedEXT(rayQuery)) {}
+    if (rayQueryGetIntersectionTypeEXT(rayQuery, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+        return false;
+    }
+
+    vec3 positions[3];
+    rayQueryGetIntersectionTriangleVertexPositionsEXT(rayQuery, true, positions);
+    mat4x3 objectToWorld = rayQueryGetIntersectionObjectToWorldEXT(rayQuery, true);
+    vec3 p0 = objectToWorld * vec4(positions[0], 1.0);
+    vec3 p1 = objectToWorld * vec4(positions[1], 1.0);
+    vec3 p2 = objectToWorld * vec4(positions[2], 1.0);
+    vec3 hitNormal = normalize(cross(p1 - p0, p2 - p0));
+
+    vec3 toLight = normalize(-frame.lightDir.xyz);
+    float diffuse = max(dot(hitNormal, toLight), 0.0);
+    // No per-surface albedo lookup for the hit point -- a neutral tone
+    // modulated by whether the hit face points toward or away from the
+    // light reads as "reflecting nearby lit/shadowed geometry" honestly,
+    // without guessing a color that might be wrong.
+    hitColor = mix(vec3(0.05), vec3(0.5), diffuse);
+    return true;
 }
 
 // Cheap, texture-free per-pixel pseudo-random value for jittering shadow/AO
@@ -321,16 +362,30 @@ void main() {
     // neutral gray rather than white so it doesn't bleach the paint color.
     float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 3.0) * pc.specularStrength * 0.18;
 
-    // Fake environment reflection: no real cubemap, just a two-tone
-    // sky/ground gradient sampled by the reflection vector's vertical
-    // component. Adds subtle view-dependent color variation across the
-    // hull instead of one flat painted color, which reads as "reflective."
+    // Environment reflection. Base case is a fake two-tone sky/ground
+    // gradient sampled by the reflection vector's vertical component (no
+    // real cubemap) -- cheap, and correct for the common case of a
+    // reflection ray heading toward open sky. Reflective surfaces
+    // (reflectivity > 0: the tank, water) additionally trace an actual ray
+    // along reflectDir; a hit replaces the gradient with a real,
+    // occlusion-aware shaded result (see traceReflection) so nearby
+    // trees/rocks/terrain darken the reflection instead of it always
+    // showing the same gradient regardless of what's actually nearby.
+    // Gated behind reflectivity so matte surfaces (terrain, trees, boxes --
+    // the vast majority of fragments) never pay for a ray they'd multiply
+    // by zero anyway.
     vec3 reflectDir = reflect(-viewDir, normal);
     vec3 skyTint = vec3(0.55, 0.65, 0.78);
     vec3 groundTint = vec3(0.12, 0.11, 0.10);
     vec3 envColor = mix(groundTint, skyTint, clamp(reflectDir.y * 0.5 + 0.5, 0.0, 1.0));
+    if (pc.reflectivity > 0.01) {
+        vec3 reflectionHit;
+        vec3 reflOrigin = fragWorldPos + normal * kShadowBias;
+        if (traceReflection(reflOrigin, reflectDir, kShadowTMax, reflectionHit)) {
+            envColor = reflectionHit;
+        }
+    }
 
-    vec3 result =
-        base + vec3(specular) + fresnel * vec3(0.6) + envColor * pc.specularStrength * 0.10;
+    vec3 result = base + vec3(specular) + fresnel * vec3(0.6) + envColor * pc.reflectivity;
     outColor = vec4(result, finalAlpha);
 }

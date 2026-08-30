@@ -817,13 +817,18 @@ void Application::drawFrame() {
 
     // Water: drawn after track marks so a body of water correctly covers
     // any mark left at/under its surface. specularStrength gives it the
-    // same shiny Fresnel/fake-sky-reflection look the tank's dull metal
-    // uses; vertex color (baked per-vertex by depth in WaterGenerator) does
-    // the shallow-to-deep tinting, texture is just the shared plain white.
+    // same shiny Fresnel highlight the tank's dull metal uses; reflectivity
+    // is set much higher than the tank's (a real lake's surface reflects
+    // its surroundings far more strongly than brushed metal does) so the
+    // RT-reflection term reads as an actual reflective water surface rather
+    // than the tank's subtle sheen. Vertex color (baked per-vertex by depth
+    // in WaterGenerator) does the shallow-to-deep tinting, texture is just
+    // the shared plain white.
     if (waterMesh_) {
         Pipeline::PushConstants waterPc{};
         waterPc.model = glm::mat4(1.0f);
         waterPc.specularStrength = 0.5f;
+        waterPc.reflectivity = 0.4f;
         waterPc.opacity = 0.65f;
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
@@ -835,6 +840,10 @@ void Application::drawFrame() {
         Pipeline::PushConstants tankPc{};
         tankPc.model = part.worldMatrix;
         tankPc.specularStrength = 0.6f;
+        // Matches the reflection weight the old specularStrength*0.10
+        // formula gave the tank (0.6*0.10=0.06), so its look is unchanged
+        // by splitting reflectivity out as its own parameter.
+        tankPc.reflectivity = 0.06f;
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(tankPc), &tankPc);

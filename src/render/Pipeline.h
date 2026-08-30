@@ -54,6 +54,13 @@ public:
         // (SRC_ALPHA/ONE_MINUS_SRC_ALPHA), which is a no-op for anything
         // that stays fully opaque, so this doesn't affect existing draws.
         float opacity = 1.0f;
+        // How strongly the RT-reflection term (see traceReflection in
+        // basic.frag) contributes to the final color -- separate from
+        // specularStrength (which drives the Blinn-Phong highlight/Fresnel
+        // "shininess" look) so a surface can be, say, only mildly shiny but
+        // strongly reflective (water) or the reverse, without the two
+        // effects being tied to one shared knob.
+        float reflectivity = 0.0f;
     };
 
     Pipeline(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthFormat, VkFormat historyFormat);
