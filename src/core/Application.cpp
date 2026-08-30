@@ -11,11 +11,23 @@
 #include "../scene/GrassTextureGenerator.h"
 #include "../scene/RockTextureGenerator.h"
 #include "../scene/TrackTextureGenerator.h"
+#include "../scene/WaterGenerator.h"
 
 namespace {
 
 constexpr uint32_t kWindowWidth = 1280;
 constexpr uint32_t kWindowHeight = 720;
+
+// Terrain height below which a basin can start filling with water (tuned
+// against the heightmap's actual +-3 amplitude, and against the rock
+// texture's own -1.3..-0.4 blend band in basic.frag, so water sits within
+// the already-rocky lowest terrain rather than on obviously grassy ground).
+constexpr float kWaterThreshold = -1.0f;
+// How deep any single body of water is allowed to get above its own basin
+// floor -- kept shallow per the user's request, and this is also what
+// keeps separate basins from all settling at one shared "sea level" (see
+// WaterGenerator).
+constexpr float kWaterMaxDepth = 0.6f;
 
 VkImageMemoryBarrier2 imageBarrier(VkImage image, VkImageAspectFlags aspect,
                                     VkImageLayout oldLayout, VkImageLayout newLayout,
@@ -81,6 +93,9 @@ Application::Application() {
     uint32_t terrainSeed = std::random_device{}();
     terrain_ = std::make_unique<Terrain>(*context_, *commands_, /*resolution=*/64,
                                           /*worldSize=*/60.0f, /*amplitude=*/3.0f, terrainSeed);
+    WaterGenerator::FloodField waterField =
+        WaterGenerator::computeFloodField(*terrain_, kWaterThreshold, kWaterMaxDepth);
+    waterMesh_ = WaterGenerator::buildMesh(*context_, *commands_, *terrain_, waterField);
     tank_ = std::make_unique<Tank>(*context_, *commands_,
                                     std::string(ASSET_ROOT) + "/assets/models/tank.x");
     boxMesh_ = std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(0.65f, 0.5f, 0.25f)));
@@ -100,7 +115,7 @@ Application::Application() {
     // unmodified (same reasoning as terrain's kTerrainColor).
     trackMarkMesh_ = std::make_unique<Mesh>(Mesh::quad(*context_, *commands_, glm::vec3(1.0f)));
     spawnBoxes();
-    spawnTrees();
+    spawnTrees(waterField);
     buildAccelerationStructures();
     input_ = std::make_unique<InputManager>(window_);
     lastFrameTime_ = glfwGetTime();
@@ -120,6 +135,7 @@ Application::~Application() {
     rockTexture_.reset();
     grassTexture_.reset();
     hud_.reset();
+    waterMesh_.reset();
     trackMarkMesh_.reset();
     debrisEmberMesh_.reset();
     debrisChunkMesh_.reset();
@@ -226,7 +242,7 @@ void Application::spawnBoxes() {
     }
 }
 
-void Application::spawnTrees() {
+void Application::spawnTrees(const WaterGenerator::FloodField& waterField) {
     constexpr int kTreeCount = 40;
     constexpr float kEdgeMargin = 3.0f;
     constexpr float kMinDistanceFromSpawn = 8.0f;
@@ -248,8 +264,9 @@ void Application::spawnTrees() {
             bool tooCloseToOther = std::any_of(placed.begin(), placed.end(), [&](glm::vec2 p) {
                 return glm::length(p - candidate) < kMinDistanceBetweenTrees;
             });
+            bool underwater = WaterGenerator::isUnderwater(waterField, candidate.x, candidate.y);
             pos = candidate;
-            if (!tooCloseToSpawn && !tooCloseToOther) break;
+            if (!tooCloseToSpawn && !tooCloseToOther && !underwater) break;
         }
         placed.push_back(pos);
 
@@ -390,7 +407,12 @@ std::vector<AccelerationStructure::Instance> Application::gatherRayTracingInstan
     // enough (debris spawns 15 particles per explosion; a mark drops every
     // ~1.1 units of tank travel) that the added TLAS churn isn't worth it
     // just so they can cast their own (in the marks' case, essentially flat
-    // and invisible anyway) shadows.
+    // and invisible anyway) shadows. Water is excluded too -- it's static
+    // like terrain, but flat/thin enough that it wouldn't meaningfully
+    // occlude anything; things near the shore still cast correct shadows
+    // *onto* the water surface regardless, since that only depends on the
+    // shadow ray's origin (the water fragment itself) and the TLAS already
+    // containing the occluder, not on water being in the TLAS itself.
     return instances;
 }
 
@@ -696,6 +718,23 @@ void Application::drawFrame() {
 
     vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                              pipeline_->layout(), 1, 1, &whiteMaterialSet_, 0, nullptr);
+
+    // Water: drawn after track marks so a body of water correctly covers
+    // any mark left at/under its surface. specularStrength gives it the
+    // same shiny Fresnel/fake-sky-reflection look the tank's dull metal
+    // uses; vertex color (baked per-vertex by depth in WaterGenerator) does
+    // the shallow-to-deep tinting, texture is just the shared plain white.
+    if (waterMesh_) {
+        Pipeline::PushConstants waterPc{};
+        waterPc.model = glm::mat4(1.0f);
+        waterPc.specularStrength = 0.5f;
+        waterPc.opacity = 0.65f;
+        vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
+                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                            sizeof(waterPc), &waterPc);
+        waterMesh_->bindAndDraw(frame.commandBuffer);
+    }
+
     for (const auto& part : tank_->drawParts()) {
         Pipeline::PushConstants tankPc{};
         tankPc.model = part.worldMatrix;

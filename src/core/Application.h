@@ -24,6 +24,7 @@
 #include "../scene/Terrain.h"
 #include "../scene/TrackMark.h"
 #include "../scene/TreeInstance.h"
+#include "../scene/WaterGenerator.h"
 
 class Application {
 public:
@@ -78,6 +79,7 @@ private:
     std::unique_ptr<Mesh> debrisChunkMesh_;
     std::unique_ptr<Mesh> debrisEmberMesh_;
     std::unique_ptr<Mesh> trackMarkMesh_;
+    std::unique_ptr<Mesh> waterMesh_;  // null if no qualifying low-lying basin exists this run
     std::vector<Box> boxes_;
     std::vector<Projectile> projectiles_;
     std::vector<ImpactEffect> impactEffects_;
@@ -98,7 +100,7 @@ private:
     std::unique_ptr<HistoryBuffer> historyBuffer_;
 
     void spawnBoxes();
-    void spawnTrees();
+    void spawnTrees(const WaterGenerator::FloodField& waterField);
     void spawnExplosion(glm::vec3 position);
     void updateTrackMarks(float deltaTime);
     void fireProjectile();

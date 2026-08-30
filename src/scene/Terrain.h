@@ -21,6 +21,9 @@ public:
     float heightAt(float worldX, float worldZ) const;
     glm::vec3 normalAt(float worldX, float worldZ) const;
     float worldSize() const { return heightmap_.worldSize; }
+    // Raw grid data, for anything that wants to analyze the terrain's shape
+    // directly rather than sample it point-by-point (see WaterGenerator).
+    const HeightmapGenerator::Heightmap& heightmap() const { return heightmap_; }
 
     // Terrain never changes after generation, so its BLAS is built once here
     // rather than managed externally.

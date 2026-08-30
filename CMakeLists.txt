@@ -32,6 +32,7 @@ add_executable(luke-game
     src/scene/GrassTextureGenerator.cpp
     src/scene/RockTextureGenerator.cpp
     src/scene/TrackTextureGenerator.cpp
+    src/scene/WaterGenerator.cpp
     src/scene/Terrain.cpp
     src/scene/Tank.cpp
     src/scene/CollisionSystem.cpp
