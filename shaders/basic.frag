@@ -31,6 +31,10 @@ layout(push_constant) uniform PushConstants {
     float heightBlend;
     float opacity;
     float reflectivity;
+    // Perturbs the shading normal (specular/Fresnel/reflection only, not
+    // the real diffuse/shadow-ray normal) with an animated ripple pattern
+    // -- water only; 0 elsewhere leaves the normal untouched.
+    float waveStrength;
 } pc;
 
 layout(location = 0) out vec4 outColor;
@@ -97,6 +101,65 @@ bool traceReflection(vec3 origin, vec3 direction, float tMax, out vec3 hitColor)
 // rays without a fixed sampling pattern (which would band/tile visibly).
 float interleavedGradientNoise(vec2 pixel) {
     return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
+}
+
+// A from-scratch (not texture-sampled) value-noise fbm, independent of
+// CloudTextureGenerator's tileable version -- this one is evaluated
+// continuously per-pixel for an arbitrary direction, so it has no need for
+// (and doesn't bother with) exact seamless tiling.
+float hash21(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+
+float valueNoise2D(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    float a = hash21(i);
+    float b = hash21(i + vec2(1.0, 0.0));
+    float c = hash21(i + vec2(0.0, 1.0));
+    float d = hash21(i + vec2(1.0, 1.0));
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+float cloudFbm(vec2 p) {
+    float sum = 0.0;
+    float amplitude = 0.5;
+    float total = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        sum += amplitude * valueNoise2D(p);
+        total += amplitude;
+        p *= 2.0;
+        amplitude *= 0.5;
+    }
+    return sum / total;
+}
+
+// Analytic sky (two-tone gradient) + clouds for an arbitrary view/reflection
+// direction, evaluated directly rather than sampled from the actual sky
+// dome's texture -- the dome is deliberately kept out of the ray-traced
+// scene (see gatherRayTracingInstances), so a ray that escapes to open sky
+// has nothing to hit; this gives reflections (see traceReflection's miss
+// case) a plausible cloud-textured sky instead of a flat gradient without
+// needing the dome itself to be ray-traceable. Won't look pixel-identical
+// to the actual rendered sky dome (different noise implementation/
+// parameters), but reads as the same kind of sky.
+vec3 skyColor(vec3 dir) {
+    vec3 skyTint = vec3(0.55, 0.65, 0.78);
+    vec3 groundTint = vec3(0.12, 0.11, 0.10);
+    vec3 color = mix(groundTint, skyTint, clamp(dir.y * 0.5 + 0.5, 0.0, 1.0));
+    if (dir.y > 0.02) {
+        // Project onto a distant horizontal plane, same idea as the sky
+        // dome mesh's own UV mapping (see Mesh::dome).
+        vec2 p = dir.xz / dir.y;
+        float density = cloudFbm(p * 0.5) * 0.75 + cloudFbm(p * 2.0 + vec2(41.3, 7.1)) * 0.25;
+        float cloudAlpha = smoothstep(0.52, 0.70, density);
+        vec3 cloudColor = mix(vec3(1.0), vec3(0.72, 0.75, 0.80), smoothstep(0.6, 0.9, density));
+        color = mix(color, cloudColor, cloudAlpha);
+    }
+    return color;
 }
 
 // Orthonormal basis around `n`, used to jitter a ray direction within a
@@ -350,34 +413,52 @@ void main() {
 
     vec3 viewDir = normalize(frame.cameraPos.xyz - fragWorldPos);
 
+    // Animated ripple: perturbs a *separate* shading normal used only by
+    // the specular/Fresnel/reflection terms below, not the real diffuse
+    // term or shadow-ray direction above -- water's surface should look
+    // rippled without actually changing how it's lit/shadowed (which
+    // would require real geometric displacement to do correctly). Two
+    // criss-crossing sine waves at different scales/speeds avoid an
+    // obviously repeating single-wave look; cameraPos.w is the same
+    // per-frame counter already reused for shadow/AO jitter, just repurposed
+    // here as an animation phase.
+    vec3 shadingNormal = normal;
+    if (pc.waveStrength > 0.001) {
+        float t = frame.cameraPos.w;
+        float wave1 = sin(fragWorldPos.x * 1.3 + t * 0.035) * cos(fragWorldPos.z * 1.7 - t * 0.025);
+        float wave2 = sin(fragWorldPos.x * 3.1 - t * 0.065 + 1.7) * cos(fragWorldPos.z * 2.3 + t * 0.045);
+        vec2 bump = vec2(wave1, wave2) * pc.waveStrength;
+        shadingNormal = normalize(normal + vec3(bump.x, 0.0, bump.y));
+    }
+
     // Blinn-Phong specular -- a lower exponent than a glossy/chrome look
     // would use gives a broader, softer highlight, reading as duller,
     // brushed metal rather than polished plastic.
     vec3 halfDir = normalize(toLight + viewDir);
-    float specAngle = max(dot(normal, halfDir), 0.0);
+    float specAngle = max(dot(shadingNormal, halfDir), 0.0);
     float specular = pow(specAngle, 20.0) * pc.specularStrength * 0.6 * shadowFactor;
 
     // Fresnel/rim term: surfaces brighten at grazing view angles, a cheap
     // but very characteristic cue for metal. Kept subtle and tinted toward
     // neutral gray rather than white so it doesn't bleach the paint color.
-    float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 3.0) * pc.specularStrength * 0.18;
+    float fresnel = pow(1.0 - max(dot(shadingNormal, viewDir), 0.0), 3.0) * pc.specularStrength * 0.18;
 
-    // Environment reflection. Base case is a fake two-tone sky/ground
-    // gradient sampled by the reflection vector's vertical component (no
-    // real cubemap) -- cheap, and correct for the common case of a
-    // reflection ray heading toward open sky. Reflective surfaces
-    // (reflectivity > 0: the tank, water) additionally trace an actual ray
-    // along reflectDir; a hit replaces the gradient with a real,
-    // occlusion-aware shaded result (see traceReflection) so nearby
+    // Environment reflection. Base case is the analytic sky+cloud function
+    // above sampled along the reflection vector -- cheap (no ray/texture),
+    // and correct for the common case of a reflection heading toward open
+    // sky (matches what the actual sky dome looks like, since the dome
+    // itself is deliberately kept out of the ray-traced scene). Reflective
+    // surfaces (reflectivity > 0: the tank, water) additionally trace an
+    // actual ray along reflectDir; a hit replaces the sky color with a
+    // real, occlusion-aware shaded result (see traceReflection) so nearby
     // trees/rocks/terrain darken the reflection instead of it always
-    // showing the same gradient regardless of what's actually nearby.
-    // Gated behind reflectivity so matte surfaces (terrain, trees, boxes --
-    // the vast majority of fragments) never pay for a ray they'd multiply
-    // by zero anyway.
-    vec3 reflectDir = reflect(-viewDir, normal);
-    vec3 skyTint = vec3(0.55, 0.65, 0.78);
-    vec3 groundTint = vec3(0.12, 0.11, 0.10);
-    vec3 envColor = mix(groundTint, skyTint, clamp(reflectDir.y * 0.5 + 0.5, 0.0, 1.0));
+    // showing sky regardless of what's actually nearby. Gated behind
+    // reflectivity so matte surfaces (terrain, trees, boxes -- the vast
+    // majority of fragments) never pay for a ray they'd multiply by zero
+    // anyway. Uses shadingNormal (the rippled one for water) so the
+    // reflection direction wobbles with the fake waves too.
+    vec3 reflectDir = reflect(-viewDir, shadingNormal);
+    vec3 envColor = skyColor(reflectDir);
     if (pc.reflectivity > 0.01) {
         vec3 reflectionHit;
         vec3 reflOrigin = fragWorldPos + normal * kShadowBias;

@@ -61,6 +61,10 @@ public:
         // strongly reflective (water) or the reverse, without the two
         // effects being tied to one shared knob.
         float reflectivity = 0.0f;
+        // Perturbs the shading normal used by specular/Fresnel/reflection
+        // (not the real geometric normal used for diffuse/shadow rays)
+        // with an animated ripple pattern -- water only; 0 elsewhere.
+        float waveStrength = 0.0f;
     };
 
     Pipeline(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthFormat, VkFormat historyFormat);

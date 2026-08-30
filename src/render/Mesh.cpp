@@ -169,6 +169,54 @@ Mesh Mesh::rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColo
     return Mesh(ctx, commands, vertices, indices);
 }
 
+Mesh Mesh::dome(VulkanContext& ctx, CommandContext& commands, glm::vec3 color, float uvScale) {
+    constexpr int kLatSegments = 12;
+    constexpr int kLonSegments = 24;
+
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    vertices.reserve(static_cast<size_t>(kLatSegments + 1) * (kLonSegments + 1));
+
+    for (int lat = 0; lat <= kLatSegments; ++lat) {
+        // theta=0 at the zenith (straight up), kPi/2 at the horizon --
+        // clouds only need the upper hemisphere.
+        float theta = (static_cast<float>(lat) / kLatSegments) * (kPi * 0.5f);
+        float y = std::cos(theta);
+        float ringRadius = std::sin(theta);
+        for (int lon = 0; lon <= kLonSegments; ++lon) {
+            float phi = (static_cast<float>(lon) / kLonSegments) * 2.0f * kPi;
+            float x = ringRadius * std::cos(phi);
+            float z = ringRadius * std::sin(phi);
+
+            // Project onto a distant horizontal plane (divide by the
+            // vertical component) instead of wrapping the texture around
+            // the dome's own curvature -- reads as a flat cloud layer
+            // receding toward the horizon rather than pinching at the
+            // zenith. Clamp y so the projection doesn't blow up right at
+            // the horizon ring.
+            float denom = std::max(y, 0.05f);
+            glm::vec2 uv = glm::vec2(x, z) / denom * uvScale;
+
+            vertices.push_back({glm::vec3(x, y, z), glm::vec3(0.0f, -1.0f, 0.0f), color, uv});
+        }
+    }
+
+    auto indexOf = [&](int lat, int lon) { return static_cast<uint32_t>(lat * (kLonSegments + 1) + lon); };
+    for (int lat = 0; lat < kLatSegments; ++lat) {
+        for (int lon = 0; lon < kLonSegments; ++lon) {
+            uint32_t v00 = indexOf(lat, lon);
+            uint32_t v01 = indexOf(lat, lon + 1);
+            uint32_t v11 = indexOf(lat + 1, lon + 1);
+            uint32_t v10 = indexOf(lat + 1, lon);
+            // Both winding orders for each triangle -- see the comment on
+            // Mesh::dome in the header for why.
+            indices.insert(indices.end(), {v00, v01, v11, v00, v11, v01, v00, v11, v10, v00, v10, v11});
+        }
+    }
+
+    return Mesh(ctx, commands, vertices, indices);
+}
+
 Mesh Mesh::tree(VulkanContext& ctx, CommandContext& commands, glm::vec3 trunkColor,
                  glm::vec3 canopyColor) {
     std::vector<Vertex> vertices;

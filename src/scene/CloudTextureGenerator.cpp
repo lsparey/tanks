@@ -1,4 +1,4 @@
-#include "RockTextureGenerator.h"
+#include "CloudTextureGenerator.h"
 
 #include <algorithm>
 #include <cmath>
@@ -26,7 +26,9 @@ float hash(int x, int y) {
 // wrapPeriod is the noise's period *in this function's own input space*
 // (i.e. smoothNoise(x + wrapPeriod, y + wrapPeriod, wrapPeriod) ==
 // smoothNoise(x, y, wrapPeriod) for all x, y) -- see fbm for how callers
-// pick it so the texture as a whole tiles seamlessly under GL_REPEAT.
+// pick it so the texture as a whole tiles seamlessly under GL_REPEAT (the
+// cloud dome's UV can run well past [0,1] near the horizon, so this
+// matters even more here than for the ground textures).
 float smoothNoise(float x, float y, int wrapPeriod) {
     int x0 = static_cast<int>(std::floor(x));
     int y0 = static_cast<int>(std::floor(y));
@@ -70,32 +72,37 @@ float fbm(float x, float y, int octaves, float basePeriod) {
 
 }  // namespace
 
-std::vector<uint8_t> RockTextureGenerator::generate(uint32_t size) {
+std::vector<uint8_t> CloudTextureGenerator::generate(uint32_t size) {
     std::vector<uint8_t> pixels(static_cast<size_t>(size) * size * 4);
 
-    const glm::vec3 darkGrey(0.20f, 0.19f, 0.18f);
-    const glm::vec3 midGrey(0.38f, 0.37f, 0.35f);
-    const glm::vec3 lightGrey(0.56f, 0.55f, 0.53f);
+    const glm::vec3 brightColor(1.0f, 1.0f, 1.0f);
+    const glm::vec3 shadowColor(0.72f, 0.75f, 0.80f);
 
     for (uint32_t y = 0; y < size; ++y) {
         for (uint32_t x = 0; x < size; ++x) {
-            float patches = fbm(static_cast<float>(x) * 0.045f, static_cast<float>(y) * 0.045f, 4,
-                                 static_cast<float>(size) * 0.045f);
-            // Higher frequency and more weight than grass's speckle layer --
-            // gravel reads as individual pebbles, not a soft blade texture.
-            float speckle = fbm(static_cast<float>(x) * 0.6f + 91.7f, static_cast<float>(y) * 0.6f + 13.2f,
-                                 3, static_cast<float>(size) * 0.6f);
-            float t = glm::clamp(patches * 0.55f + speckle * 0.45f, 0.0f, 1.0f);
+            // Large-scale shapes (few octaves, low frequency) for big cloud
+            // masses; a finer layer riding on top gives them a bit of
+            // cauliflower-like internal texture rather than a flat blob.
+            float shape = fbm(static_cast<float>(x) * 0.02f, static_cast<float>(y) * 0.02f, 4,
+                               static_cast<float>(size) * 0.02f);
+            float detail = fbm(static_cast<float>(x) * 0.08f + 41.3f, static_cast<float>(y) * 0.08f + 7.1f,
+                                3, static_cast<float>(size) * 0.08f);
+            float density = shape * 0.75f + detail * 0.25f;
 
-            glm::vec3 color = t < 0.5f ? glm::mix(darkGrey, midGrey, t * 2.0f)
-                                        : glm::mix(midGrey, lightGrey, (t - 0.5f) * 2.0f);
-            color *= 0.75f;
+            // Mostly-clear sky with occasional soft-edged raised patches --
+            // the two smoothstep thresholds control how much of the sky is
+            // cloudy and how soft the cloud edges read.
+            float alpha = glm::smoothstep(0.52f, 0.70f, density);
+            // Slightly darker where density is high (thicker cloud core),
+            // brighter at the thin edges -- a cheap stand-in for real
+            // self-shadowing/ambient occlusion within the cloud shape.
+            glm::vec3 color = glm::mix(brightColor, shadowColor, glm::smoothstep(0.6f, 0.9f, density));
 
             size_t idx = (static_cast<size_t>(y) * size + x) * 4;
             pixels[idx + 0] = static_cast<uint8_t>(glm::clamp(color.r, 0.0f, 1.0f) * 255.0f);
             pixels[idx + 1] = static_cast<uint8_t>(glm::clamp(color.g, 0.0f, 1.0f) * 255.0f);
             pixels[idx + 2] = static_cast<uint8_t>(glm::clamp(color.b, 0.0f, 1.0f) * 255.0f);
-            pixels[idx + 3] = 255;
+            pixels[idx + 3] = static_cast<uint8_t>(glm::clamp(alpha, 0.0f, 1.0f) * 255.0f);
         }
     }
     return pixels;

@@ -70,9 +70,11 @@ private:
     std::unique_ptr<Texture> grassTexture_;
     std::unique_ptr<Texture> rockTexture_;
     std::unique_ptr<Texture> trackTexture_;
+    std::unique_ptr<Texture> cloudTexture_;
     std::unique_ptr<Texture> whiteTexture_;
     VkDescriptorSet terrainMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet trackMaterialSet_ = VK_NULL_HANDLE;
+    VkDescriptorSet cloudMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet whiteMaterialSet_ = VK_NULL_HANDLE;
     std::unique_ptr<Mesh> boxMesh_;
     std::unique_ptr<Mesh> shellMesh_;
@@ -83,6 +85,7 @@ private:
     std::unique_ptr<Mesh> trackMarkMesh_;
     std::unique_ptr<Mesh> waterMesh_;  // null if no qualifying low-lying basin exists this run
     std::vector<std::unique_ptr<Mesh>> rockMeshes_;  // small pool of distinct rock shapes
+    std::unique_ptr<Mesh> cloudDomeMesh_;
     std::vector<Box> boxes_;
     std::vector<Projectile> projectiles_;
     std::vector<ImpactEffect> impactEffects_;

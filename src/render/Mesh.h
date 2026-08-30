@@ -48,6 +48,19 @@ public:
     static Mesh rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColor,
                       uint32_t seed);
 
+    // A unit-radius upper hemisphere (Y >= 0), meant to be scaled up and
+    // recentered on the camera each frame as a sky backdrop for clouds
+    // (see Application's cloud dome). UV is a "project onto a distant
+    // horizontal plane" mapping (divide the local XZ direction by Y)
+    // rather than a spherical wrap, so the cloud texture reads as a flat
+    // layer receding toward the horizon instead of pinching at the zenith.
+    // Built double-sided (both triangle winding orders) since it's only
+    // ever seen from inside and getting the "inward-facing" winding right
+    // by hand isn't worth the risk for a purely decorative element -- the
+    // pipeline's cull mode is otherwise fixed for every other mesh.
+    static Mesh dome(VulkanContext& ctx, CommandContext& commands, glm::vec3 color,
+                      float uvScale);
+
 private:
     Buffer vertexBuffer_;
     Buffer indexBuffer_;

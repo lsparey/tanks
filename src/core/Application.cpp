@@ -7,6 +7,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "../render/VulkanCheck.h"
+#include "../scene/CloudTextureGenerator.h"
 #include "../scene/CollisionSystem.h"
 #include "../scene/GrassTextureGenerator.h"
 #include "../scene/RockTextureGenerator.h"
@@ -80,6 +81,11 @@ Application::Application() {
     std::vector<uint8_t> trackPixels = TrackTextureGenerator::generate(128);
     trackTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 128, 128, trackPixels, /*repeat=*/false));
+    std::vector<uint8_t> cloudPixels = CloudTextureGenerator::generate(256);
+    // The dome's UV projects onto a distant horizontal plane and can run
+    // well outside [0,1] near the horizon, so this needs to tile.
+    cloudTexture_ = std::make_unique<Texture>(
+        Texture::fromPixels(*context_, *commands_, 256, 256, cloudPixels, /*repeat=*/true));
     std::vector<uint8_t> whitePixel = {255, 255, 255, 255};
     whiteTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 1, 1, whitePixel, /*repeat=*/false));
@@ -88,6 +94,7 @@ Application::Application() {
     // slots since only the primary is ever sampled for them.
     terrainMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*grassTexture_, *rockTexture_);
     trackMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*trackTexture_, *trackTexture_);
+    cloudMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*cloudTexture_, *cloudTexture_);
     whiteMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*whiteTexture_, *whiteTexture_);
 
     uint32_t terrainSeed = std::random_device{}();
@@ -125,6 +132,11 @@ Application::Application() {
         rockMeshes_.push_back(std::make_unique<Mesh>(
             Mesh::rock(*context_, *commands_, rockShades[i], static_cast<uint32_t>(i) + 1)));
     }
+    // White so the cloud texture's own baked-in white/grey shading shows
+    // through unmodified; uvScale tuned by eye for plausible-looking cloud
+    // size once projected onto the dome's "distant plane" mapping.
+    cloudDomeMesh_ =
+        std::make_unique<Mesh>(Mesh::dome(*context_, *commands_, glm::vec3(1.0f), 0.25f));
     spawnBoxes();
     spawnTrees(waterField);
     spawnRocks(waterField);
@@ -159,10 +171,12 @@ Application::~Application() {
     boxBLAS_.reset();
     treeBLAS_.reset();
     whiteTexture_.reset();
+    cloudTexture_.reset();
     trackTexture_.reset();
     rockTexture_.reset();
     grassTexture_.reset();
     hud_.reset();
+    cloudDomeMesh_.reset();
     waterMesh_.reset();
     rockMeshes_.clear();
     trackMarkMesh_.reset();
@@ -785,6 +799,26 @@ void Application::drawFrame() {
     vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                              pipeline_->layout(), 3, 1, &historySet, 0, nullptr);
 
+    // Sky dome: drawn first and centered on the camera every frame (a fixed
+    // radius comfortably inside the camera's far plane of 200, well beyond
+    // anything else in the scene), so it always surrounds the viewer.
+    // Unlit -- clouds don't need real shading -- and deliberately never
+    // added to gatherRayTracingInstances: it's a fake backdrop that moves
+    // with the camera, not real scene geometry, and including it would
+    // make every shadow/AO/reflection ray falsely register it as an
+    // occluder in every direction beyond its radius.
+    constexpr float kSkyDomeRadius = 150.0f;
+    vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                             pipeline_->layout(), 1, 1, &cloudMaterialSet_, 0, nullptr);
+    Pipeline::PushConstants skyPc{};
+    skyPc.model = glm::scale(glm::translate(glm::mat4(1.0f), camera_.position()),
+                              glm::vec3(kSkyDomeRadius));
+    skyPc.unlit = 1.0f;
+    vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
+                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(skyPc),
+                        &skyPc);
+    cloudDomeMesh_->bindAndDraw(frame.commandBuffer);
+
     vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                              pipeline_->layout(), 1, 1, &terrainMaterialSet_, 0, nullptr);
     Pipeline::PushConstants terrainPc{};
@@ -830,6 +864,7 @@ void Application::drawFrame() {
         waterPc.specularStrength = 0.5f;
         waterPc.reflectivity = 0.4f;
         waterPc.opacity = 0.65f;
+        waterPc.waveStrength = 0.02f;
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(waterPc), &waterPc);
