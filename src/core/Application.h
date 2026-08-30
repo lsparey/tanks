@@ -16,10 +16,12 @@
 #include "../render/VulkanContext.h"
 #include "../scene/Box.h"
 #include "../scene/Camera.h"
+#include "../scene/CollisionSystem.h"
 #include "../scene/DebrisParticle.h"
 #include "../scene/ImpactEffect.h"
 #include "../scene/InputManager.h"
 #include "../scene/Projectile.h"
+#include "../scene/RockInstance.h"
 #include "../scene/Tank.h"
 #include "../scene/Terrain.h"
 #include "../scene/TrackMark.h"
@@ -80,6 +82,7 @@ private:
     std::unique_ptr<Mesh> debrisEmberMesh_;
     std::unique_ptr<Mesh> trackMarkMesh_;
     std::unique_ptr<Mesh> waterMesh_;  // null if no qualifying low-lying basin exists this run
+    std::vector<std::unique_ptr<Mesh>> rockMeshes_;  // small pool of distinct rock shapes
     std::vector<Box> boxes_;
     std::vector<Projectile> projectiles_;
     std::vector<ImpactEffect> impactEffects_;
@@ -88,6 +91,10 @@ private:
     glm::vec3 lastTrackMarkPosition_{0.0f};
     bool hasTrackMarkAnchor_ = false;
     std::vector<TreeInstance> trees_;
+    std::vector<RockInstance> rocks_;
+    // Static collision circles for trees/rocks, built once after spawning
+    // both -- see Tank::update.
+    std::vector<CollisionSystem::CircleObstacle> obstacles_;
 
     // Ray tracing: one BLAS per shared mesh (built once), plus a TLAS
     // rebuilt every frame from the current scene state (see
@@ -96,11 +103,13 @@ private:
     std::unique_ptr<AccelerationStructure> treeBLAS_;
     std::unique_ptr<AccelerationStructure> boxBLAS_;
     std::unique_ptr<AccelerationStructure> shellBLAS_;
+    std::vector<std::unique_ptr<AccelerationStructure>> rockBLAS_;  // one per rockMeshes_ variant
     std::unique_ptr<SceneAccelerationStructure> sceneAS_;
     std::unique_ptr<HistoryBuffer> historyBuffer_;
 
     void spawnBoxes();
     void spawnTrees(const WaterGenerator::FloodField& waterField);
+    void spawnRocks(const WaterGenerator::FloodField& waterField);
     void spawnExplosion(glm::vec3 position);
     void updateTrackMarks(float deltaTime);
     void fireProjectile();

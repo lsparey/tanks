@@ -1,6 +1,7 @@
 #include "Mesh.h"
 
 #include <cmath>
+#include <random>
 
 namespace {
 
@@ -105,6 +106,66 @@ Mesh Mesh::quad(VulkanContext& ctx, CommandContext& commands, glm::vec3 color) {
         {{h, 0.0f, -h}, {0.0f, 1.0f, 0.0f}, color, {1.0f, 0.0f}},
     };
     std::vector<uint32_t> indices = {0, 1, 2, 0, 2, 3};
+    return Mesh(ctx, commands, vertices, indices);
+}
+
+Mesh Mesh::rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColor, uint32_t seed) {
+    const float t = (1.0f + std::sqrt(5.0f)) / 2.0f;
+    glm::vec3 base[12] = {
+        {-1, t, 0}, {1, t, 0}, {-1, -t, 0}, {1, -t, 0}, {0, -1, t},  {0, 1, t},
+        {0, -1, -t}, {0, 1, -t}, {t, 0, -1}, {t, 0, 1}, {-t, 0, -1}, {-t, 0, 1},
+    };
+    const int faces[20][3] = {
+        {0, 11, 5}, {0, 5, 1},  {0, 1, 7},  {0, 7, 10}, {0, 10, 11}, {1, 5, 9},  {5, 11, 4},
+        {11, 10, 2}, {10, 7, 6}, {7, 1, 8},  {3, 9, 4},  {3, 4, 2},  {3, 2, 6},  {3, 6, 8},
+        {3, 8, 9},  {4, 9, 5},  {2, 4, 11}, {6, 2, 10}, {8, 6, 7},  {9, 8, 1},
+    };
+
+    // Jitter each of the 12 base vertices outward/inward along its own
+    // direction from center, turning the perfect icosahedron into an
+    // irregular lump. Deterministic per seed so the same seed always
+    // produces the same rock (used to build a small, reusable pool of
+    // distinct-looking variants -- see Application::rockMeshes_).
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> radiusJitter(0.7f, 1.35f);
+    std::uniform_real_distribution<float> colorJitter(-0.05f, 0.05f);
+
+    glm::vec3 deformed[12];
+    for (int i = 0; i < 12; ++i) {
+        deformed[i] = glm::normalize(base[i]) * radiusJitter(rng);
+    }
+
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    vertices.reserve(20 * 3);
+    indices.reserve(20 * 3);
+
+    for (const auto& face : faces) {
+        glm::vec3 p0 = deformed[face[0]];
+        glm::vec3 p1 = deformed[face[1]];
+        glm::vec3 p2 = deformed[face[2]];
+
+        // The icosahedron's own face winding isn't verified against this
+        // project's CCW-outward convention, so derive it from the actual
+        // (now-deformed) geometry instead of trusting the table: compute
+        // the normal, and flip both it and the winding if it points inward.
+        glm::vec3 normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
+        glm::vec3 centroid = (p0 + p1 + p2) / 3.0f;
+        if (glm::dot(normal, centroid) < 0.0f) {
+            std::swap(p1, p2);
+            normal = -normal;
+        }
+
+        glm::vec3 color = glm::clamp(baseColor + glm::vec3(colorJitter(rng)), glm::vec3(0.0f),
+                                      glm::vec3(1.0f));
+
+        uint32_t base_ = static_cast<uint32_t>(vertices.size());
+        vertices.push_back({p0, normal, color});
+        vertices.push_back({p1, normal, color});
+        vertices.push_back({p2, normal, color});
+        indices.insert(indices.end(), {base_ + 0, base_ + 1, base_ + 2});
+    }
+
     return Mesh(ctx, commands, vertices, indices);
 }
 

@@ -8,6 +8,7 @@
 #include "../render/CommandContext.h"
 #include "../render/Mesh.h"
 #include "../render/VulkanContext.h"
+#include "CollisionSystem.h"
 
 class InputManager;
 class Terrain;
@@ -34,8 +35,12 @@ public:
     Tank(VulkanContext& ctx, CommandContext& commands, const std::string& modelPath);
 
     // Arcade steering (W/S throttle, A/D yaw) plus terrain ground-clamping,
-    // plus turret traverse (Q/E, independent of hull yaw).
-    void update(const InputManager& input, float deltaTime, const Terrain& terrain);
+    // plus turret traverse (Q/E, independent of hull yaw). `obstacles`
+    // (trees/rocks, see Application::obstacles_) blocks the hull from
+    // driving through them -- approximated as circles in the XZ plane
+    // rather than their real irregular silhouettes.
+    void update(const InputManager& input, float deltaTime, const Terrain& terrain,
+                const std::vector<CollisionSystem::CircleObstacle>& obstacles);
 
     // One entry per renderable part with its own world matrix -- just the
     // hull if the model had no separate turret/barrel materials, otherwise

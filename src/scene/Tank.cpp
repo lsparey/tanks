@@ -100,7 +100,8 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
     }
 }
 
-void Tank::update(const InputManager& input, float deltaTime, const Terrain& terrain) {
+void Tank::update(const InputManager& input, float deltaTime, const Terrain& terrain,
+                   const std::vector<CollisionSystem::CircleObstacle>& obstacles) {
     float throttle = 0.0f;
     if (input.isKeyDown(GLFW_KEY_W)) throttle += 1.0f;
     if (input.isKeyDown(GLFW_KEY_S)) throttle -= 1.0f;
@@ -116,6 +117,16 @@ void Tank::update(const InputManager& input, float deltaTime, const Terrain& ter
 
     glm::vec3 flatForward(std::sin(yaw_), 0.0f, std::cos(yaw_));
     position_ += flatForward * (throttle * moveSpeed_ * deltaTime);
+
+    // Hull-width-derived collision radius (a circle is a rough stand-in for
+    // the hull's actual rectangular footprint, but is enough to stop the
+    // tank driving through a tree/rock without needing real hull-vs-hull
+    // shape collision).
+    float collisionRadius = hullWidth_ * 0.6f;
+    glm::vec2 resolvedXZ = CollisionSystem::resolveCircleCollisions(
+        glm::vec2(position_.x, position_.z), collisionRadius, obstacles);
+    position_.x = resolvedXZ.x;
+    position_.z = resolvedXZ.y;
 
     glm::vec3 normal = terrain.normalAt(position_.x, position_.z);
     position_.y = terrain.heightAt(position_.x, position_.z);

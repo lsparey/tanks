@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 #include <glm/glm.hpp>
 
 class CollisionSystem {
@@ -12,4 +14,21 @@ public:
     // point along the segment, for placing hit-feedback effects.
     static bool segmentIntersectsAABB(glm::vec3 from, glm::vec3 to, glm::vec3 boxMin,
                                        glm::vec3 boxMax, float* outT = nullptr);
+
+    // A simple round, static obstacle in the XZ plane -- used to approximate
+    // trees/rocks for tank collision without needing their real (irregular)
+    // silhouettes.
+    struct CircleObstacle {
+        glm::vec2 center;
+        float radius;
+    };
+
+    // Pushes `position` (XZ only) directly out of any obstacle it overlaps,
+    // treating the moving object itself as a circle of `selfRadius`. A
+    // single pass over the obstacle list rather than an iterative solver --
+    // fine for the sparse, well-separated obstacle placement trees/rocks
+    // use; two obstacles close enough to fight over the same push in one
+    // frame isn't a case this scene's spacing produces.
+    static glm::vec2 resolveCircleCollisions(glm::vec2 position, float selfRadius,
+                                              const std::vector<CircleObstacle>& obstacles);
 };

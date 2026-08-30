@@ -38,6 +38,16 @@ public:
     static Mesh tree(VulkanContext& ctx, CommandContext& commands, glm::vec3 trunkColor,
                       glm::vec3 canopyColor);
 
+    // A procedural boulder: an icosahedron with each vertex's radius
+    // jittered by `seed` for an irregular, lumpy silhouette, flat per-face
+    // normals (same faceted-shading approach as cube()), and a slight
+    // per-face color jitter around baseColor. Different seeds give visibly
+    // different rocks from the same call, so a handful of variants (see
+    // Application's rockMeshes_) reads as varied rubble rather than the
+    // same shape copy-pasted everywhere.
+    static Mesh rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColor,
+                      uint32_t seed);
+
 private:
     Buffer vertexBuffer_;
     Buffer indexBuffer_;

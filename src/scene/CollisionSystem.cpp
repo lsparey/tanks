@@ -27,3 +27,21 @@ bool CollisionSystem::segmentIntersectsAABB(glm::vec3 from, glm::vec3 to, glm::v
     if (outT) *outT = tmin;
     return true;
 }
+
+glm::vec2 CollisionSystem::resolveCircleCollisions(glm::vec2 position, float selfRadius,
+                                                    const std::vector<CircleObstacle>& obstacles) {
+    for (const auto& obstacle : obstacles) {
+        glm::vec2 delta = position - obstacle.center;
+        float dist = glm::length(delta);
+        float minDist = selfRadius + obstacle.radius;
+        if (dist < minDist) {
+            // Degenerate case (dead center on the obstacle, dist ~ 0) has no
+            // well-defined push direction -- push along an arbitrary fixed
+            // axis rather than producing a NaN from normalizing a zero
+            // vector.
+            glm::vec2 pushDir = dist > 1e-5f ? delta / dist : glm::vec2(1.0f, 0.0f);
+            position = obstacle.center + pushDir * minDist;
+        }
+    }
+    return position;
+}

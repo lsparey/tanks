@@ -114,8 +114,35 @@ Application::Application() {
     // White so the track texture's own baked-in brown color shows through
     // unmodified (same reasoning as terrain's kTerrainColor).
     trackMarkMesh_ = std::make_unique<Mesh>(Mesh::quad(*context_, *commands_, glm::vec3(1.0f)));
+    // A handful of distinct rock shapes/shades (see Mesh::rock), reused
+    // across many cluster instances via meshVariant rather than generating
+    // unique geometry per rock.
+    const glm::vec3 rockShades[] = {
+        {0.45f, 0.44f, 0.42f}, {0.35f, 0.34f, 0.33f}, {0.52f, 0.50f, 0.47f},
+        {0.40f, 0.39f, 0.38f}, {0.48f, 0.46f, 0.43f},
+    };
+    for (size_t i = 0; i < sizeof(rockShades) / sizeof(rockShades[0]); ++i) {
+        rockMeshes_.push_back(std::make_unique<Mesh>(
+            Mesh::rock(*context_, *commands_, rockShades[i], static_cast<uint32_t>(i) + 1)));
+    }
     spawnBoxes();
     spawnTrees(waterField);
+    spawnRocks(waterField);
+
+    // Static collision circles for the tank's own movement (see
+    // Tank::update) -- trees/rocks never move, so this is built once
+    // rather than every frame. Radii are rough stand-ins for a trunk
+    // (trees) or the rock's own jittered-icosahedron footprint (rocks),
+    // scaled by each instance's own scale.
+    for (const auto& tree : trees_) {
+        obstacles_.push_back(
+            {glm::vec2(tree.position.x, tree.position.z), 0.4f * tree.scale});
+    }
+    for (const auto& rock : rocks_) {
+        obstacles_.push_back(
+            {glm::vec2(rock.position.x, rock.position.z), 0.8f * rock.scale});
+    }
+
     buildAccelerationStructures();
     input_ = std::make_unique<InputManager>(window_);
     lastFrameTime_ = glfwGetTime();
@@ -127,6 +154,7 @@ Application::~Application() {
     // Destroy in dependency order before the GLFW window disappears.
     historyBuffer_.reset();
     sceneAS_.reset();
+    rockBLAS_.clear();
     shellBLAS_.reset();
     boxBLAS_.reset();
     treeBLAS_.reset();
@@ -136,6 +164,7 @@ Application::~Application() {
     grassTexture_.reset();
     hud_.reset();
     waterMesh_.reset();
+    rockMeshes_.clear();
     trackMarkMesh_.reset();
     debrisEmberMesh_.reset();
     debrisChunkMesh_.reset();
@@ -189,7 +218,7 @@ void Application::mainLoop() {
         if (fDown && !prevFKeyDown_) followTank_ = !followTank_;
         prevFKeyDown_ = fDown;
 
-        tank_->update(*input_, deltaTime, *terrain_);
+        tank_->update(*input_, deltaTime, *terrain_, obstacles_);
         updateTrackMarks(deltaTime);
 
         bool fireDown = glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS ||
@@ -275,6 +304,66 @@ void Application::spawnTrees(const WaterGenerator::FloodField& waterField) {
         tree.yaw = yawDist(rng);
         tree.scale = scaleDist(rng);
         trees_.push_back(tree);
+    }
+}
+
+void Application::spawnRocks(const WaterGenerator::FloodField& waterField) {
+    // Cluster/rock counts kept modest -- combined with terrain, trees, tank,
+    // boxes, and shells, the scene's TLAS has a fixed capacity
+    // (SceneAccelerationStructure::kMaxInstances = 128); worst case here is
+    // 8*6=48 rocks, leaving comfortable headroom over the ~52-instance
+    // baseline without rocks.
+    constexpr int kClusterCount = 8;
+    constexpr float kEdgeMargin = 3.0f;
+    constexpr float kMinDistanceFromSpawn = 6.0f;
+    constexpr float kMinDistanceBetweenClusters = 6.0f;
+    constexpr int kMaxAttemptsPerCluster = 30;
+    constexpr int kMinRocksPerCluster = 3;
+    constexpr int kMaxRocksPerCluster = 6;
+    constexpr float kClusterRadius = 2.2f;
+    constexpr float kEmbedDepth = 0.15f;  // sinks each rock in slightly so it reads as grounded, not floating
+
+    std::mt19937 rng(std::random_device{}());
+    float half = terrain_->worldSize() * 0.5f - kEdgeMargin;
+    std::uniform_real_distribution<float> coordDist(-half, half);
+    std::uniform_real_distribution<float> yawDist(0.0f, 6.2831853f);
+    std::uniform_real_distribution<float> scaleDist(0.5f, 1.3f);
+    std::uniform_real_distribution<float> offsetDist(-kClusterRadius, kClusterRadius);
+    std::uniform_int_distribution<int> countDist(kMinRocksPerCluster, kMaxRocksPerCluster);
+    std::uniform_int_distribution<int> variantDist(0, static_cast<int>(rockMeshes_.size()) - 1);
+
+    std::vector<glm::vec2> clusterCenters;
+    for (int c = 0; c < kClusterCount; ++c) {
+        glm::vec2 center{0.0f, 0.0f};
+        for (int attempt = 0; attempt < kMaxAttemptsPerCluster; ++attempt) {
+            glm::vec2 candidate(coordDist(rng), coordDist(rng));
+            bool tooCloseToSpawn = glm::length(candidate) < kMinDistanceFromSpawn;
+            bool tooCloseToOther =
+                std::any_of(clusterCenters.begin(), clusterCenters.end(), [&](glm::vec2 p) {
+                    return glm::length(p - candidate) < kMinDistanceBetweenClusters;
+                });
+            bool underwater = WaterGenerator::isUnderwater(waterField, candidate.x, candidate.y);
+            center = candidate;
+            if (!tooCloseToSpawn && !tooCloseToOther && !underwater) break;
+        }
+        clusterCenters.push_back(center);
+
+        int rockCount = countDist(rng);
+        for (int r = 0; r < rockCount; ++r) {
+            glm::vec2 pos = center + glm::vec2(offsetDist(rng), offsetDist(rng));
+            // Individual rocks within a cluster can still land in water even
+            // when the cluster center didn't -- just skip that one rock
+            // rather than rejecting/relocating the whole cluster.
+            if (WaterGenerator::isUnderwater(waterField, pos.x, pos.y)) continue;
+
+            RockInstance rock;
+            rock.position =
+                glm::vec3(pos.x, terrain_->heightAt(pos.x, pos.y) - kEmbedDepth, pos.y);
+            rock.yaw = yawDist(rng);
+            rock.scale = scaleDist(rng);
+            rock.meshVariant = variantDist(rng);
+            rocks_.push_back(rock);
+        }
     }
 }
 
@@ -368,6 +457,10 @@ void Application::buildAccelerationStructures() {
         AccelerationStructure::buildBLAS(*context_, *commands_, *boxMesh_));
     shellBLAS_ = std::make_unique<AccelerationStructure>(
         AccelerationStructure::buildBLAS(*context_, *commands_, *shellMesh_));
+    for (const auto& mesh : rockMeshes_) {
+        rockBLAS_.push_back(std::make_unique<AccelerationStructure>(
+            AccelerationStructure::buildBLAS(*context_, *commands_, *mesh)));
+    }
 
     auto initialInstances = gatherRayTracingInstances();
     sceneAS_ =
@@ -391,6 +484,9 @@ std::vector<AccelerationStructure::Instance> Application::gatherRayTracingInstan
     instances.push_back({terrain_->blasAddress(), glm::mat4(1.0f)});
     for (const auto& tree : trees_) {
         instances.push_back({treeBLAS_->deviceAddress(), tree.worldMatrix()});
+    }
+    for (const auto& rock : rocks_) {
+        instances.push_back({rockBLAS_[rock.meshVariant]->deviceAddress(), rock.worldMatrix()});
     }
     for (const auto& part : tank_->drawParts()) {
         instances.push_back({part.blasAddress, part.worldMatrix});
@@ -762,6 +858,15 @@ void Application::drawFrame() {
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(treePc), &treePc);
         treeMesh_->bindAndDraw(frame.commandBuffer);
+    }
+
+    for (const auto& rock : rocks_) {
+        Pipeline::PushConstants rockPc{};
+        rockPc.model = rock.worldMatrix();
+        vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
+                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                            sizeof(rockPc), &rockPc);
+        rockMeshes_[rock.meshVariant]->bindAndDraw(frame.commandBuffer);
     }
 
     for (const auto& shell : projectiles_) {
