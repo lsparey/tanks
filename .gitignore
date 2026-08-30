@@ -4,3 +4,6 @@ out/
 vcpkg_installed/
 compile_commands.json
 vcpkg/
+
+# Local vulkaninfo dumps (device/driver debug output, machine-specific)
+VP_VULKANINFO_*.json
