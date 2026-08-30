@@ -67,8 +67,10 @@ private:
     Camera camera_;
 
     std::unique_ptr<HudRenderer> hud_;
-    std::unique_ptr<Texture> grassTexture_;
-    std::unique_ptr<Texture> rockTexture_;
+    std::unique_ptr<Texture> grassTextureA_;
+    std::unique_ptr<Texture> grassTextureB_;
+    std::unique_ptr<Texture> rockTextureA_;
+    std::unique_ptr<Texture> rockTextureB_;
     std::unique_ptr<Texture> trackTexture_;
     std::unique_ptr<Texture> cloudTexture_;
     std::unique_ptr<Texture> whiteTexture_;

@@ -75,22 +75,36 @@ float fbm(float x, float y, int octaves, float basePeriod) {
 
 }  // namespace
 
-std::vector<uint8_t> GrassTextureGenerator::generate(uint32_t size) {
+std::vector<uint8_t> GrassTextureGenerator::generate(uint32_t size, uint32_t variant) {
     std::vector<uint8_t> pixels(static_cast<size_t>(size) * size * 4);
 
     // Real grass reads as desaturated/olive rather than a pure saturated
     // green -- R and G kept closer together, B pulled well down, with a bit
     // of yellow-brown creeping into the lighter tone (sun-bleached blades).
-    const glm::vec3 darkGreen(0.14f, 0.19f, 0.07f);
-    const glm::vec3 midGreen(0.28f, 0.34f, 0.14f);
-    const glm::vec3 lightGreen(0.44f, 0.46f, 0.20f);
+    // Variant 0 is lush/healthy grass; variant 1+ trend drier and more
+    // yellow-brown (sun-bleached/trampled), for patch-blended variety --
+    // see Terrain's painting in basic.frag.
+    glm::vec3 darkGreen(0.14f, 0.19f, 0.07f);
+    glm::vec3 midGreen(0.28f, 0.34f, 0.14f);
+    glm::vec3 lightGreen(0.44f, 0.46f, 0.20f);
+    if (variant % 2 == 1) {
+        darkGreen = glm::vec3(0.20f, 0.19f, 0.08f);
+        midGreen = glm::vec3(0.38f, 0.32f, 0.14f);
+        lightGreen = glm::vec3(0.58f, 0.48f, 0.22f);
+    }
+    // Shifts the noise pattern itself so variant textures don't just look
+    // like the same patches recolored -- periodicity (see fbm's comment)
+    // holds for any fixed offset, so this doesn't reintroduce a seam.
+    float seedX = static_cast<float>(variant) * 173.7f;
+    float seedY = static_cast<float>(variant) * 289.3f;
 
     for (uint32_t y = 0; y < size; ++y) {
         for (uint32_t x = 0; x < size; ++x) {
-            float patches = fbm(static_cast<float>(x) * 0.05f, static_cast<float>(y) * 0.05f, 4,
-                                 static_cast<float>(size) * 0.05f);
-            float speckle = fbm(static_cast<float>(x) * 0.35f + 91.7f, static_cast<float>(y) * 0.35f + 13.2f,
-                                 2, static_cast<float>(size) * 0.35f);
+            float patches = fbm(static_cast<float>(x) * 0.05f + seedX, static_cast<float>(y) * 0.05f + seedY,
+                                 4, static_cast<float>(size) * 0.05f);
+            float speckle = fbm(static_cast<float>(x) * 0.35f + 91.7f + seedX,
+                                 static_cast<float>(y) * 0.35f + 13.2f + seedY, 2,
+                                 static_cast<float>(size) * 0.35f);
             float t = glm::clamp(patches * 0.7f + speckle * 0.3f, 0.0f, 1.0f);
 
             glm::vec3 color = t < 0.5f ? glm::mix(darkGreen, midGreen, t * 2.0f)

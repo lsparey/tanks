@@ -72,12 +72,21 @@ Application::Application() {
                                             historyBuffer_->sampler());
     }
 
-    std::vector<uint8_t> grassPixels = GrassTextureGenerator::generate(256);
-    grassTexture_ = std::make_unique<Texture>(
-        Texture::fromPixels(*context_, *commands_, 256, 256, grassPixels, /*repeat=*/true));
-    std::vector<uint8_t> rockPixels = RockTextureGenerator::generate(256);
-    rockTexture_ = std::make_unique<Texture>(
-        Texture::fromPixels(*context_, *commands_, 256, 256, rockPixels, /*repeat=*/true));
+    // Two variants each for grass and gravel, patch-blended together in
+    // basic.frag (see heightBlend) so terrain reads as naturally varied
+    // rather than one texture tiled everywhere.
+    std::vector<uint8_t> grassPixelsA = GrassTextureGenerator::generate(256, 0);
+    grassTextureA_ = std::make_unique<Texture>(
+        Texture::fromPixels(*context_, *commands_, 256, 256, grassPixelsA, /*repeat=*/true));
+    std::vector<uint8_t> grassPixelsB = GrassTextureGenerator::generate(256, 1);
+    grassTextureB_ = std::make_unique<Texture>(
+        Texture::fromPixels(*context_, *commands_, 256, 256, grassPixelsB, /*repeat=*/true));
+    std::vector<uint8_t> rockPixelsA = RockTextureGenerator::generate(256, 0);
+    rockTextureA_ = std::make_unique<Texture>(
+        Texture::fromPixels(*context_, *commands_, 256, 256, rockPixelsA, /*repeat=*/true));
+    std::vector<uint8_t> rockPixelsB = RockTextureGenerator::generate(256, 1);
+    rockTextureB_ = std::make_unique<Texture>(
+        Texture::fromPixels(*context_, *commands_, 256, 256, rockPixelsB, /*repeat=*/true));
     std::vector<uint8_t> trackPixels = TrackTextureGenerator::generate(128);
     trackTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 128, 128, trackPixels, /*repeat=*/false));
@@ -89,13 +98,18 @@ Application::Application() {
     std::vector<uint8_t> whitePixel = {255, 255, 255, 255};
     whiteTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 1, 1, whitePixel, /*repeat=*/false));
-    // Terrain blends grass and rock by height (see heightBlend in
-    // PushConstants/basic.frag); everything else just binds white into both
-    // slots since only the primary is ever sampled for them.
-    terrainMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*grassTexture_, *rockTexture_);
-    trackMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*trackTexture_, *trackTexture_);
-    cloudMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*cloudTexture_, *cloudTexture_);
-    whiteMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*whiteTexture_, *whiteTexture_);
+    // Terrain patch-blends grass A/B and gravel A/B, then blends that by
+    // height (see heightBlend in PushConstants/basic.frag); everything else
+    // just binds white into all four slots since only the first is ever
+    // sampled for them.
+    terrainMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*grassTextureA_, *grassTextureB_,
+                                                                    *rockTextureA_, *rockTextureB_);
+    trackMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*trackTexture_, *trackTexture_,
+                                                                  *trackTexture_, *trackTexture_);
+    cloudMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*cloudTexture_, *cloudTexture_,
+                                                                  *cloudTexture_, *cloudTexture_);
+    whiteMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*whiteTexture_, *whiteTexture_,
+                                                                  *whiteTexture_, *whiteTexture_);
 
     uint32_t terrainSeed = std::random_device{}();
     terrain_ = std::make_unique<Terrain>(*context_, *commands_, /*resolution=*/64,
@@ -175,8 +189,10 @@ Application::~Application() {
     whiteTexture_.reset();
     cloudTexture_.reset();
     trackTexture_.reset();
-    rockTexture_.reset();
-    grassTexture_.reset();
+    rockTextureB_.reset();
+    rockTextureA_.reset();
+    grassTextureB_.reset();
+    grassTextureA_.reset();
     hud_.reset();
     cloudDomeMesh_.reset();
     waterMesh_.reset();

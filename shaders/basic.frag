@@ -16,11 +16,16 @@ layout(set = 0, binding = 0) uniform FrameUBO {
     vec4 prevCameraPos;
 } frame;
 
-layout(set = 1, binding = 0) uniform sampler2D materialTex;
-// Only sampled/blended in when pc.heightBlend is nonzero (terrain); every
-// other draw binds the same texture as materialTex here and this is simply
-// never read.
-layout(set = 1, binding = 1) uniform sampler2D materialTexLow;
+// Four material textures: a "high" (grass) pair and a "low" (gravel) pair,
+// each pair patch-blended by a noise mask, with the high/low pair itself
+// then blended by world-space height -- see the heightBlend push constant
+// and Terrain's painting logic in main(). Only actually sampled/blended
+// when pc.heightBlend is nonzero (terrain); every other draw binds the same
+// plain texture into all four and these are simply never read.
+layout(set = 1, binding = 0) uniform sampler2D materialTexHighA;
+layout(set = 1, binding = 1) uniform sampler2D materialTexHighB;
+layout(set = 1, binding = 2) uniform sampler2D materialTexLowA;
+layout(set = 1, binding = 3) uniform sampler2D materialTexLowB;
 layout(set = 2, binding = 0) uniform accelerationStructureEXT sceneTLAS;
 layout(set = 3, binding = 0) uniform sampler2D historyShadow;
 
@@ -231,17 +236,33 @@ float traceAO(vec3 origin, vec3 normal, float seedBase) {
 }
 
 void main() {
-    vec4 texSample = texture(materialTex, fragUV);
+    vec4 texSample = texture(materialTexHighA, fragUV);
     vec3 texColor = texSample.rgb;
     if (pc.heightBlend > 0.5) {
-        // Terrain: fade to the low-point (rock/gravel) texture in valleys.
-        // Thresholds are tuned against the heightmap's actual amplitude
-        // (+-3 world units, see HeightmapGenerator) -- below -1.3, fully
-        // rock; above -0.4, fully grass; smoothstep between so the seam
-        // doesn't read as a hard line.
-        vec3 texColorLow = texture(materialTexLow, fragUV).rgb;
+        // Terrain: within each zone (grass, gravel), patch-blend between two
+        // texture variants using a large-scale noise mask, so the ground
+        // reads as naturally varied -- patches of lusher/drier grass,
+        // lighter/darker gravel -- instead of one texture repeated
+        // everywhere. Two octaves per zone for a less obviously-round patch
+        // shape; independent noise (different frequency/offset) per zone so
+        // grass patches and gravel patches don't line up with each other or
+        // with the height-based zone boundary below.
+        float grassPatch = valueNoise2D(fragWorldPos.xz * 0.06 + vec2(19.3, 4.7)) * 0.7 +
+                            valueNoise2D(fragWorldPos.xz * 0.15 + vec2(58.1, 91.4)) * 0.3;
+        float gravelPatch = valueNoise2D(fragWorldPos.xz * 0.08 + vec2(71.2, 33.6)) * 0.7 +
+                             valueNoise2D(fragWorldPos.xz * 0.2 + vec2(12.9, 47.5)) * 0.3;
+        vec3 grassColor =
+            mix(texColor, texture(materialTexHighB, fragUV).rgb, smoothstep(0.4, 0.6, grassPatch));
+        vec3 gravelColor = mix(texture(materialTexLowA, fragUV).rgb, texture(materialTexLowB, fragUV).rgb,
+                                smoothstep(0.4, 0.6, gravelPatch));
+
+        // Fade to the low-point (gravel) blend in valleys. Thresholds are
+        // tuned against the heightmap's actual amplitude (+-3 world units,
+        // see HeightmapGenerator) -- below -1.3, fully gravel; above -0.4,
+        // fully grass; smoothstep between so the seam doesn't read as a
+        // hard line.
         float rockiness = 1.0 - smoothstep(-1.3, -0.4, fragWorldPos.y);
-        texColor = mix(texColor, texColorLow, rockiness);
+        texColor = mix(grassColor, gravelColor, rockiness);
     }
     vec3 albedo = fragColor * texColor;
     // Texture alpha times the per-draw opacity (PushConstants::opacity) --

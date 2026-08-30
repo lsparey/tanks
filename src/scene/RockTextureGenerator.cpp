@@ -70,24 +70,37 @@ float fbm(float x, float y, int octaves, float basePeriod) {
 
 }  // namespace
 
-std::vector<uint8_t> RockTextureGenerator::generate(uint32_t size) {
+std::vector<uint8_t> RockTextureGenerator::generate(uint32_t size, uint32_t variant) {
     std::vector<uint8_t> pixels(static_cast<size_t>(size) * size * 4);
 
     // Real gravel/rock rarely reads as pure neutral grey -- a slight
     // warm/brown tint (R > G > B) is what actually sells "dirt and stone"
-    // rather than "concrete".
-    const glm::vec3 darkGrey(0.22f, 0.19f, 0.15f);
-    const glm::vec3 midGrey(0.40f, 0.36f, 0.30f);
-    const glm::vec3 lightGrey(0.58f, 0.53f, 0.45f);
+    // rather than "concrete". Variant 0 is mid-toned gravel; variant 1+
+    // trends lighter/dustier, for patch-blended variety -- see Terrain's
+    // painting in basic.frag.
+    glm::vec3 darkGrey(0.22f, 0.19f, 0.15f);
+    glm::vec3 midGrey(0.40f, 0.36f, 0.30f);
+    glm::vec3 lightGrey(0.58f, 0.53f, 0.45f);
+    if (variant % 2 == 1) {
+        darkGrey = glm::vec3(0.28f, 0.24f, 0.18f);
+        midGrey = glm::vec3(0.48f, 0.42f, 0.32f);
+        lightGrey = glm::vec3(0.68f, 0.61f, 0.48f);
+    }
+    // Shifts the noise pattern itself so variant textures don't just look
+    // like the same patches recolored -- periodicity (see fbm's comment)
+    // holds for any fixed offset, so this doesn't reintroduce a seam.
+    float seedX = static_cast<float>(variant) * 211.3f;
+    float seedY = static_cast<float>(variant) * 337.9f;
 
     for (uint32_t y = 0; y < size; ++y) {
         for (uint32_t x = 0; x < size; ++x) {
-            float patches = fbm(static_cast<float>(x) * 0.045f, static_cast<float>(y) * 0.045f, 4,
-                                 static_cast<float>(size) * 0.045f);
+            float patches = fbm(static_cast<float>(x) * 0.045f + seedX, static_cast<float>(y) * 0.045f + seedY,
+                                 4, static_cast<float>(size) * 0.045f);
             // Higher frequency and more weight than grass's speckle layer --
             // gravel reads as individual pebbles, not a soft blade texture.
-            float speckle = fbm(static_cast<float>(x) * 0.6f + 91.7f, static_cast<float>(y) * 0.6f + 13.2f,
-                                 3, static_cast<float>(size) * 0.6f);
+            float speckle = fbm(static_cast<float>(x) * 0.6f + 91.7f + seedX,
+                                 static_cast<float>(y) * 0.6f + 13.2f + seedY, 3,
+                                 static_cast<float>(size) * 0.6f);
             float t = glm::clamp(patches * 0.55f + speckle * 0.45f, 0.0f, 1.0f);
 
             glm::vec3 color = t < 0.5f ? glm::mix(darkGrey, midGrey, t * 2.0f)

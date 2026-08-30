@@ -14,11 +14,14 @@
 // descriptor set (set 0) it's bound to. Per-object data goes through a push
 // constant (the model matrix + an unlit flag); per-frame data (view/proj/
 // light) goes through the set-0 UBO, updated once per frame via
-// updateFrameUBO. Set 1 is two combined-image-sampler bindings for whatever
-// textures a given draw call wants (grass+rock for terrain, blended by
-// world-space height via the heightBlend push constant; a plain white 1x1
-// texture in both slots for everything else so their vertex colors are
-// unaffected) -- allocated per-texture-pair via allocateMaterialDescriptorSet.
+// updateFrameUBO. Set 1 is four combined-image-sampler bindings for
+// whatever textures a given draw call wants: for terrain, a "high" pair
+// (two grass variants, patch-blended by a noise mask) and a "low" pair (two
+// gravel variants, likewise), with the high/low pair itself then blended by
+// world-space height via the heightBlend push constant -- see basic.frag.
+// Everything else just binds the same plain white 1x1 texture into all four
+// slots so their vertex colors are unaffected -- allocated via
+// allocateMaterialDescriptorSet.
 // Set 2 is a single acceleration-structure binding (the scene TLAS), read
 // by basic.frag via VK_KHR_ray_query for shadow rays. Its handle changes
 // every frame (SceneAccelerationStructure rebuilds in place per
@@ -74,10 +77,11 @@ public:
     Pipeline& operator=(const Pipeline&) = delete;
 
     void updateFrameUBO(const FrameUBO& ubo);
-    // secondary is only sampled when a draw's PushConstants::heightBlend is
-    // nonzero (terrain); everything else can pass the same texture for both
-    // and ignore it.
-    VkDescriptorSet allocateMaterialDescriptorSet(const Texture& primary, const Texture& secondary);
+    // highA/highB and lowA/lowB are only sampled/blended when a draw's
+    // PushConstants::heightBlend is nonzero (terrain); everything else can
+    // pass the same texture for all four and ignore the rest.
+    VkDescriptorSet allocateMaterialDescriptorSet(const Texture& highA, const Texture& highB,
+                                                   const Texture& lowA, const Texture& lowB);
     void updateTLASDescriptor(size_t frameIndex, VkAccelerationStructureKHR tlas);
     void updateHistoryDescriptor(size_t frameIndex, VkImageView historyView, VkSampler historySampler);
 

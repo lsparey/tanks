@@ -72,24 +72,22 @@ void Pipeline::createDescriptorSetLayout() {
 }
 
 void Pipeline::createMaterialSetLayout() {
-    // Binding 1 (the "low point" texture) is only actually sampled by
-    // basic.frag when a draw's heightBlend push constant is nonzero
-    // (terrain); every other draw still needs a valid descriptor bound
-    // there (Vulkan requires it even if the shader branch skips reading it),
-    // so callers just bind the same texture into both.
-    VkDescriptorSetLayoutBinding bindings[2]{};
-    bindings[0].binding = 0;
-    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    bindings[0].descriptorCount = 1;
-    bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    bindings[1].binding = 1;
-    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    bindings[1].descriptorCount = 1;
-    bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    // Bindings 1-3 are only actually sampled by basic.frag when a draw's
+    // heightBlend push constant is nonzero (terrain); every other draw
+    // still needs a valid descriptor bound at each (Vulkan requires it even
+    // if the shader branch skips reading it), so callers just bind the same
+    // texture into all four.
+    VkDescriptorSetLayoutBinding bindings[4]{};
+    for (uint32_t i = 0; i < 4; ++i) {
+        bindings[i].binding = i;
+        bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[i].descriptorCount = 1;
+        bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    }
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 2;
+    layoutInfo.bindingCount = 4;
     layoutInfo.pBindings = bindings;
 
     VK_CHECK(vkCreateDescriptorSetLayout(ctx_.device(), &layoutInfo, nullptr, &materialSetLayout_));
@@ -134,8 +132,9 @@ void Pipeline::createDescriptorPoolAndSet() {
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[0].descriptorCount = 1;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    // Each material set now has 2 bindings (primary + height-blend texture).
-    poolSizes[1].descriptorCount = kMaxMaterialSets * 2 + kHistorySets;
+    // Each material set now has 4 bindings (two high-terrain variants, two
+    // low-terrain variants -- see createMaterialSetLayout).
+    poolSizes[1].descriptorCount = kMaxMaterialSets * 4 + kHistorySets;
     poolSizes[2].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     poolSizes[2].descriptorCount = kTLASSets;
 
@@ -232,8 +231,8 @@ void Pipeline::updateHistoryDescriptor(size_t frameIndex, VkImageView historyVie
     vkUpdateDescriptorSets(ctx_.device(), 1, &write, 0, nullptr);
 }
 
-VkDescriptorSet Pipeline::allocateMaterialDescriptorSet(const Texture& primary,
-                                                          const Texture& secondary) {
+VkDescriptorSet Pipeline::allocateMaterialDescriptorSet(const Texture& highA, const Texture& highB,
+                                                          const Texture& lowA, const Texture& lowB) {
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = descriptorPool_;
@@ -243,27 +242,24 @@ VkDescriptorSet Pipeline::allocateMaterialDescriptorSet(const Texture& primary,
     VkDescriptorSet set;
     VK_CHECK(vkAllocateDescriptorSets(ctx_.device(), &allocInfo, &set));
 
-    VkDescriptorImageInfo imageInfos[2]{};
-    imageInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imageInfos[0].imageView = primary.view();
-    imageInfos[0].sampler = primary.sampler();
-    imageInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imageInfos[1].imageView = secondary.view();
-    imageInfos[1].sampler = secondary.sampler();
+    const Texture* textures[4] = {&highA, &highB, &lowA, &lowB};
+    VkDescriptorImageInfo imageInfos[4]{};
+    VkWriteDescriptorSet writes[4]{};
+    for (uint32_t i = 0; i < 4; ++i) {
+        imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfos[i].imageView = textures[i]->view();
+        imageInfos[i].sampler = textures[i]->sampler();
 
-    VkWriteDescriptorSet writes[2]{};
-    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet = set;
-    writes[0].dstBinding = 0;
-    writes[0].dstArrayElement = 0;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[0].descriptorCount = 1;
-    writes[0].pImageInfo = &imageInfos[0];
-    writes[1] = writes[0];
-    writes[1].dstBinding = 1;
-    writes[1].pImageInfo = &imageInfos[1];
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = set;
+        writes[i].dstBinding = i;
+        writes[i].dstArrayElement = 0;
+        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].descriptorCount = 1;
+        writes[i].pImageInfo = &imageInfos[i];
+    }
 
-    vkUpdateDescriptorSets(ctx_.device(), 2, writes, 0, nullptr);
+    vkUpdateDescriptorSets(ctx_.device(), 4, writes, 0, nullptr);
     return set;
 }
 
