@@ -70,6 +70,7 @@ Swapchain::Swapchain(VulkanContext& ctx, GLFWwindow* window) : ctx_(ctx), window
     create();
     createImageViews();
     createDepthResources();
+    createColorResources();
     createSyncObjects();
 }
 
@@ -88,6 +89,7 @@ void Swapchain::recreate() {
     create();
     createImageViews();
     createDepthResources();
+    createColorResources();
     createSyncObjects();
 }
 
@@ -166,7 +168,7 @@ void Swapchain::createDepthResources() {
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.samples = ctx_.msaaSamples();
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     VK_CHECK(vkCreateImage(ctx_.device(), &imageInfo, nullptr, &depthImage_));
@@ -197,6 +199,56 @@ void Swapchain::createDepthResources() {
     VK_CHECK(vkCreateImageView(ctx_.device(), &viewInfo, nullptr, &depthImageView_));
 }
 
+void Swapchain::createColorResources() {
+    // The presentable swapchain images are always single-sample (that's a
+    // WSI requirement), so when MSAA is active the pipeline can't render
+    // directly into them -- it renders into this multisampled scratch image
+    // instead, which the driver then resolves (averages down) into the
+    // presentable image at the end of the render pass. If the device has no
+    // MSAA support, ctx_.msaaSamples() is VK_SAMPLE_COUNT_1_BIT and this is
+    // just a redundant same-format 1-sample image; harmless, not worth a
+    // special case.
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent = {extent_.width, extent_.height, 1};
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = imageFormat_;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    imageInfo.samples = ctx_.msaaSamples();
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VK_CHECK(vkCreateImage(ctx_.device(), &imageInfo, nullptr, &colorImage_));
+
+    VkMemoryRequirements memRequirements;
+    vkGetImageMemoryRequirements(ctx_.device(), colorImage_, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(ctx_.physicalDevice(), memRequirements.memoryTypeBits,
+                                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    VK_CHECK(vkAllocateMemory(ctx_.device(), &allocInfo, nullptr, &colorImageMemory_));
+    VK_CHECK(vkBindImageMemory(ctx_.device(), colorImage_, colorImageMemory_, 0));
+
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = colorImage_;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = imageFormat_;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+
+    VK_CHECK(vkCreateImageView(ctx_.device(), &viewInfo, nullptr, &colorImageView_));
+}
+
 void Swapchain::createSyncObjects() {
     renderFinishedSemaphores_.resize(images_.size());
     VkSemaphoreCreateInfo semaphoreInfo{};
@@ -211,6 +263,18 @@ void Swapchain::destroy() {
         vkDestroySemaphore(ctx_.device(), semaphore, nullptr);
     }
     renderFinishedSemaphores_.clear();
+    if (colorImageView_ != VK_NULL_HANDLE) {
+        vkDestroyImageView(ctx_.device(), colorImageView_, nullptr);
+        colorImageView_ = VK_NULL_HANDLE;
+    }
+    if (colorImage_ != VK_NULL_HANDLE) {
+        vkDestroyImage(ctx_.device(), colorImage_, nullptr);
+        colorImage_ = VK_NULL_HANDLE;
+    }
+    if (colorImageMemory_ != VK_NULL_HANDLE) {
+        vkFreeMemory(ctx_.device(), colorImageMemory_, nullptr);
+        colorImageMemory_ = VK_NULL_HANDLE;
+    }
     if (depthImageView_ != VK_NULL_HANDLE) {
         vkDestroyImageView(ctx_.device(), depthImageView_, nullptr);
         depthImageView_ = VK_NULL_HANDLE;

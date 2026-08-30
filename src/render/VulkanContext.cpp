@@ -282,6 +282,22 @@ void VulkanContext::pickPhysicalDevice() {
     std::cout << "Ray query support: " << (queryRayTracingSupport(physicalDevice_) ? "yes" : "no")
                << std::endl;
 
+    // 4x MSAA if the device supports it for both color and depth at once,
+    // otherwise 2x, otherwise none -- 4x is the usual sweet spot between
+    // visibly smoothing triangle edges (the tank's now-faceted hull panels
+    // in particular) and cost; this hobby project has no need to reach for
+    // 8x.
+    VkSampleCountFlags sampleCounts =
+        props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts;
+    if (sampleCounts & VK_SAMPLE_COUNT_4_BIT) {
+        msaaSamples_ = VK_SAMPLE_COUNT_4_BIT;
+    } else if (sampleCounts & VK_SAMPLE_COUNT_2_BIT) {
+        msaaSamples_ = VK_SAMPLE_COUNT_2_BIT;
+    } else {
+        msaaSamples_ = VK_SAMPLE_COUNT_1_BIT;
+    }
+    std::cout << "MSAA samples: " << msaaSamples_ << std::endl;
+
     QueueFamilyIndices indices = findQueueFamilies(physicalDevice_, surface_);
     graphicsQueueFamily_ = indices.graphicsFamily.value();
     presentQueueFamily_ = indices.presentFamily.value();

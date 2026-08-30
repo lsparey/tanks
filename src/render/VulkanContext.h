@@ -27,6 +27,7 @@ public:
     VkQueue presentQueue() const { return presentQueue_; }
     uint32_t graphicsQueueFamily() const { return graphicsQueueFamily_; }
     uint32_t presentQueueFamily() const { return presentQueueFamily_; }
+    VkSampleCountFlagBits msaaSamples() const { return msaaSamples_; }
 
 private:
     void createInstance();
@@ -47,4 +48,5 @@ private:
     VkQueue presentQueue_ = VK_NULL_HANDLE;
     uint32_t graphicsQueueFamily_ = 0;
     uint32_t presentQueueFamily_ = 0;
+    VkSampleCountFlagBits msaaSamples_ = VK_SAMPLE_COUNT_1_BIT;
 };

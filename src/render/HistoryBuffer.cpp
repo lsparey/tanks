@@ -110,9 +110,49 @@ void HistoryBuffer::create(VkExtent2D extent) {
         viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         VK_CHECK(vkCreateImageView(ctx_.device(), &viewInfo, nullptr, &imageViews_[i]));
     }
+
+    VkImageCreateInfo msaaImageInfo{};
+    msaaImageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    msaaImageInfo.imageType = VK_IMAGE_TYPE_2D;
+    msaaImageInfo.extent = {extent.width, extent.height, 1};
+    msaaImageInfo.mipLevels = 1;
+    msaaImageInfo.arrayLayers = 1;
+    msaaImageInfo.format = format_;
+    msaaImageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    msaaImageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    msaaImageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    msaaImageInfo.samples = ctx_.msaaSamples();
+    msaaImageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VK_CHECK(vkCreateImage(ctx_.device(), &msaaImageInfo, nullptr, &msaaImage_));
+
+    VkMemoryRequirements msaaMemRequirements;
+    vkGetImageMemoryRequirements(ctx_.device(), msaaImage_, &msaaMemRequirements);
+
+    VkMemoryAllocateInfo msaaAllocInfo{};
+    msaaAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    msaaAllocInfo.allocationSize = msaaMemRequirements.size;
+    msaaAllocInfo.memoryTypeIndex = findMemoryType(
+        ctx_.physicalDevice(), msaaMemRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VK_CHECK(vkAllocateMemory(ctx_.device(), &msaaAllocInfo, nullptr, &msaaMemory_));
+    VK_CHECK(vkBindImageMemory(ctx_.device(), msaaImage_, msaaMemory_, 0));
+
+    VkImageViewCreateInfo msaaViewInfo{};
+    msaaViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    msaaViewInfo.image = msaaImage_;
+    msaaViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    msaaViewInfo.format = format_;
+    msaaViewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VK_CHECK(vkCreateImageView(ctx_.device(), &msaaViewInfo, nullptr, &msaaImageView_));
 }
 
 void HistoryBuffer::destroy() {
+    if (msaaImageView_ != VK_NULL_HANDLE) vkDestroyImageView(ctx_.device(), msaaImageView_, nullptr);
+    if (msaaImage_ != VK_NULL_HANDLE) vkDestroyImage(ctx_.device(), msaaImage_, nullptr);
+    if (msaaMemory_ != VK_NULL_HANDLE) vkFreeMemory(ctx_.device(), msaaMemory_, nullptr);
+    msaaImageView_ = VK_NULL_HANDLE;
+    msaaImage_ = VK_NULL_HANDLE;
+    msaaMemory_ = VK_NULL_HANDLE;
+
     for (size_t i = 0; i < kSlotCount; ++i) {
         if (imageViews_[i] != VK_NULL_HANDLE) vkDestroyImageView(ctx_.device(), imageViews_[i], nullptr);
         if (images_[i] != VK_NULL_HANDLE) vkDestroyImage(ctx_.device(), images_[i], nullptr);

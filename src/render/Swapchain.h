@@ -26,6 +26,12 @@ public:
     VkImageView imageView(size_t i) const { return imageViews_[i]; }
     VkImage depthImage() const { return depthImage_; }
     VkImageView depthImageView() const { return depthImageView_; }
+    // Multisampled color scratch target the main pipeline actually renders
+    // into; resolved by the driver (see VkRenderingAttachmentInfo::
+    // resolveImageView in Application::drawFrame) into the single-sample
+    // presentable image() above at the end of the render pass.
+    VkImage colorImage() const { return colorImage_; }
+    VkImageView colorImageView() const { return colorImageView_; }
 
     // Indexed by swapchain image index, NOT frame-in-flight index: present
     // operations aren't gated by the per-frame-in-flight fence, so reusing a
@@ -40,6 +46,7 @@ private:
     void create();
     void createImageViews();
     void createDepthResources();
+    void createColorResources();
     void createSyncObjects();
     void destroy();
 
@@ -56,6 +63,10 @@ private:
     VkImage depthImage_ = VK_NULL_HANDLE;
     VkDeviceMemory depthImageMemory_ = VK_NULL_HANDLE;
     VkImageView depthImageView_ = VK_NULL_HANDLE;
+
+    VkImage colorImage_ = VK_NULL_HANDLE;
+    VkDeviceMemory colorImageMemory_ = VK_NULL_HANDLE;
+    VkImageView colorImageView_ = VK_NULL_HANDLE;
 
     std::vector<VkSemaphore> renderFinishedSemaphores_;
 };

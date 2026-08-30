@@ -39,6 +39,14 @@ public:
     VkImageView imageView(size_t slot) const { return imageViews_[slot]; }
     VkSampler sampler() const { return sampler_; }
 
+    // Multisampled scratch write target (see Swapchain::colorImage() for the
+    // same pattern) -- the pipeline renders history into this, and the
+    // driver resolves it down into images_[frameIndex] at the end of the
+    // render pass. Not ping-ponged: it's fully transient within a single
+    // frame, so both frame-in-flight slots can share the one scratch image.
+    VkImage msaaImage() const { return msaaImage_; }
+    VkImageView msaaImageView() const { return msaaImageView_; }
+
 private:
     void create(VkExtent2D extent);
     void destroy();
@@ -50,4 +58,8 @@ private:
     std::array<VkImage, kSlotCount> images_{};
     std::array<VkDeviceMemory, kSlotCount> memory_{};
     std::array<VkImageView, kSlotCount> imageViews_{};
+
+    VkImage msaaImage_ = VK_NULL_HANDLE;
+    VkDeviceMemory msaaMemory_ = VK_NULL_HANDLE;
+    VkImageView msaaImageView_ = VK_NULL_HANDLE;
 };

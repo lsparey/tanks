@@ -413,12 +413,27 @@ void Application::drawFrame() {
 
     VkImage colorImage = swapchain_->image(imageIndex);
     VkImage historyWriteImage = historyBuffer_->image(currentFrame_);
+    // The presentable swapchain image and the persistent history slot above
+    // are both single-sample and now serve as MSAA *resolve targets* rather
+    // than the attachments actually drawn into -- the pipeline (created with
+    // rasterizationSamples = ctx_.msaaSamples()) renders into these
+    // multisampled scratch images instead, which the driver resolves
+    // (averages down) into the single-sample targets at the end of the
+    // render pass (see the resolveImageView fields below).
+    VkImage msaaColorImage = swapchain_->colorImage();
+    VkImage msaaHistoryImage = historyBuffer_->msaaImage();
 
-    // All three attachments are fully overwritten this frame (LOAD_OP_CLEAR),
-    // so treating oldLayout as UNDEFINED is correct regardless of prior
-    // layout: it tells the driver not to preserve contents, matching the
-    // clear.
+    // All attachments are fully overwritten this frame (LOAD_OP_CLEAR), so
+    // treating oldLayout as UNDEFINED is correct regardless of prior layout:
+    // it tells the driver not to preserve contents, matching the clear. The
+    // resolve targets (colorImage, historyWriteImage) also need to be in
+    // COLOR_ATTACHMENT_OPTIMAL up front since that's the layout the resolve
+    // operation writes through.
     VkImageMemoryBarrier2 toAttachments[] = {
+        imageBarrier(msaaColorImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                     0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
         imageBarrier(colorImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
                      0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -428,10 +443,14 @@ void Application::drawFrame() {
                      VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                      VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
                      VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT),
+        imageBarrier(msaaHistoryImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                     0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
         // This slot's previous content (from 2 frames ago) was already
         // transitioned to SHADER_READ_ONLY_OPTIMAL for the OTHER slot's use
         // as history input last frame; oldLayout=UNDEFINED just discards it,
-        // which is fine since we're about to clear+overwrite it here.
+        // which is fine since we're about to overwrite it (via resolve) here.
         imageBarrier(historyWriteImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
                      0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -449,24 +468,30 @@ void Application::drawFrame() {
     depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     depInfo.memoryBarrierCount = 1;
     depInfo.pMemoryBarriers = &asToShaderBarrier;
-    depInfo.imageMemoryBarrierCount = 3;
+    depInfo.imageMemoryBarrierCount = 5;
     depInfo.pImageMemoryBarriers = toAttachments;
     vkCmdPipelineBarrier2(frame.commandBuffer, &depInfo);
 
     VkRenderingAttachmentInfo colorAttachment{};
     colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    colorAttachment.imageView = swapchain_->imageView(imageIndex);
+    colorAttachment.imageView = swapchain_->colorImageView();
     colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+    colorAttachment.resolveImageView = swapchain_->imageView(imageIndex);
+    colorAttachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     colorAttachment.clearValue.color = {{0.45f, 0.65f, 0.85f, 1.0f}};
 
     VkRenderingAttachmentInfo historyAttachment{};
     historyAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    historyAttachment.imageView = historyBuffer_->imageView(currentFrame_);
+    historyAttachment.imageView = historyBuffer_->msaaImageView();
     historyAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    historyAttachment.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+    historyAttachment.resolveImageView = historyBuffer_->imageView(currentFrame_);
+    historyAttachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     historyAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    historyAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    historyAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     historyAttachment.clearValue.color.float32[0] = 1.0f;      // neutral: "fully lit" where nothing draws
     historyAttachment.clearValue.color.float32[1] = 1.0f;      // neutral: "no AO occlusion"
     historyAttachment.clearValue.color.float32[2] = 50000.0f;  // huge distance: always fails disocclusion check
