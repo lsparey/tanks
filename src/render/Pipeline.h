@@ -68,6 +68,15 @@ public:
         // (not the real geometric normal used for diffuse/shadow rays)
         // with an animated ripple pattern -- water only; 0 elsewhere.
         float waveStrength = 0.0f;
+        // Perturbs the *diffuse* normal (see basic.frag's litNormal) using
+        // the material texture's own luminance as a fake heightfield, via
+        // the true per-instance tangent (fragTangent) -- gives a flat decal
+        // some readable surface depth under lighting instead of looking
+        // like a printed-on sticker. Track marks only; 0 elsewhere. (Terrain
+        // gets its own version of this gated by heightBlend instead, since
+        // it can take a cheaper world-axis-aligned shortcut track marks
+        // can't -- see basic.frag.)
+        float bumpStrength = 0.0f;
     };
 
     Pipeline(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthFormat, VkFormat historyFormat);

@@ -46,7 +46,10 @@ glm::mat4 Camera::viewMatrix() const {
 }
 
 glm::mat4 Camera::projMatrix(float aspect) const {
-    return glm::perspective(glm::radians(fovDegrees_), aspect, 0.1f, 200.0f);
+    // Far plane comfortably exceeds the terrain's corner-to-corner diagonal
+    // (worldSize 180 -> ~255) so distant terrain doesn't get clipped when
+    // looking across the map.
+    return glm::perspective(glm::radians(fovDegrees_), aspect, 0.1f, 500.0f);
 }
 
 void Camera::updateBasisVectors() {

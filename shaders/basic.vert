@@ -22,6 +22,12 @@ layout(location = 0) out vec3 fragNormal;
 layout(location = 1) out vec3 fragColor;
 layout(location = 2) out vec2 fragUV;
 layout(location = 3) out vec3 fragWorldPos;
+// The model matrix's own local +X axis in world space -- constant across a
+// single (rigid, non-skinned) draw instance, so every vertex just carries
+// the same value out. Lets basic.frag reconstruct a true per-instance
+// tangent for decal bump mapping (see PushConstants::bumpStrength) without
+// needing a dedicated tangent vertex attribute.
+layout(location = 4) out vec3 fragTangent;
 
 void main() {
     vec4 worldPos = pc.model * vec4(inPosition, 1.0);
@@ -34,4 +40,5 @@ void main() {
     fragColor = inColor;
     fragUV = inUV;
     fragWorldPos = worldPos.xyz;
+    fragTangent = mat3(pc.model) * vec3(1.0, 0.0, 0.0);
 }

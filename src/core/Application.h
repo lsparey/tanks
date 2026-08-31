@@ -49,6 +49,7 @@ private:
     bool framebufferResized_ = false;
     size_t currentFrame_ = 0;
     double lastFrameTime_ = 0.0;
+    float fpsSmoothed_ = 60.0f;
     bool followTank_ = true;
     bool prevFKeyDown_ = false;
     bool prevFireDown_ = false;

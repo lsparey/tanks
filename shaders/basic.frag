@@ -6,6 +6,7 @@ layout(location = 0) in vec3 fragNormal;
 layout(location = 1) in vec3 fragColor;
 layout(location = 2) in vec2 fragUV;
 layout(location = 3) in vec3 fragWorldPos;
+layout(location = 4) in vec3 fragTangent;
 
 layout(set = 0, binding = 0) uniform FrameUBO {
     mat4 view;
@@ -40,6 +41,10 @@ layout(push_constant) uniform PushConstants {
     // the real diffuse/shadow-ray normal) with an animated ripple pattern
     // -- water only; 0 elsewhere leaves the normal untouched.
     float waveStrength;
+    // Perturbs the *diffuse* normal using the material texture's own
+    // luminance as a fake heightfield, via fragTangent -- track marks only;
+    // 0 elsewhere. See main()'s litNormal.
+    float bumpStrength;
 } pc;
 
 layout(location = 0) out vec4 outColor;
@@ -167,6 +172,20 @@ vec3 skyColor(vec3 dir) {
     return color;
 }
 
+// Reimplements TrackTextureGenerator's tread-link ridge pattern as a
+// procedural [0,1] height field (not sampled from the actual texture) --
+// same idea as cloudFbm's independent reimplementation of
+// CloudTextureGenerator above. Needed because the real texture's own
+// brown-on-brown color contrast is too low (~0.07 out of 1.0 in luminance)
+// to give a usable bump signal, and any signal derived from a filtered/
+// mipped/anisotropically-sampled texture read would vary with viewing
+// distance anyway. uv.y here is the plain [0,1] mesh UV (see Mesh::quad);
+// TrackTextureGenerator's own v spans [-1,1] instead, but fract() makes the
+// period/phase match regardless -- see the derivation in the call site.
+float trackHeightField(vec2 uv) {
+    return smoothstep(0.42, 0.58, fract(uv.y * 12.0 + 0.5));
+}
+
 // Orthonormal basis around `n`, used to jitter a ray direction within a
 // small cone (soft shadows) or hemisphere (AO) instead of a single fixed
 // direction.
@@ -176,7 +195,15 @@ void buildBasis(vec3 n, out vec3 t, out vec3 b) {
     b = cross(n, t);
 }
 
-const int kShadowSamples = 5;
+const int kShadowSamples = 3;
+// Extra rays spent only on pixels the first kShadowSamples already show to
+// be in a penumbra (partially occluded) -- that's where few-sample noise is
+// actually visible as dithered/jittering edges; a fully-lit or
+// fully-shadowed pixel already reads as a clean flat value from
+// kShadowSamples alone; and it's a small fraction of the screen (a thin band
+// along each shadow boundary), so spending more rays there barely affects
+// overall cost while cleaning up exactly the noisy region.
+const int kShadowEdgeExtraSamples = 5;
 const float kConeAngle = 0.05;
 
 float traceSoftShadow(vec3 origin, vec3 lightDir, float tMax, float noiseSeed) {
@@ -192,10 +219,23 @@ float traceSoftShadow(vec3 origin, vec3 lightDir, float tMax, float noiseSeed) {
         vec3 jitteredDir = normalize(lightDir + radius * (cos(angle) * t + sin(angle) * b));
         sum += traceShadow(origin, jitteredDir, tMax);
     }
-    return sum / float(kShadowSamples);
+
+    float coarseAvg = sum / float(kShadowSamples);
+    if (coarseAvg < 0.001 || coarseAvg > 0.999) return coarseAvg;
+
+    int totalSamples = kShadowSamples + kShadowEdgeExtraSamples;
+    for (int i = kShadowSamples; i < totalSamples; ++i) {
+        float u1 = fract(noiseSeed + float(i) * 0.6180339887);
+        float u2 = fract(noiseSeed * 1.618 + float(i) * 0.3819660113);
+        float angle = u1 * 6.2831853;
+        float radius = kConeAngle * sqrt(u2);
+        vec3 jitteredDir = normalize(lightDir + radius * (cos(angle) * t + sin(angle) * b));
+        sum += traceShadow(origin, jitteredDir, tMax);
+    }
+    return sum / float(totalSamples);
 }
 
-const int kAOSamples = 8;
+const int kAOSamples = 4;
 // Short rays: contact shadows, not scene-wide occlusion. Kept tight
 // deliberately -- a wider radius means the tank's hull stays a genuine,
 // correct occluder for any ground point within range long after it visually
@@ -236,8 +276,35 @@ float traceAO(vec3 origin, vec3 normal, float seedBase) {
 }
 
 void main() {
-    vec4 texSample = texture(materialTexHighA, fragUV);
+    // Domain-warp the terrain's sample UV with a low-frequency (world-space)
+    // noise offset so its many texture repeats (60 across the current
+    // 180-unit terrain -- see kTextureRepeatsPerUnit in Terrain.cpp) look
+    // subtly different from each other instead of tiling as an exact,
+    // eye-catching grid. The warp's own frequency is well below the
+    // texture's tiling period, so it doesn't introduce a new repeating
+    // pattern of its own. Gated to terrain (heightBlend) only -- anything
+    // else's UVs are meaningful exact mappings (e.g. the crate's one UV
+    // island per face) that warping would visibly distort.
+    vec2 sampleUV = fragUV;
+    if (pc.heightBlend > 0.5) {
+        vec2 warp = vec2(valueNoise2D(fragWorldPos.xz * 0.015 + vec2(5.2, 88.1)),
+                          valueNoise2D(fragWorldPos.xz * 0.017 + vec2(41.7, 12.3)));
+        sampleUV += (warp - 0.5) * 0.6;
+    }
+
+    vec4 texSample = texture(materialTexHighA, sampleUV);
     vec3 texColor = texSample.rgb;
+    // Cheap per-pixel surface detail for terrain's diffuse lighting, derived
+    // straight from the albedo texture's own luminance gradient rather than
+    // a separate normal-map texture/descriptor slot -- terrain's UV already
+    // aligns 1:1 (uniform scale, no rotation) with world X/Z (see
+    // Terrain::buildMesh), so, like water's wave ripple below, the resulting
+    // perturbation can be added directly in world space without a tangent-
+    // space transform. Always sampled from materialTexHighA (the base grass
+    // texture) regardless of which material actually blends in at this
+    // pixel -- this is meant to read as fine micro-detail under lighting,
+    // not to exactly track the grass/gravel blend.
+    vec2 terrainBump = vec2(0.0);
     if (pc.heightBlend > 0.5) {
         // Terrain: within each zone (grass, gravel), patch-blend between two
         // texture variants using a large-scale noise mask, so the ground
@@ -252,8 +319,8 @@ void main() {
         float gravelPatch = valueNoise2D(fragWorldPos.xz * 0.08 + vec2(71.2, 33.6)) * 0.7 +
                              valueNoise2D(fragWorldPos.xz * 0.2 + vec2(12.9, 47.5)) * 0.3;
         vec3 grassColor =
-            mix(texColor, texture(materialTexHighB, fragUV).rgb, smoothstep(0.4, 0.6, grassPatch));
-        vec3 gravelColor = mix(texture(materialTexLowA, fragUV).rgb, texture(materialTexLowB, fragUV).rgb,
+            mix(texColor, texture(materialTexHighB, sampleUV).rgb, smoothstep(0.4, 0.6, grassPatch));
+        vec3 gravelColor = mix(texture(materialTexLowA, sampleUV).rgb, texture(materialTexLowB, sampleUV).rgb,
                                 smoothstep(0.4, 0.6, gravelPatch));
 
         // Fade to the low-point (gravel) blend in valleys. Thresholds are
@@ -263,6 +330,16 @@ void main() {
         // hard line.
         float rockiness = 1.0 - smoothstep(-1.3, -0.4, fragWorldPos.y);
         texColor = mix(grassColor, gravelColor, rockiness);
+
+        const float kTerrainBumpTexelStep = 1.0 / 512.0;  // matches kTerrainTextureRes in Application.cpp
+        const float kTerrainBumpStrength = 3.0;
+        vec3 luminanceWeights = vec3(0.299, 0.587, 0.114);
+        float heightCenter = dot(texture(materialTexHighA, sampleUV).rgb, luminanceWeights);
+        float heightU = dot(texture(materialTexHighA, sampleUV + vec2(kTerrainBumpTexelStep, 0.0)).rgb,
+                             luminanceWeights);
+        float heightV = dot(texture(materialTexHighA, sampleUV + vec2(0.0, kTerrainBumpTexelStep)).rgb,
+                             luminanceWeights);
+        terrainBump = vec2(heightU - heightCenter, heightV - heightCenter) * kTerrainBumpStrength;
     }
     vec3 albedo = fragColor * texColor;
     // Texture alpha times the per-draw opacity (PushConstants::opacity) --
@@ -283,9 +360,12 @@ void main() {
     // Offset the ray origin along the normal to avoid self-shadowing
     // ("shadow acne") from the surface the ray starts on. Directional light
     // has no real distance limit, so tMax just needs to comfortably exceed
-    // the scene's extent (terrain worldSize is 60).
+    // the scene's extent (terrain worldSize is 180, corner-to-corner
+    // diagonal ~255) -- this also doubles as traceReflection's tMax, and a
+    // near-horizontal reflection ray can travel close to that full diagonal
+    // before hitting anything or reaching open sky.
     const float kShadowBias = 0.02;
-    const float kShadowTMax = 200.0;
+    const float kShadowTMax = 500.0;
     // Mix in a per-frame counter (golden-ratio additive recurrence) so each
     // frame jitters differently even for a completely static camera/scene --
     // without this, temporal accumulation has nothing to actually average
@@ -417,7 +497,37 @@ void main() {
     }
     outShadowHistory = vec4(shadowFactor, aoFactor, currentViewDist, shadowDisagreementHistory);
 
-    float diffuse = max(dot(normal, toLight), 0.0) * shadowFactor;
+    // Diffuse-only bump: applied after the shadow/AO rays (which stay on the
+    // true geometric normal -- perturbing their origin bias or hemisphere
+    // basis with a fake micro-bump would just add noise, not detail) but
+    // before the diffuse term, which is exactly where a flat-lit decal look
+    // comes from.
+    vec3 litNormal = normal;
+    if (pc.heightBlend > 0.5) {
+        litNormal = normalize(normal - vec3(terrainBump.x, 0.0, terrainBump.y));
+    } else if (pc.bumpStrength > 0.001) {
+        // Track marks: same idea as terrain's bump above (fake heightfield
+        // perturbing the normal), but using trackHeightField's procedural
+        // ridge signal instead of terrain's texture-luminance approach --
+        // see trackHeightField's comment for why. Also, a track mark can be
+        // rotated to any tank heading, so it can't take terrain's shortcut
+        // of perturbing directly along world X/Z either. fragTangent (the
+        // model matrix's local +X axis, matching the tread texture's U/width
+        // direction -- see TrackTextureGenerator and Mesh::quad's UVs) gives
+        // the real per-instance direction to perturb along instead.
+        // Re-orthogonalize against the interpolated normal (Gram-Schmidt)
+        // since fragTangent alone isn't guaranteed exactly perpendicular
+        // after a non-uniform-scaled (width != length) model matrix.
+        vec3 tangent = normalize(fragTangent - normal * dot(fragTangent, normal));
+        vec3 bitangent = cross(tangent, normal);  // matches +V/forward, see fragTangent's comment
+        const float kTrackBumpStep = 1.0 / 128.0;  // matches TrackTextureGenerator's size
+        float heightCenter = trackHeightField(sampleUV);
+        float heightU = trackHeightField(sampleUV + vec2(kTrackBumpStep, 0.0));
+        float heightV = trackHeightField(sampleUV + vec2(0.0, kTrackBumpStep));
+        vec2 trackBump = vec2(heightU - heightCenter, heightV - heightCenter) * pc.bumpStrength;
+        litNormal = normalize(normal - tangent * trackBump.x - bitangent * trackBump.y);
+    }
+    float diffuse = max(dot(litNormal, toLight), 0.0) * shadowFactor;
     // Ambient/fill term, darkened by AO at contact points (where the tank's
     // tracks, box bases, and tree trunks meet the ground) so those read as
     // grounded rather than floating; faces in shadow still read as dim
@@ -493,13 +603,33 @@ void main() {
     // ~0.02-0.03 normal-incidence reflectance drives both terms together:
     // grazing views read as a reflective sheet (reflectivity and alpha
     // both push toward 1), steep/overhead views let the lake bed and its
-    // own duller color show through.
+    // own duller color show through -- except in deep water, see
+    // waterDepthT below, which overrides that see-through case: real deep
+    // water absorbs/scatters away the light that would otherwise reach the
+    // bottom and return, so you don't see the lakebed there regardless of
+    // viewing angle.
     float effectiveReflectivity = pc.reflectivity;
+    // Recovers the depth fraction WaterGenerator.cpp baked into fragColor
+    // (mix(shallowColor, deepColor, depthT), see buildMesh) by projecting
+    // back onto that known line -- avoids needing a dedicated depth vertex
+    // attribute just for this. Must track WaterGenerator.cpp's palette.
+    const vec3 kWaterShallowColor = vec3(0.24, 0.38, 0.34);
+    const vec3 kWaterDeepColor = vec3(0.05, 0.11, 0.16);
+    float waterDepthT = 0.0;
     if (isWater) {
+        vec3 span = kWaterDeepColor - kWaterShallowColor;
+        waterDepthT = clamp(dot(fragColor - kWaterShallowColor, span) / dot(span, span), 0.0, 1.0);
+
         float cosTheta = clamp(dot(shadingNormal, viewDir), 0.0, 1.0);
         float waterFresnel = mix(0.03, 1.0, pow(1.0 - cosTheta, 5.0));
         effectiveReflectivity = mix(pc.reflectivity * 0.25, 1.0, waterFresnel);
-        finalAlpha = mix(pc.opacity * 0.55, 1.0, waterFresnel);
+        // Fresnel alone floors alpha low for a straight-down view regardless
+        // of depth, which reads as "always see the bottom" -- fine for a
+        // shallow puddle, wrong for a deep lake. depthAlphaFloor raises that
+        // floor with depth so deep water stays nearly opaque even overhead;
+        // Fresnel can still push it higher at grazing angles on top of that.
+        float depthAlphaFloor = mix(0.3, 0.95, waterDepthT);
+        finalAlpha = max(depthAlphaFloor, mix(pc.opacity * 0.55, 1.0, waterFresnel));
     }
 
     if (effectiveReflectivity > 0.01) {
@@ -510,6 +640,10 @@ void main() {
         }
     }
 
-    vec3 result = base + vec3(specular) + fresnel * vec3(0.6) + envColor * effectiveReflectivity;
+    // Extra absorption beyond the deepColor tint itself: deep water reads as
+    // genuinely darker (light scattered/absorbed within the water column),
+    // not just differently-hued.
+    vec3 baseContribution = isWater ? base * mix(1.0, 0.35, waterDepthT) : base;
+    vec3 result = baseContribution + vec3(specular) + fresnel * vec3(0.6) + envColor * effectiveReflectivity;
     outColor = vec4(result, finalAlpha);
 }

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <iostream>
 #include <random>
+#include <string>
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -32,6 +33,61 @@ constexpr float kWaterThreshold = -1.0f;
 // keeps separate basins from all settling at one shared "sea level" (see
 // WaterGenerator).
 constexpr float kWaterMaxDepth = 0.6f;
+
+// Digits are drawn as seven-segment glyphs made of HudRenderer quads --
+// there's no font/text rendering in the HUD, and a segmented display is the
+// simplest thing that composes out of the axis-aligned rectangles it already
+// draws (crosshair, box ticks).
+constexpr float kDigitSegmentThickness = 0.006f;
+
+const bool kSevenSegmentTable[10][7] = {
+    // a(top), b(top-right), c(bottom-right), d(bottom), e(bottom-left), f(top-left), g(middle)
+    {true, true, true, true, true, true, false},    // 0
+    {false, true, true, false, false, false, false},  // 1
+    {true, true, false, true, true, false, true},    // 2
+    {true, true, true, true, false, false, true},    // 3
+    {false, true, true, false, false, true, true},   // 4
+    {true, false, true, true, false, true, true},    // 5
+    {true, false, true, true, true, true, true},     // 6
+    {true, true, true, false, false, false, false},  // 7
+    {true, true, true, true, true, true, true},      // 8
+    {true, true, true, true, false, true, true},     // 9
+};
+
+void addDigit(HudRenderer& hud, glm::vec2 centerNDC, float halfHeight, float aspect, int digit,
+              glm::vec3 color) {
+    if (digit < 0 || digit > 9) return;
+    const bool* seg = kSevenSegmentTable[digit];
+
+    float halfWidth = halfHeight * 0.5f / aspect;
+    float thicknessX = kDigitSegmentThickness / aspect;
+    float thicknessY = kDigitSegmentThickness;
+    float armHalfHeight = halfHeight * 0.5f - thicknessY;
+
+    if (seg[0]) hud.addQuad(centerNDC + glm::vec2(0.0f, halfHeight), {halfWidth, thicknessY}, color);
+    if (seg[1]) hud.addQuad(centerNDC + glm::vec2(halfWidth, halfHeight * 0.5f), {thicknessX, armHalfHeight}, color);
+    if (seg[2]) hud.addQuad(centerNDC + glm::vec2(halfWidth, -halfHeight * 0.5f), {thicknessX, armHalfHeight}, color);
+    if (seg[3]) hud.addQuad(centerNDC + glm::vec2(0.0f, -halfHeight), {halfWidth, thicknessY}, color);
+    if (seg[4]) hud.addQuad(centerNDC + glm::vec2(-halfWidth, -halfHeight * 0.5f), {thicknessX, armHalfHeight}, color);
+    if (seg[5]) hud.addQuad(centerNDC + glm::vec2(-halfWidth, halfHeight * 0.5f), {thicknessX, armHalfHeight}, color);
+    if (seg[6]) hud.addQuad(centerNDC, {halfWidth, thicknessY}, color);
+}
+
+// Lays digits out right-to-left from rightEdgeNDC, so the counter's right
+// edge stays fixed and it grows leftward as the value gains digits (e.g.
+// "9" -> "10"), which is what you want anchored to a screen corner.
+void addNumber(HudRenderer& hud, int value, glm::vec2 rightEdgeNDC, float halfHeight, float aspect,
+               glm::vec3 color) {
+    std::string digits = std::to_string(std::max(0, value));
+    float halfWidth = halfHeight * 0.5f / aspect;
+    float advance = halfWidth * 2.4f;
+
+    float x = rightEdgeNDC.x - halfWidth;
+    for (auto it = digits.rbegin(); it != digits.rend(); ++it) {
+        addDigit(hud, {x, rightEdgeNDC.y}, halfHeight, aspect, *it - '0', color);
+        x -= advance;
+    }
+}
 
 VkImageMemoryBarrier2 imageBarrier(VkImage image, VkImageAspectFlags aspect,
                                     VkImageLayout oldLayout, VkImageLayout newLayout,
@@ -78,18 +134,19 @@ Application::Application() {
     // Two variants each for grass and gravel, patch-blended together in
     // basic.frag (see heightBlend) so terrain reads as naturally varied
     // rather than one texture tiled everywhere.
-    std::vector<uint8_t> grassPixelsA = GrassTextureGenerator::generate(256, 0);
-    grassTextureA_ = std::make_unique<Texture>(
-        Texture::fromPixels(*context_, *commands_, 256, 256, grassPixelsA, /*repeat=*/true));
-    std::vector<uint8_t> grassPixelsB = GrassTextureGenerator::generate(256, 1);
-    grassTextureB_ = std::make_unique<Texture>(
-        Texture::fromPixels(*context_, *commands_, 256, 256, grassPixelsB, /*repeat=*/true));
-    std::vector<uint8_t> rockPixelsA = RockTextureGenerator::generate(256, 0);
-    rockTextureA_ = std::make_unique<Texture>(
-        Texture::fromPixels(*context_, *commands_, 256, 256, rockPixelsA, /*repeat=*/true));
-    std::vector<uint8_t> rockPixelsB = RockTextureGenerator::generate(256, 1);
-    rockTextureB_ = std::make_unique<Texture>(
-        Texture::fromPixels(*context_, *commands_, 256, 256, rockPixelsB, /*repeat=*/true));
+    constexpr uint32_t kTerrainTextureRes = 512;
+    std::vector<uint8_t> grassPixelsA = GrassTextureGenerator::generate(kTerrainTextureRes, 0);
+    grassTextureA_ = std::make_unique<Texture>(Texture::fromPixels(
+        *context_, *commands_, kTerrainTextureRes, kTerrainTextureRes, grassPixelsA, /*repeat=*/true));
+    std::vector<uint8_t> grassPixelsB = GrassTextureGenerator::generate(kTerrainTextureRes, 1);
+    grassTextureB_ = std::make_unique<Texture>(Texture::fromPixels(
+        *context_, *commands_, kTerrainTextureRes, kTerrainTextureRes, grassPixelsB, /*repeat=*/true));
+    std::vector<uint8_t> rockPixelsA = RockTextureGenerator::generate(kTerrainTextureRes, 0);
+    rockTextureA_ = std::make_unique<Texture>(Texture::fromPixels(
+        *context_, *commands_, kTerrainTextureRes, kTerrainTextureRes, rockPixelsA, /*repeat=*/true));
+    std::vector<uint8_t> rockPixelsB = RockTextureGenerator::generate(kTerrainTextureRes, 1);
+    rockTextureB_ = std::make_unique<Texture>(Texture::fromPixels(
+        *context_, *commands_, kTerrainTextureRes, kTerrainTextureRes, rockPixelsB, /*repeat=*/true));
     std::vector<uint8_t> trackPixels = TrackTextureGenerator::generate(128);
     trackTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 128, 128, trackPixels, /*repeat=*/false));
@@ -137,7 +194,7 @@ Application::Application() {
 
     uint32_t terrainSeed = std::random_device{}();
     terrain_ = std::make_unique<Terrain>(*context_, *commands_, /*resolution=*/64,
-                                          /*worldSize=*/60.0f, /*amplitude=*/3.0f, terrainSeed);
+                                          /*worldSize=*/180.0f, /*amplitude=*/3.0f, terrainSeed);
     WaterGenerator::FloodField waterField =
         WaterGenerator::computeFloodField(*terrain_, kWaterThreshold, kWaterMaxDepth);
     waterMesh_ = WaterGenerator::buildMesh(*context_, *commands_, *terrain_, waterField);
@@ -287,6 +344,10 @@ void Application::mainLoop() {
         double now = glfwGetTime();
         float deltaTime = static_cast<float>(now - lastFrameTime_);
         lastFrameTime_ = now;
+        // Exponential moving average rather than the raw instantaneous
+        // value, which jitters wildly frame to frame and is unreadable as
+        // an on-screen counter.
+        if (deltaTime > 0.0f) fpsSmoothed_ = glm::mix(fpsSmoothed_, 1.0f / deltaTime, 0.1f);
 
         input_->update();
 
@@ -351,7 +412,7 @@ void Application::spawnBoxes() {
 }
 
 void Application::spawnTrees(const WaterGenerator::FloodField& waterField) {
-    constexpr int kTreeCount = 40;
+    constexpr int kTreeCount = 100;
     constexpr float kEdgeMargin = 3.0f;
     constexpr float kMinDistanceFromSpawn = 8.0f;
     constexpr float kMinDistanceBetweenTrees = 3.0f;
@@ -389,12 +450,12 @@ void Application::spawnTrees(const WaterGenerator::FloodField& waterField) {
 }
 
 void Application::spawnRocks(const WaterGenerator::FloodField& waterField) {
-    // Cluster/rock counts kept modest -- combined with terrain, trees, tank,
-    // boxes, and shells, the scene's TLAS has a fixed capacity
-    // (SceneAccelerationStructure::kMaxInstances = 128); worst case here is
-    // 8*6=48 rocks, leaving comfortable headroom over the ~52-instance
-    // baseline without rocks.
-    constexpr int kClusterCount = 8;
+    // Cluster/rock counts kept in check against the scene's TLAS instance
+    // capacity (SceneAccelerationStructure::kMaxInstances = 384): worst case
+    // here is 16*6=96 rocks; combined with trees (100*2=200 instances, bark
+    // + leaves each) and the terrain/tank/boxes/shells baseline (well under
+    // 30), that's ~326 worst case, leaving headroom under the cap.
+    constexpr int kClusterCount = 16;
     constexpr float kEdgeMargin = 3.0f;
     constexpr float kMinDistanceFromSpawn = 6.0f;
     constexpr float kMinDistanceBetweenClusters = 6.0f;
@@ -944,6 +1005,7 @@ void Application::drawFrame() {
         Pipeline::PushConstants markPc{};
         markPc.model = mark.worldMatrix();
         markPc.opacity = mark.opacity();
+        markPc.bumpStrength = 12.0f;
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(markPc), &markPc);
@@ -1103,6 +1165,12 @@ void Application::drawFrame() {
         float x = kTicksStartX + kTickSpacing * static_cast<float>(i);
         hud_->addQuad({x, kTicksY}, {kTickHalf / aspect, kTickHalf}, tickColor);
     }
+
+    constexpr glm::vec2 kFpsRightEdge(0.95f, 0.85f);
+    constexpr float kFpsDigitHalfHeight = 0.035f;
+    glm::vec3 fpsColor(1.0f, 1.0f, 1.0f);
+    addNumber(*hud_, static_cast<int>(fpsSmoothed_ + 0.5f), kFpsRightEdge, kFpsDigitHalfHeight, aspect,
+              fpsColor);
 
     vkCmdEndRendering(frame.commandBuffer);
 

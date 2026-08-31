@@ -336,6 +336,10 @@ void VulkanContext::createLogicalDevice() {
     // single-channel shadow-history output) don't share the same write
     // mask -- without this, only identical pAttachments entries are legal.
     features2.features.independentBlend = VK_TRUE;
+    // Anisotropic sampling for tiled ground textures viewed at grazing
+    // angles (see Texture::fromPixels) -- a near-universal feature on real
+    // GPUs, not worth a support query.
+    features2.features.samplerAnisotropy = VK_TRUE;
 
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
