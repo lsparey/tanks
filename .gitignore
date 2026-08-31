@@ -7,3 +7,6 @@ vcpkg/
 
 # Local vulkaninfo dumps (device/driver debug output, machine-specific)
 VP_VULKANINFO_*.json
+
+# F12-triggered manual screenshots (see Application::nextScreenshotPath)
+/screenshots/

@@ -78,19 +78,20 @@ float fbm(float x, float y, int octaves, float basePeriod) {
 std::vector<uint8_t> GrassTextureGenerator::generate(uint32_t size, uint32_t variant) {
     std::vector<uint8_t> pixels(static_cast<size_t>(size) * size * 4);
 
-    // Real grass reads as desaturated/olive rather than a pure saturated
-    // green -- R and G kept closer together, B pulled well down, with a bit
-    // of yellow-brown creeping into the lighter tone (sun-bleached blades).
-    // Variant 0 is lush/healthy grass; variant 1+ trend drier and more
-    // yellow-brown (sun-bleached/trampled), for patch-blended variety --
-    // see Terrain's painting in basic.frag.
-    glm::vec3 darkGreen(0.14f, 0.19f, 0.07f);
-    glm::vec3 midGreen(0.28f, 0.34f, 0.14f);
-    glm::vec3 lightGreen(0.44f, 0.46f, 0.20f);
+    // A darker, more verdant green than real grass's usual desaturated/olive
+    // look -- G kept clearly dominant over R (rather than nearly equal) all
+    // the way up to the lightest tone, so it reads as lush green rather than
+    // trending yellow-brown at the bright end. Variant 0 is lush/healthy
+    // grass; variant 1+ trend drier and more yellow-brown (sun-bleached/
+    // trampled), for patch-blended variety -- see Terrain's painting in
+    // basic.frag.
+    glm::vec3 darkGreen(0.04f, 0.11f, 0.03f);
+    glm::vec3 midGreen(0.08f, 0.20f, 0.06f);
+    glm::vec3 lightGreen(0.14f, 0.28f, 0.10f);
     if (variant % 2 == 1) {
-        darkGreen = glm::vec3(0.20f, 0.19f, 0.08f);
-        midGreen = glm::vec3(0.38f, 0.32f, 0.14f);
-        lightGreen = glm::vec3(0.58f, 0.48f, 0.22f);
+        darkGreen = glm::vec3(0.07f, 0.11f, 0.03f);
+        midGreen = glm::vec3(0.14f, 0.18f, 0.06f);
+        lightGreen = glm::vec3(0.22f, 0.24f, 0.09f);
     }
     // Shifts the noise pattern itself so variant textures don't just look
     // like the same patches recolored -- periodicity (see fbm's comment)
@@ -109,7 +110,7 @@ std::vector<uint8_t> GrassTextureGenerator::generate(uint32_t size, uint32_t var
 
             glm::vec3 color = t < 0.5f ? glm::mix(darkGreen, midGreen, t * 2.0f)
                                         : glm::mix(midGreen, lightGreen, (t - 0.5f) * 2.0f);
-            color *= 0.75f;
+            color *= 0.68f;
 
             size_t idx = (static_cast<size_t>(y) * size + x) * 4;
             pixels[idx + 0] = static_cast<uint8_t>(glm::clamp(color.r, 0.0f, 1.0f) * 255.0f);

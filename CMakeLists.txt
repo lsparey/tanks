@@ -9,6 +9,7 @@ find_package(Vulkan 1.3 REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
 find_package(assimp CONFIG REQUIRED)
+find_package(Stb REQUIRED)
 
 add_executable(tanks
     src/main.cpp
@@ -26,6 +27,7 @@ add_executable(tanks
     src/render/RayTracingFunctions.cpp
     src/render/SceneAccelerationStructure.cpp
     src/render/HistoryBuffer.cpp
+    src/render/ScreenshotWriter.cpp
     src/scene/Camera.cpp
     src/scene/InputManager.cpp
     src/scene/HeightmapGenerator.cpp
@@ -33,6 +35,8 @@ add_executable(tanks
     src/scene/RockTextureGenerator.cpp
     src/scene/TrackTextureGenerator.cpp
     src/scene/WaterGenerator.cpp
+    src/scene/BoundaryGenerator.cpp
+    src/scene/BoundaryTextureGenerator.cpp
     src/scene/CloudTextureGenerator.cpp
     src/scene/BarkTextureGenerator.cpp
     src/scene/LeafTextureGenerator.cpp
@@ -48,6 +52,8 @@ target_compile_definitions(tanks PRIVATE
     GLM_FORCE_RADIANS
     ASSET_ROOT="${CMAKE_SOURCE_DIR}"
 )
+
+target_include_directories(tanks PRIVATE ${Stb_INCLUDE_DIR})
 
 target_link_libraries(tanks PRIVATE
     Vulkan::Vulkan

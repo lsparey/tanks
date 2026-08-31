@@ -73,18 +73,20 @@ float fbm(float x, float y, int octaves, float basePeriod) {
 std::vector<uint8_t> RockTextureGenerator::generate(uint32_t size, uint32_t variant) {
     std::vector<uint8_t> pixels(static_cast<size_t>(size) * size * 4);
 
-    // Real gravel/rock rarely reads as pure neutral grey -- a slight
-    // warm/brown tint (R > G > B) is what actually sells "dirt and stone"
-    // rather than "concrete". Variant 0 is mid-toned gravel; variant 1+
-    // trends lighter/dustier, for patch-blended variety -- see Terrain's
-    // painting in basic.frag.
-    glm::vec3 darkGrey(0.22f, 0.19f, 0.15f);
-    glm::vec3 midGrey(0.40f, 0.36f, 0.30f);
-    glm::vec3 lightGrey(0.58f, 0.53f, 0.45f);
+    // Darker than real gravel's usual mid-grey, and hue-varied rather than
+    // just two brightness levels of the same warm-grey tone -- variant 0 is
+    // a cool, near-neutral dark slate/stone; variant 1+ is a warmer, more
+    // saturated dark earth/dirt tone (R noticeably > G > B), so the two
+    // patch-blend into genuinely different-looking ground the way grass's
+    // lush-green/dry-yellow-brown variants do, rather than reading as one
+    // material lightened -- see Terrain's painting in basic.frag.
+    glm::vec3 darkGrey(0.08f, 0.08f, 0.09f);
+    glm::vec3 midGrey(0.15f, 0.15f, 0.16f);
+    glm::vec3 lightGrey(0.24f, 0.23f, 0.22f);
     if (variant % 2 == 1) {
-        darkGrey = glm::vec3(0.28f, 0.24f, 0.18f);
-        midGrey = glm::vec3(0.48f, 0.42f, 0.32f);
-        lightGrey = glm::vec3(0.68f, 0.61f, 0.48f);
+        darkGrey = glm::vec3(0.10f, 0.06f, 0.03f);
+        midGrey = glm::vec3(0.20f, 0.13f, 0.07f);
+        lightGrey = glm::vec3(0.32f, 0.21f, 0.11f);
     }
     // Shifts the noise pattern itself so variant textures don't just look
     // like the same patches recolored -- periodicity (see fbm's comment)
@@ -105,7 +107,7 @@ std::vector<uint8_t> RockTextureGenerator::generate(uint32_t size, uint32_t vari
 
             glm::vec3 color = t < 0.5f ? glm::mix(darkGrey, midGrey, t * 2.0f)
                                         : glm::mix(midGrey, lightGrey, (t - 0.5f) * 2.0f);
-            color *= 0.75f;
+            color *= 0.5f;
 
             size_t idx = (static_cast<size_t>(y) * size + x) * 4;
             pixels[idx + 0] = static_cast<uint8_t>(glm::clamp(color.r, 0.0f, 1.0f) * 255.0f);

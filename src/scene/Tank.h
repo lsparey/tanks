@@ -38,9 +38,13 @@ public:
     // plus turret traverse (Q/E, independent of hull yaw). `obstacles`
     // (trees/rocks, see Application::obstacles_) blocks the hull from
     // driving through them -- approximated as circles in the XZ plane
-    // rather than their real irregular silhouettes.
+    // rather than their real irregular silhouettes. `boundaryHalfExtent`
+    // (see Application::boundaryHalfExtent_/BoundaryGenerator) likewise
+    // keeps the hull from driving through the play-area boundary's wall of
+    // light.
     void update(const InputManager& input, float deltaTime, const Terrain& terrain,
-                const std::vector<CollisionSystem::CircleObstacle>& obstacles);
+                const std::vector<CollisionSystem::CircleObstacle>& obstacles,
+                float boundaryHalfExtent);
 
     // One entry per renderable part with its own world matrix -- just the
     // hull if the model had no separate turret/barrel materials, otherwise

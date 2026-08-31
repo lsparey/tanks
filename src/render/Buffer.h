@@ -24,6 +24,10 @@ public:
 
     // Only valid for host-visible buffers.
     void copyData(const void* data, VkDeviceSize size);
+    // The read-back counterpart to copyData -- only valid for host-visible
+    // buffers, used to read GPU-written data back to the CPU (see
+    // ScreenshotWriter's caller in Application::drawFrame).
+    void copyDataOut(void* dst, VkDeviceSize size) const;
 
     // Uploads `data` into a new device-local buffer via a staging buffer and
     // a one-time transfer command, then blocks until the copy completes.

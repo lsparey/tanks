@@ -1,14 +1,20 @@
 #include "Application.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <iostream>
 #include <random>
 #include <string>
+#include <utility>
 
 #include <glm/gtc/matrix_transform.hpp>
 
+#include "../render/Buffer.h"
+#include "../render/ScreenshotWriter.h"
 #include "../render/VulkanCheck.h"
 #include "../scene/BarkTextureGenerator.h"
+#include "../scene/BoundaryGenerator.h"
+#include "../scene/BoundaryTextureGenerator.h"
 #include "../scene/CloudTextureGenerator.h"
 #include "../scene/CollisionSystem.h"
 #include "../scene/CrateTextureGenerator.h"
@@ -33,6 +39,16 @@ constexpr float kWaterThreshold = -1.0f;
 // keeps separate basins from all settling at one shared "sea level" (see
 // WaterGenerator).
 constexpr float kWaterMaxDepth = 0.6f;
+
+// How far in from the terrain's actual edge the play-area boundary sits,
+// as a fraction of the terrain's total width (see BoundaryGenerator).
+constexpr float kBoundaryInsetFraction = 0.1f;
+// Tall enough to clear the tallest procedural trees (Mesh::treeBark/
+// treeLeaves puts those at roughly 2-5 world units depending on their
+// random instance scale -- see Application::spawnTrees) with comfortable
+// margin, so the wall of light reads as taller than the treeline rather
+// than poking out partway through it.
+constexpr float kBoundaryWallHeight = 7.0f;
 
 // Digits are drawn as seven-segment glyphs made of HudRenderer quads --
 // there's no font/text rendering in the HUD, and a segmented display is the
@@ -110,7 +126,8 @@ VkImageMemoryBarrier2 imageBarrier(VkImage image, VkImageAspectFlags aspect,
 
 }  // namespace
 
-Application::Application() {
+Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
+    : screenshotRequest_(std::move(screenshotRequest)) {
     initWindow();
     context_ = std::make_unique<VulkanContext>(window_);
     swapchain_ = std::make_unique<Swapchain>(*context_, window_);
@@ -169,6 +186,14 @@ Application::Application() {
     std::vector<uint8_t> whitePixel = {255, 255, 255, 255};
     whiteTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 1, 1, whitePixel, /*repeat=*/false));
+    // Both boundary textures tile along the perimeter's length (see
+    // BoundaryGenerator's UVs), so repeat=true.
+    std::vector<uint8_t> boundaryLinePixels = BoundaryTextureGenerator::generateGroundLine(128);
+    boundaryLineTexture_ = std::make_unique<Texture>(
+        Texture::fromPixels(*context_, *commands_, 128, 128, boundaryLinePixels, /*repeat=*/true));
+    std::vector<uint8_t> boundaryWallPixels = BoundaryTextureGenerator::generateWall(128);
+    boundaryWallTexture_ = std::make_unique<Texture>(
+        Texture::fromPixels(*context_, *commands_, 128, 128, boundaryWallPixels, /*repeat=*/true));
     // Terrain patch-blends grass A/B and gravel A/B, then blends that by
     // height (see heightBlend in PushConstants/basic.frag); everything else
     // just binds a single texture into all four slots since only the first
@@ -191,6 +216,10 @@ Application::Application() {
                                                                   *crateTexture_, *crateTexture_);
     whiteMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*whiteTexture_, *whiteTexture_,
                                                                   *whiteTexture_, *whiteTexture_);
+    boundaryLineMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(
+        *boundaryLineTexture_, *boundaryLineTexture_, *boundaryLineTexture_, *boundaryLineTexture_);
+    boundaryWallMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(
+        *boundaryWallTexture_, *boundaryWallTexture_, *boundaryWallTexture_, *boundaryWallTexture_);
 
     uint32_t terrainSeed = std::random_device{}();
     terrain_ = std::make_unique<Terrain>(*context_, *commands_, /*resolution=*/64,
@@ -198,6 +227,13 @@ Application::Application() {
     WaterGenerator::FloodField waterField =
         WaterGenerator::computeFloodField(*terrain_, kWaterThreshold, kWaterMaxDepth);
     waterMesh_ = WaterGenerator::buildMesh(*context_, *commands_, *terrain_, waterField);
+    // The boundary sits kBoundaryInsetFraction of the terrain's total width
+    // in from its actual edge, forming a smaller square play area.
+    boundaryHalfExtent_ = terrain_->worldSize() * (0.5f - kBoundaryInsetFraction);
+    boundaryLineMesh_ =
+        BoundaryGenerator::buildLineMesh(*context_, *commands_, *terrain_, boundaryHalfExtent_);
+    boundaryWallMesh_ = BoundaryGenerator::buildWallMesh(*context_, *commands_, *terrain_,
+                                                          boundaryHalfExtent_, kBoundaryWallHeight);
     tank_ = std::make_unique<Tank>(*context_, *commands_,
                                     std::string(ASSET_ROOT) + "/assets/models/tank.x");
     // Near-white so the crate texture's own wood color/detail shows through
@@ -284,6 +320,8 @@ Application::~Application() {
     shellBLAS_.reset();
     boxBLAS_.reset();
     whiteTexture_.reset();
+    boundaryWallTexture_.reset();
+    boundaryLineTexture_.reset();
     crateTexture_.reset();
     leafTexture_.reset();
     barkTexture_.reset();
@@ -295,6 +333,8 @@ Application::~Application() {
     grassTextureA_.reset();
     hud_.reset();
     cloudDomeMesh_.reset();
+    boundaryWallMesh_.reset();
+    boundaryLineMesh_.reset();
     waterMesh_.reset();
     rockMeshes_.clear();
     treeLeafMeshes_.clear();
@@ -355,7 +395,18 @@ void Application::mainLoop() {
         if (fDown && !prevFKeyDown_) followTank_ = !followTank_;
         prevFKeyDown_ = fDown;
 
-        tank_->update(*input_, deltaTime, *terrain_, obstacles_);
+        // Manual screenshot capture, saved via the same GPU-readback path
+        // as the --screenshot CLI flag (see drawFrame) rather than any
+        // OS-level screenshot tool -- see ScreenshotRequest's comment for
+        // why. Only arms a new request if one isn't already pending, so
+        // holding the key doesn't queue up a burst of captures.
+        bool screenshotKeyDown = glfwGetKey(window_, GLFW_KEY_F12) == GLFW_PRESS;
+        if (screenshotKeyDown && !prevScreenshotKeyDown_ && !screenshotRequest_) {
+            screenshotRequest_ = ScreenshotRequest{nextScreenshotPath(), frameCounter_ + 1, false};
+        }
+        prevScreenshotKeyDown_ = screenshotKeyDown;
+
+        tank_->update(*input_, deltaTime, *terrain_, obstacles_, boundaryHalfExtent_);
         updateTrackMarks(deltaTime);
 
         bool fireDown = glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS ||
@@ -377,13 +428,13 @@ void Application::mainLoop() {
 
 void Application::spawnBoxes() {
     constexpr int kBoxCount = 8;
-    constexpr float kEdgeMargin = 6.0f;          // keep boxes off the very edge of the terrain
+    constexpr float kEdgeMargin = 6.0f;  // keep boxes off the play-area boundary's wall of light
     constexpr float kMinDistanceFromSpawn = 10.0f;  // tank starts at the origin
     constexpr float kMinDistanceBetweenBoxes = 6.0f;
     constexpr int kMaxAttemptsPerBox = 50;
 
     std::mt19937 rng(std::random_device{}());
-    float half = terrain_->worldSize() * 0.5f - kEdgeMargin;
+    float half = boundaryHalfExtent_ - kEdgeMargin;
     std::uniform_real_distribution<float> coordDist(-half, half);
     std::uniform_real_distribution<float> yawDist(0.0f, 6.2831853f);
 
@@ -669,6 +720,13 @@ std::vector<AccelerationStructure::Instance> Application::gatherRayTracingInstan
     return instances;
 }
 
+std::string Application::nextScreenshotPath() {
+    ++screenshotCounter_;
+    char suffix[16];
+    std::snprintf(suffix, sizeof(suffix), "%04d", screenshotCounter_);
+    return std::string(ASSET_ROOT) + "/screenshots/screenshot_" + suffix + ".png";
+}
+
 void Application::recreateSwapchainDependentResources() {
     swapchain_->recreate();
     historyBuffer_->recreate(*commands_, swapchain_->extent());
@@ -820,6 +878,13 @@ void Application::drawFrame() {
     prevViewProj_ = ubo.proj * ubo.view;
     prevCameraPos_ = camera_.position();
     ++frameCounter_;
+
+    // See ScreenshotRequest's comment: read straight from GPU memory later
+    // in this same command buffer (right before the present transition,
+    // once everything -- including the HUD -- has been drawn) rather than
+    // relying on any OS-level screenshot tool.
+    bool captureScreenshot = screenshotRequest_.has_value() && frameCounter_ == screenshotRequest_->atFrame;
+    std::unique_ptr<Buffer> screenshotBuffer;
 
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -994,6 +1059,22 @@ void Application::drawFrame() {
                         sizeof(terrainPc), &terrainPc);
     terrain_->bindAndDraw(frame.commandBuffer);
 
+    // Play-area boundary line: a red decal ring painted onto the ground,
+    // drawn right after terrain like track marks below. Lit (not unlit) --
+    // "slightly lit" per the design brief -- so it still reads as sitting
+    // on the grass under the scene's real lighting/shadow rather than
+    // glowing flat regardless of time of day; its own texture alpha (see
+    // BoundaryTextureGenerator::generateGroundLine) supplies the soft,
+    // noise-roughened edge, so opacity stays at the default 1.0.
+    vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                             pipeline_->layout(), 1, 1, &boundaryLineMaterialSet_, 0, nullptr);
+    Pipeline::PushConstants boundaryLinePc{};
+    boundaryLinePc.model = glm::mat4(1.0f);  // already built in world space, see BoundaryGenerator
+    vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
+                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                        sizeof(boundaryLinePc), &boundaryLinePc);
+    boundaryLineMesh_->bindAndDraw(frame.commandBuffer);
+
     // Track marks: flat, fading ground decals drawn right after terrain so
     // they composite on top of it. Lit (not unlit) so they still receive
     // the scene's real ray-traced shadow/AO like any other ground surface,
@@ -1098,6 +1179,22 @@ void Application::drawFrame() {
                             sizeof(rockPc), &rockPc);
         rockMeshes_[rock.meshVariant]->bindAndDraw(frame.commandBuffer);
     }
+
+    // Play-area boundary wall: a translucent "wall of light" rising from
+    // the boundary line, drawn late so it composites on top of the terrain/
+    // trees/tank behind it. Unlit -- it should read as glowing energy, not
+    // a lit surface -- with its own texture alpha (see
+    // BoundaryTextureGenerator::generateWall) supplying both the "mostly
+    // transparent" base level and the fade-to-invisible-with-height curve.
+    vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                             pipeline_->layout(), 1, 1, &boundaryWallMaterialSet_, 0, nullptr);
+    Pipeline::PushConstants boundaryWallPc{};
+    boundaryWallPc.model = glm::mat4(1.0f);  // already built in world space, see BoundaryGenerator
+    boundaryWallPc.unlit = 1.0f;
+    vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
+                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                        sizeof(boundaryWallPc), &boundaryWallPc);
+    boundaryWallMesh_->bindAndDraw(frame.commandBuffer);
 
     // Shells/effects/debris below all use vertex-color-only shading like
     // boxes did, so switch back to the plain white material.
@@ -1222,10 +1319,44 @@ void Application::drawFrame() {
 
     vkCmdEndRendering(frame.commandBuffer);
 
+    // Screenshot capture: copy the fully-composited frame (terrain, HUD,
+    // everything) to a host-visible buffer while it's still ours, before
+    // the present transition hands it to the presentation engine -- there's
+    // no way to read it back afterward. See ScreenshotRequest's comment on
+    // why this reads GPU memory directly rather than using an OS screenshot
+    // tool.
+    VkImageLayout colorLayoutBeforePresent = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    if (captureScreenshot) {
+        VkDeviceSize byteCount = VkDeviceSize(extent.width) * extent.height * 4;
+        screenshotBuffer = std::make_unique<Buffer>(*context_, byteCount, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+        VkImageMemoryBarrier2 toTransferSrc = imageBarrier(
+            colorImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_READ_BIT);
+        VkDependencyInfo toTransferSrcDepInfo{};
+        toTransferSrcDepInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        toTransferSrcDepInfo.imageMemoryBarrierCount = 1;
+        toTransferSrcDepInfo.pImageMemoryBarriers = &toTransferSrc;
+        vkCmdPipelineBarrier2(frame.commandBuffer, &toTransferSrcDepInfo);
+
+        VkBufferImageCopy region{};
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageExtent = {extent.width, extent.height, 1};
+        vkCmdCopyImageToBuffer(frame.commandBuffer, colorImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                screenshotBuffer->handle(), 1, &region);
+
+        colorLayoutBeforePresent = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    }
+
     VkImageMemoryBarrier2 toPresent = imageBarrier(
-        colorImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0);
+        colorImage, VK_IMAGE_ASPECT_COLOR_BIT, colorLayoutBeforePresent, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        captureScreenshot ? VK_PIPELINE_STAGE_2_TRANSFER_BIT : VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        captureScreenshot ? VK_ACCESS_2_TRANSFER_READ_BIT : VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0);
 
     VkDependencyInfo presentDepInfo{};
     presentDepInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -1261,6 +1392,25 @@ void Application::drawFrame() {
     submitInfo.pSignalSemaphoreInfos = &signalSemaphoreInfo;
 
     VK_CHECK(vkQueueSubmit2(context_->graphicsQueue(), 1, &submitInfo, frame.inFlight));
+
+    if (captureScreenshot) {
+        // Screenshots are rare, explicit (CLI- or key-triggered) events, not
+        // a per-frame cost -- stalling here for this one submission to
+        // finish, rather than threading a multi-frame-latent readback
+        // through the normal frame-pacing path, keeps the whole feature
+        // contained to this one block.
+        VK_CHECK(vkWaitForFences(context_->device(), 1, &frame.inFlight, VK_TRUE, UINT64_MAX));
+
+        std::vector<uint8_t> pixels(static_cast<size_t>(extent.width) * extent.height * 4);
+        screenshotBuffer->copyDataOut(pixels.data(), pixels.size());
+        ScreenshotWriter::write(screenshotRequest_->path, pixels.data(), extent.width, extent.height,
+                                 swapchain_->imageFormat());
+        std::cout << "Saved screenshot to " << screenshotRequest_->path << std::endl;
+
+        bool exitAfter = screenshotRequest_->exitAfter;
+        screenshotRequest_.reset();
+        if (exitAfter) glfwSetWindowShouldClose(window_, GLFW_TRUE);
+    }
 
     VkPresentInfoKHR presentInfo{};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <memory>
+#include <optional>
+#include <string>
 
 #include <vector>
 
@@ -30,7 +32,25 @@
 
 class Application {
 public:
-    Application();
+    // Requests that the app save a screenshot and (usually) exit, rather
+    // than running interactively -- see main.cpp's --screenshot flag. This
+    // reads the rendered image straight out of GPU memory (see drawFrame's
+    // capture block), so it works identically on any system that can run
+    // the app at all, unlike an OS-level screenshot tool: those depend on
+    // the window manager/compositor's own capture path, which can silently
+    // return a black frame for a window it doesn't actually composite the
+    // normal way (e.g. an XWayland surface under a Wayland compositor).
+    struct ScreenshotRequest {
+        std::string path;
+        // Captured on this frameCounter_ value rather than frame 0 so ray
+        // tracing's temporal accumulation (shadows/AO) has time to converge
+        // past its initial noisy first frame -- see basic.frag's history
+        // blending.
+        uint32_t atFrame = 60;
+        bool exitAfter = true;
+    };
+
+    explicit Application(std::optional<ScreenshotRequest> screenshotRequest = std::nullopt);
     ~Application();
 
     Application(const Application&) = delete;
@@ -53,6 +73,9 @@ private:
     bool followTank_ = true;
     bool prevFKeyDown_ = false;
     bool prevFireDown_ = false;
+    bool prevScreenshotKeyDown_ = false;
+    std::optional<ScreenshotRequest> screenshotRequest_;
+    int screenshotCounter_ = 0;  // suffixes F12-triggered screenshot filenames
     glm::mat4 prevViewProj_{1.0f};
     glm::vec3 prevCameraPos_{0.0f};
     bool firstFrame_ = true;
@@ -78,6 +101,8 @@ private:
     std::unique_ptr<Texture> leafTexture_;
     std::unique_ptr<Texture> crateTexture_;
     std::unique_ptr<Texture> whiteTexture_;
+    std::unique_ptr<Texture> boundaryLineTexture_;
+    std::unique_ptr<Texture> boundaryWallTexture_;
     VkDescriptorSet terrainMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet trackMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet cloudMaterialSet_ = VK_NULL_HANDLE;
@@ -86,6 +111,8 @@ private:
     VkDescriptorSet crateMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet leafMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet whiteMaterialSet_ = VK_NULL_HANDLE;
+    VkDescriptorSet boundaryLineMaterialSet_ = VK_NULL_HANDLE;
+    VkDescriptorSet boundaryWallMaterialSet_ = VK_NULL_HANDLE;
     std::unique_ptr<Mesh> boxMesh_;
     std::unique_ptr<Mesh> shellMesh_;
     std::unique_ptr<Mesh> flashMesh_;
@@ -93,6 +120,12 @@ private:
     std::unique_ptr<Mesh> debrisEmberMesh_;
     std::unique_ptr<Mesh> trackMarkMesh_;
     std::unique_ptr<Mesh> waterMesh_;  // null if no qualifying low-lying basin exists this run
+    std::unique_ptr<Mesh> boundaryLineMesh_;
+    std::unique_ptr<Mesh> boundaryWallMesh_;
+    // Half-extent of the square play-area boundary (see BoundaryGenerator)
+    // -- also used by Tank::update to keep the hull from driving through
+    // the boundary's wall of light.
+    float boundaryHalfExtent_ = 0.0f;
     std::vector<std::unique_ptr<Mesh>> rockMeshes_;  // small pool of distinct rock shapes
     // Small pool of distinct fractal branch structures, one bark + one
     // leaves mesh per variant (see Mesh::treeBark/treeLeaves) -- matching
@@ -137,4 +170,5 @@ private:
     void buildAccelerationStructures();
     std::vector<AccelerationStructure::Instance> gatherRayTracingInstances() const;
     void recreateSwapchainDependentResources();
+    std::string nextScreenshotPath();
 };

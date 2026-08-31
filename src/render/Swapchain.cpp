@@ -113,7 +113,10 @@ void Swapchain::create() {
     createInfo.imageColorSpace = surfaceFormat.colorSpace;
     createInfo.imageExtent = extent;
     createInfo.imageArrayLayers = 1;
-    createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    // TRANSFER_SRC in addition to the usual COLOR_ATTACHMENT so a
+    // screenshot capture can copy the final resolved frame straight off
+    // the presentable image -- see Application::drawFrame's capture block.
+    createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 
     uint32_t queueFamilyIndices[] = {ctx_.graphicsQueueFamily(), ctx_.presentQueueFamily()};
     if (ctx_.graphicsQueueFamily() != ctx_.presentQueueFamily()) {

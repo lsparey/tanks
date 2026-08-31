@@ -613,23 +613,35 @@ void main() {
     // (mix(shallowColor, deepColor, depthT), see buildMesh) by projecting
     // back onto that known line -- avoids needing a dedicated depth vertex
     // attribute just for this. Must track WaterGenerator.cpp's palette.
-    const vec3 kWaterShallowColor = vec3(0.24, 0.38, 0.34);
-    const vec3 kWaterDeepColor = vec3(0.05, 0.11, 0.16);
+    const vec3 kWaterShallowColor = vec3(0.09, 0.16, 0.14);
+    const vec3 kWaterDeepColor = vec3(0.01, 0.025, 0.045);
     float waterDepthT = 0.0;
     if (isWater) {
         vec3 span = kWaterDeepColor - kWaterShallowColor;
         waterDepthT = clamp(dot(fragColor - kWaterShallowColor, span) / dot(span, span), 0.0, 1.0);
 
         float cosTheta = clamp(dot(shadingNormal, viewDir), 0.0, 1.0);
-        float waterFresnel = mix(0.03, 1.0, pow(1.0 - cosTheta, 5.0));
-        effectiveReflectivity = mix(pc.reflectivity * 0.25, 1.0, waterFresnel);
+        // A steeper falloff (exponent 8, not the textbook Schlick 5) so a
+        // typical chase-cam view of a mid-distance pond -- which sees it at
+        // a fairly shallow angle simply from being farther away horizontally
+        // than the camera is elevated above it, without being anywhere near
+        // truly grazing -- stays mostly in the low-reflectivity, transparent
+        // regime instead of already reading as a half-mirrored sky sheet.
+        // Also capped further below 1 than a literal mirror even at the most
+        // grazing angles, so the tinted/depth-darkened water color
+        // (baseContribution below) always shows through at least a little.
+        float waterFresnel = mix(0.03, 0.45, pow(1.0 - cosTheta, 8.0));
+        effectiveReflectivity = mix(pc.reflectivity * 0.25, 0.45, waterFresnel);
         // Fresnel alone floors alpha low for a straight-down view regardless
         // of depth, which reads as "always see the bottom" -- fine for a
         // shallow puddle, wrong for a deep lake. depthAlphaFloor raises that
-        // floor with depth so deep water stays nearly opaque even overhead;
-        // Fresnel can still push it higher at grazing angles on top of that.
-        float depthAlphaFloor = mix(0.3, 0.95, waterDepthT);
-        finalAlpha = max(depthAlphaFloor, mix(pc.opacity * 0.55, 1.0, waterFresnel));
+        // floor with depth so deep water stays substantially opaque even
+        // overhead; Fresnel can still push it higher at grazing angles on
+        // top of that. Deep end lowered from 0.95 -- fully opaque dark water
+        // combined with any reflection blend read as a milky/hazy film
+        // rather than dark, clear, and just slightly reflective.
+        float depthAlphaFloor = mix(0.18, 0.7, waterDepthT);
+        finalAlpha = max(depthAlphaFloor, mix(pc.opacity * 0.4, 0.6, waterFresnel));
     }
 
     if (effectiveReflectivity > 0.01) {
@@ -640,10 +652,20 @@ void main() {
         }
     }
 
-    // Extra absorption beyond the deepColor tint itself: deep water reads as
-    // genuinely darker (light scattered/absorbed within the water column),
-    // not just differently-hued.
-    vec3 baseContribution = isWater ? base * mix(1.0, 0.35, waterDepthT) : base;
-    vec3 result = baseContribution + vec3(specular) + fresnel * vec3(0.6) + envColor * effectiveReflectivity;
+    // Extra absorption beyond the deepColor tint itself: water reads as
+    // genuinely darker than dry lit ground even at its shallowest (light
+    // scattered/absorbed within any water column, however thin), getting
+    // properly close to black at the deepest points of a basin -- starting
+    // this mix at 1.0 (no darkening at all in shallow water) was what left
+    // most of a shallow pond looking barely different from, and about as
+    // bright as, the grass around it.
+    vec3 baseContribution = isWater ? base * mix(0.45, 0.07, waterDepthT) : base;
+    // A true blend rather than adding the reflection on top of the full
+    // base color -- the previous `base + env*reflectivity` double-counts
+    // brightness (at reflectivity 0.4 you'd get 100% of base AND 40% of a
+    // bright sky color, reading as a washed-out pale sheet rather than
+    // "mostly transparent, tinted by depth, plus a reflection"). Negligible
+    // difference for the tank's own tiny reflectivity (0.06).
+    vec3 result = mix(baseContribution, envColor, effectiveReflectivity) + vec3(specular) + fresnel * vec3(0.6);
     outColor = vec4(result, finalAlpha);
 }

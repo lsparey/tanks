@@ -84,6 +84,13 @@ void Buffer::copyData(const void* data, VkDeviceSize size) {
     vkUnmapMemory(ctx_->device(), memory_);
 }
 
+void Buffer::copyDataOut(void* dst, VkDeviceSize size) const {
+    void* mapped = nullptr;
+    VK_CHECK(vkMapMemory(ctx_->device(), memory_, 0, size, 0, &mapped));
+    std::memcpy(dst, mapped, static_cast<size_t>(size));
+    vkUnmapMemory(ctx_->device(), memory_);
+}
+
 Buffer Buffer::uploadDeviceLocal(VulkanContext& ctx, CommandContext& commands, const void* data,
                                  VkDeviceSize size, VkBufferUsageFlags usage) {
     Buffer staging(ctx, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,

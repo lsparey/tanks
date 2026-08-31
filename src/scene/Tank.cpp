@@ -101,7 +101,8 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
 }
 
 void Tank::update(const InputManager& input, float deltaTime, const Terrain& terrain,
-                   const std::vector<CollisionSystem::CircleObstacle>& obstacles) {
+                   const std::vector<CollisionSystem::CircleObstacle>& obstacles,
+                   float boundaryHalfExtent) {
     float throttle = 0.0f;
     if (input.isKeyDown(GLFW_KEY_W)) throttle += 1.0f;
     if (input.isKeyDown(GLFW_KEY_S)) throttle -= 1.0f;
@@ -127,6 +128,16 @@ void Tank::update(const InputManager& input, float deltaTime, const Terrain& ter
         glm::vec2(position_.x, position_.z), collisionRadius, obstacles);
     position_.x = resolvedXZ.x;
     position_.z = resolvedXZ.y;
+
+    // Keep the hull fully inside the play-area boundary (see
+    // BoundaryGenerator) rather than letting it drive out through the wall
+    // of light -- clamped by the hull's own collision radius so the wall
+    // reads as a solid surface the tank's front stops flush against,
+    // rather than the hull's center (and therefore half its body) crossing
+    // through before the clamp takes effect.
+    float clampExtent = boundaryHalfExtent - collisionRadius;
+    position_.x = glm::clamp(position_.x, -clampExtent, clampExtent);
+    position_.z = glm::clamp(position_.z, -clampExtent, clampExtent);
 
     glm::vec3 normal = terrain.normalAt(position_.x, position_.z);
     position_.y = terrain.heightAt(position_.x, position_.z);
