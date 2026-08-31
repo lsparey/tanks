@@ -59,12 +59,39 @@ float fbm(float x, float y, int octaves, float basePeriod) {
 
 }  // namespace
 
-std::vector<uint8_t> LeafTextureGenerator::generate(uint32_t size) {
+std::vector<uint8_t> LeafTextureGenerator::generate(uint32_t size, uint32_t variant) {
     std::vector<uint8_t> pixels(static_cast<size_t>(size) * size * 4);
 
-    const glm::vec3 darkGreen(0.06f, 0.14f, 0.04f);
-    const glm::vec3 midGreen(0.13f, 0.26f, 0.09f);
-    const glm::vec3 lightGreen(0.22f, 0.38f, 0.14f);
+    // Four palettes so Application's small pool of tree variants doesn't all
+    // share one identical canopy color.
+    glm::vec3 darkGreen(0.06f, 0.14f, 0.04f);
+    glm::vec3 midGreen(0.13f, 0.26f, 0.09f);
+    glm::vec3 lightGreen(0.22f, 0.38f, 0.14f);
+    switch (variant % 4) {
+        case 1:  // yellow-green, autumn-leaning
+            darkGreen = glm::vec3(0.10f, 0.13f, 0.03f);
+            midGreen = glm::vec3(0.22f, 0.24f, 0.06f);
+            lightGreen = glm::vec3(0.36f, 0.34f, 0.10f);
+            break;
+        case 2:  // dark pine/conifer green
+            darkGreen = glm::vec3(0.03f, 0.09f, 0.05f);
+            midGreen = glm::vec3(0.07f, 0.17f, 0.10f);
+            lightGreen = glm::vec3(0.12f, 0.26f, 0.16f);
+            break;
+        case 3:  // cool blue-green
+            darkGreen = glm::vec3(0.05f, 0.13f, 0.11f);
+            midGreen = glm::vec3(0.10f, 0.24f, 0.20f);
+            lightGreen = glm::vec3(0.17f, 0.35f, 0.29f);
+            break;
+        default:
+            break;
+    }
+    // Shifts the noise pattern itself so variant textures don't just look
+    // like the same clump pattern recolored -- periodicity (see fbm's
+    // comment) holds for any fixed offset, so this doesn't reintroduce a
+    // seam.
+    float seedX = static_cast<float>(variant) * 191.3f;
+    float seedY = static_cast<float>(variant) * 307.9f;
 
     for (uint32_t y = 0; y < size; ++y) {
         for (uint32_t x = 0; x < size; ++x) {
@@ -73,8 +100,9 @@ std::vector<uint8_t> LeafTextureGenerator::generate(uint32_t size) {
             // Higher frequency than grass -- reads as a mass of small
             // leaves/needles rather than blades, since this is applied
             // close-up on canopy clusters.
-            float clumps = fbm(fx * 0.15f, fy * 0.15f, 3, static_cast<float>(size) * 0.15f);
-            float speckle = fbm(fx * 0.9f + 17.3f, fy * 0.9f + 52.6f, 2, static_cast<float>(size) * 0.9f);
+            float clumps = fbm(fx * 0.15f + seedX, fy * 0.15f + seedY, 3, static_cast<float>(size) * 0.15f);
+            float speckle = fbm(fx * 0.9f + 17.3f + seedX, fy * 0.9f + 52.6f + seedY, 2,
+                                 static_cast<float>(size) * 0.9f);
             float t = glm::clamp(clumps * 0.55f + speckle * 0.45f, 0.0f, 1.0f);
 
             glm::vec3 color = t < 0.5f ? glm::mix(darkGreen, midGreen, t * 2.0f)

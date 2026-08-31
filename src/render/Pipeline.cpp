@@ -124,10 +124,12 @@ void Pipeline::createHistorySetLayout() {
 }
 
 void Pipeline::createDescriptorPoolAndSet() {
-    // 8 in active use as of this comment (terrain, track, cloud, rock,
-    // bark, leaf, crate, white) -- headroom kept above that for future
-    // material types.
-    constexpr uint32_t kMaxMaterialSets = 12;
+    // 20 in active use as of this comment (terrain, track, cloud, crate,
+    // white, 2 boundary sets, plus one per bark/leaf/rock mesh variant --
+    // see Application's barkMaterialSets_/leafMaterialSets_/
+    // rockMaterialSets_) -- headroom kept above that for future material
+    // types.
+    constexpr uint32_t kMaxMaterialSets = 26;
     constexpr uint32_t kTLASSets = CommandContext::kFramesInFlight;
     constexpr uint32_t kHistorySets = CommandContext::kFramesInFlight;
 

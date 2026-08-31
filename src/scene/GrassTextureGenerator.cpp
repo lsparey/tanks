@@ -81,17 +81,30 @@ std::vector<uint8_t> GrassTextureGenerator::generate(uint32_t size, uint32_t var
     // A darker, more verdant green than real grass's usual desaturated/olive
     // look -- G kept clearly dominant over R (rather than nearly equal) all
     // the way up to the lightest tone, so it reads as lush green rather than
-    // trending yellow-brown at the bright end. Variant 0 is lush/healthy
-    // grass; variant 1+ trend drier and more yellow-brown (sun-bleached/
-    // trampled), for patch-blended variety -- see Terrain's painting in
-    // basic.frag.
+    // trending yellow-brown at the bright end. Four variants (rather than
+    // two) for more visual variety when Application picks which pair to
+    // patch-blend together each run -- see Terrain's painting in basic.frag.
     glm::vec3 darkGreen(0.04f, 0.11f, 0.03f);
     glm::vec3 midGreen(0.08f, 0.20f, 0.06f);
     glm::vec3 lightGreen(0.14f, 0.28f, 0.10f);
-    if (variant % 2 == 1) {
-        darkGreen = glm::vec3(0.07f, 0.11f, 0.03f);
-        midGreen = glm::vec3(0.14f, 0.18f, 0.06f);
-        lightGreen = glm::vec3(0.22f, 0.24f, 0.09f);
+    switch (variant % 4) {
+        case 1:  // drier, more yellow-brown (sun-bleached/trampled)
+            darkGreen = glm::vec3(0.07f, 0.11f, 0.03f);
+            midGreen = glm::vec3(0.14f, 0.18f, 0.06f);
+            lightGreen = glm::vec3(0.22f, 0.24f, 0.09f);
+            break;
+        case 2:  // deep, cool pine/forest green
+            darkGreen = glm::vec3(0.03f, 0.09f, 0.04f);
+            midGreen = glm::vec3(0.06f, 0.16f, 0.08f);
+            lightGreen = glm::vec3(0.10f, 0.22f, 0.13f);
+            break;
+        case 3:  // pale, dry straw -- lighter and more yellow than variant 1
+            darkGreen = glm::vec3(0.10f, 0.13f, 0.05f);
+            midGreen = glm::vec3(0.19f, 0.21f, 0.08f);
+            lightGreen = glm::vec3(0.30f, 0.29f, 0.11f);
+            break;
+        default:
+            break;
     }
     // Shifts the noise pattern itself so variant textures don't just look
     // like the same patches recolored -- periodicity (see fbm's comment)

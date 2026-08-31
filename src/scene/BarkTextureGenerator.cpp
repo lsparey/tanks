@@ -67,12 +67,39 @@ float fbm(float x, float y, int octaves, float basePeriodX, float basePeriodY) {
 
 }  // namespace
 
-std::vector<uint8_t> BarkTextureGenerator::generate(uint32_t size) {
+std::vector<uint8_t> BarkTextureGenerator::generate(uint32_t size, uint32_t variant) {
     std::vector<uint8_t> pixels(static_cast<size_t>(size) * size * 4);
 
-    const glm::vec3 darkBrown(0.10f, 0.07f, 0.04f);
-    const glm::vec3 midBrown(0.20f, 0.14f, 0.08f);
-    const glm::vec3 lightBrown(0.32f, 0.23f, 0.14f);
+    // Four palettes so Application's small pool of tree variants doesn't
+    // all share one identical trunk color.
+    glm::vec3 darkBrown(0.10f, 0.07f, 0.04f);
+    glm::vec3 midBrown(0.20f, 0.14f, 0.08f);
+    glm::vec3 lightBrown(0.32f, 0.23f, 0.14f);
+    switch (variant % 4) {
+        case 1:  // desaturated grey-brown, ash-like
+            darkBrown = glm::vec3(0.09f, 0.08f, 0.07f);
+            midBrown = glm::vec3(0.17f, 0.15f, 0.13f);
+            lightBrown = glm::vec3(0.27f, 0.24f, 0.21f);
+            break;
+        case 2:  // reddish, cedar-like
+            darkBrown = glm::vec3(0.13f, 0.06f, 0.03f);
+            midBrown = glm::vec3(0.26f, 0.12f, 0.06f);
+            lightBrown = glm::vec3(0.38f, 0.19f, 0.11f);
+            break;
+        case 3:  // pale, birch-like
+            darkBrown = glm::vec3(0.16f, 0.14f, 0.12f);
+            midBrown = glm::vec3(0.30f, 0.27f, 0.23f);
+            lightBrown = glm::vec3(0.46f, 0.42f, 0.37f);
+            break;
+        default:
+            break;
+    }
+    // Shifts the noise pattern itself so variant textures don't just look
+    // like the same fissure pattern recolored -- periodicity (see fbm's
+    // comment) holds for any fixed offset, so this doesn't reintroduce a
+    // seam.
+    float seedX = static_cast<float>(variant) * 149.1f;
+    float seedY = static_cast<float>(variant) * 263.7f;
 
     for (uint32_t y = 0; y < size; ++y) {
         for (uint32_t x = 0; x < size; ++x) {
@@ -82,10 +109,10 @@ std::vector<uint8_t> BarkTextureGenerator::generate(uint32_t size) {
             // bark furrows do.
             float fx = static_cast<float>(x);
             float fy = static_cast<float>(y);
-            float fissures = fbm(fx * 0.12f, fy * 0.03f, 4, static_cast<float>(size) * 0.12f,
+            float fissures = fbm(fx * 0.12f + seedX, fy * 0.03f + seedY, 4, static_cast<float>(size) * 0.12f,
                                   static_cast<float>(size) * 0.03f);
-            float grain = fbm(fx * 0.5f + 33.1f, fy * 0.5f + 71.9f, 2, static_cast<float>(size) * 0.5f,
-                               static_cast<float>(size) * 0.5f);
+            float grain = fbm(fx * 0.5f + 33.1f + seedX, fy * 0.5f + 71.9f + seedY, 2,
+                               static_cast<float>(size) * 0.5f, static_cast<float>(size) * 0.5f);
             float t = glm::clamp(fissures * 0.75f + grain * 0.25f, 0.0f, 1.0f);
 
             glm::vec3 color = t < 0.5f ? glm::mix(darkBrown, midBrown, t * 2.0f)

@@ -148,20 +148,34 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
                                             historyBuffer_->sampler());
     }
 
-    // Two variants each for grass and gravel, patch-blended together in
-    // basic.frag (see heightBlend) so terrain reads as naturally varied
-    // rather than one texture tiled everywhere.
+    // Both generators now offer 4 palette variants each (see
+    // GrassTextureGenerator/RockTextureGenerator); basic.frag's patch-blend
+    // painting only supports exactly one A/B pair per material, so rather
+    // than picking a fixed pair, randomly choose 2 distinct variants each
+    // run -- more variety across playthroughs without touching that
+    // blending logic.
+    std::mt19937 textureVariantRng(std::random_device{}());
+    auto pickTwoDistinct = [&](int count) {
+        std::uniform_int_distribution<int> dist(0, count - 1);
+        int a = dist(textureVariantRng);
+        int b = dist(textureVariantRng);
+        if (b == a) b = (b + 1) % count;
+        return std::pair<int, int>(a, b);
+    };
+    auto [grassVariantA, grassVariantB] = pickTwoDistinct(4);
+    auto [rockVariantA, rockVariantB] = pickTwoDistinct(4);
+
     constexpr uint32_t kTerrainTextureRes = 512;
-    std::vector<uint8_t> grassPixelsA = GrassTextureGenerator::generate(kTerrainTextureRes, 0);
+    std::vector<uint8_t> grassPixelsA = GrassTextureGenerator::generate(kTerrainTextureRes, grassVariantA);
     grassTextureA_ = std::make_unique<Texture>(Texture::fromPixels(
         *context_, *commands_, kTerrainTextureRes, kTerrainTextureRes, grassPixelsA, /*repeat=*/true));
-    std::vector<uint8_t> grassPixelsB = GrassTextureGenerator::generate(kTerrainTextureRes, 1);
+    std::vector<uint8_t> grassPixelsB = GrassTextureGenerator::generate(kTerrainTextureRes, grassVariantB);
     grassTextureB_ = std::make_unique<Texture>(Texture::fromPixels(
         *context_, *commands_, kTerrainTextureRes, kTerrainTextureRes, grassPixelsB, /*repeat=*/true));
-    std::vector<uint8_t> rockPixelsA = RockTextureGenerator::generate(kTerrainTextureRes, 0);
+    std::vector<uint8_t> rockPixelsA = RockTextureGenerator::generate(kTerrainTextureRes, rockVariantA);
     rockTextureA_ = std::make_unique<Texture>(Texture::fromPixels(
         *context_, *commands_, kTerrainTextureRes, kTerrainTextureRes, rockPixelsA, /*repeat=*/true));
-    std::vector<uint8_t> rockPixelsB = RockTextureGenerator::generate(kTerrainTextureRes, 1);
+    std::vector<uint8_t> rockPixelsB = RockTextureGenerator::generate(kTerrainTextureRes, rockVariantB);
     rockTextureB_ = std::make_unique<Texture>(Texture::fromPixels(
         *context_, *commands_, kTerrainTextureRes, kTerrainTextureRes, rockPixelsB, /*repeat=*/true));
     std::vector<uint8_t> trackPixels = TrackTextureGenerator::generate(128);
@@ -172,12 +186,6 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
     // well outside [0,1] near the horizon, so this needs to tile.
     cloudTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 256, 256, cloudPixels, /*repeat=*/true));
-    std::vector<uint8_t> barkPixels = BarkTextureGenerator::generate(128);
-    barkTexture_ = std::make_unique<Texture>(
-        Texture::fromPixels(*context_, *commands_, 128, 128, barkPixels, /*repeat=*/true));
-    std::vector<uint8_t> leafPixels = LeafTextureGenerator::generate(128);
-    leafTexture_ = std::make_unique<Texture>(
-        Texture::fromPixels(*context_, *commands_, 128, 128, leafPixels, /*repeat=*/true));
     std::vector<uint8_t> cratePixels = CrateTextureGenerator::generate(128);
     // Mapped exactly once per cube face (see Mesh::cube's UV), not tiled,
     // so CLAMP rather than REPEAT.
@@ -204,14 +212,10 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
                                                                   *trackTexture_, *trackTexture_);
     cloudMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*cloudTexture_, *cloudTexture_,
                                                                   *cloudTexture_, *cloudTexture_);
-    // Reuses the same gravel texture already generated for terrain -- rocks
-    // are visually the same kind of material, just as standalone boulders.
-    rockMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*rockTextureA_, *rockTextureA_,
-                                                                 *rockTextureA_, *rockTextureA_);
-    barkMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*barkTexture_, *barkTexture_,
-                                                                 *barkTexture_, *barkTexture_);
-    leafMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*leafTexture_, *leafTexture_,
-                                                                 *leafTexture_, *leafTexture_);
+    // Bark/leaf/standalone-rock material sets are allocated per mesh
+    // variant instead, alongside their textures -- see the tree/rock mesh
+    // construction loops below (barkMaterialSets_/leafMaterialSets_/
+    // rockMaterialSets_).
     crateMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*crateTexture_, *crateTexture_,
                                                                   *crateTexture_, *crateTexture_);
     whiteMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*whiteTexture_, *whiteTexture_,
@@ -255,9 +259,10 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
     // A handful of distinct rock shapes/tints (see Mesh::rock), reused
     // across many cluster instances via meshVariant rather than generating
     // unique geometry per rock. Rocks now sample an actual gravel texture
-    // (rockMaterialSet_), so these tints are kept close to white -- a slight
-    // per-variant warm/cool/brightness variation on top of the texture's
-    // own color/detail, rather than the previous flat, fully-colored look.
+    // (rockMaterialSets_) -- a different RockTextureGenerator variant per
+    // shape (cycling through its 4 palettes) plus each one's own tint, so
+    // the pool reads as genuinely different-looking boulders rather than
+    // one gravel texture in five brightness levels.
     const glm::vec3 rockShades[] = {
         {1.0f, 0.98f, 0.95f}, {0.85f, 0.83f, 0.80f}, {1.05f, 1.0f, 0.92f},
         {0.90f, 0.90f, 0.90f}, {1.05f, 0.95f, 0.82f},
@@ -265,11 +270,20 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
     for (size_t i = 0; i < sizeof(rockShades) / sizeof(rockShades[0]); ++i) {
         rockMeshes_.push_back(std::make_unique<Mesh>(
             Mesh::rock(*context_, *commands_, rockShades[i], static_cast<uint32_t>(i) + 1)));
+
+        std::vector<uint8_t> rockPixels = RockTextureGenerator::generate(128, static_cast<uint32_t>(i));
+        rockStandaloneTextures_.push_back(std::make_unique<Texture>(
+            Texture::fromPixels(*context_, *commands_, 128, 128, rockPixels, /*repeat=*/true)));
+        rockMaterialSets_.push_back(pipeline_->allocateMaterialDescriptorSet(
+            *rockStandaloneTextures_.back(), *rockStandaloneTextures_.back(),
+            *rockStandaloneTextures_.back(), *rockStandaloneTextures_.back()));
     }
     // A small pool of distinct fractal branch structures (see
     // Mesh::treeBark/treeLeaves) -- matching seeds so each variant's bark
     // and leaves share the same branch skeleton. Tints kept close to white
-    // since bark/leaf color now comes from real textures.
+    // since bark/leaf color comes from a different BarkTextureGenerator/
+    // LeafTextureGenerator palette per variant instead (barkMaterialSets_/
+    // leafMaterialSets_), so the pool reads as genuinely different trees.
     constexpr int kTreeVariantCount = 4;
     const glm::vec3 barkTint(0.95f, 0.92f, 0.88f);
     const glm::vec3 leafTint(0.92f, 1.0f, 0.88f);
@@ -279,6 +293,18 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
             std::make_unique<Mesh>(Mesh::treeBark(*context_, *commands_, barkTint, seed)));
         treeLeafMeshes_.push_back(
             std::make_unique<Mesh>(Mesh::treeLeaves(*context_, *commands_, leafTint, seed)));
+
+        std::vector<uint8_t> barkPixels = BarkTextureGenerator::generate(128, static_cast<uint32_t>(i));
+        barkTextures_.push_back(std::make_unique<Texture>(
+            Texture::fromPixels(*context_, *commands_, 128, 128, barkPixels, /*repeat=*/true)));
+        barkMaterialSets_.push_back(pipeline_->allocateMaterialDescriptorSet(
+            *barkTextures_.back(), *barkTextures_.back(), *barkTextures_.back(), *barkTextures_.back()));
+
+        std::vector<uint8_t> leafPixels = LeafTextureGenerator::generate(128, static_cast<uint32_t>(i));
+        leafTextures_.push_back(std::make_unique<Texture>(
+            Texture::fromPixels(*context_, *commands_, 128, 128, leafPixels, /*repeat=*/true)));
+        leafMaterialSets_.push_back(pipeline_->allocateMaterialDescriptorSet(
+            *leafTextures_.back(), *leafTextures_.back(), *leafTextures_.back(), *leafTextures_.back()));
     }
     // White so the cloud texture's own baked-in white/grey shading shows
     // through unmodified; uvScale tuned by eye for plausible-looking cloud
@@ -323,8 +349,9 @@ Application::~Application() {
     boundaryWallTexture_.reset();
     boundaryLineTexture_.reset();
     crateTexture_.reset();
-    leafTexture_.reset();
-    barkTexture_.reset();
+    leafTextures_.clear();
+    barkTextures_.clear();
+    rockStandaloneTextures_.clear();
     cloudTexture_.reset();
     trackTexture_.reset();
     rockTextureB_.reset();
@@ -1146,10 +1173,13 @@ void Application::drawFrame() {
 
     // Trees: bark and leaves are separate meshes/materials (see
     // Mesh::treeBark/treeLeaves), so each gets its own pass over all tree
-    // instances rather than switching material sets per-instance.
-    vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                             pipeline_->layout(), 1, 1, &barkMaterialSet_, 0, nullptr);
+    // instances. Each mesh variant now has its own bark/leaf texture (see
+    // barkMaterialSets_/leafMaterialSets_) rather than sharing one, so the
+    // material set is rebound per-instance by meshVariant instead of once
+    // before the loop.
     for (const auto& tree : trees_) {
+        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(),
+                                 1, 1, &barkMaterialSets_[tree.meshVariant], 0, nullptr);
         Pipeline::PushConstants treePc{};
         treePc.model = tree.worldMatrix();
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
@@ -1158,9 +1188,9 @@ void Application::drawFrame() {
         treeBarkMeshes_[tree.meshVariant]->bindAndDraw(frame.commandBuffer);
     }
 
-    vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                             pipeline_->layout(), 1, 1, &leafMaterialSet_, 0, nullptr);
     for (const auto& tree : trees_) {
+        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(),
+                                 1, 1, &leafMaterialSets_[tree.meshVariant], 0, nullptr);
         Pipeline::PushConstants leafPc{};
         leafPc.model = tree.worldMatrix();
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
@@ -1169,9 +1199,11 @@ void Application::drawFrame() {
         treeLeafMeshes_[tree.meshVariant]->bindAndDraw(frame.commandBuffer);
     }
 
-    vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                             pipeline_->layout(), 1, 1, &rockMaterialSet_, 0, nullptr);
+    // Rocks: same idea -- each mesh variant has its own gravel texture (see
+    // rockMaterialSets_) instead of sharing one.
     for (const auto& rock : rocks_) {
+        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(),
+                                 1, 1, &rockMaterialSets_[rock.meshVariant], 0, nullptr);
         Pipeline::PushConstants rockPc{};
         rockPc.model = rock.worldMatrix();
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),

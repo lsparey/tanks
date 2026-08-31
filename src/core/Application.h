@@ -97,22 +97,27 @@ private:
     std::unique_ptr<Texture> rockTextureB_;
     std::unique_ptr<Texture> trackTexture_;
     std::unique_ptr<Texture> cloudTexture_;
-    std::unique_ptr<Texture> barkTexture_;
-    std::unique_ptr<Texture> leafTexture_;
     std::unique_ptr<Texture> crateTexture_;
     std::unique_ptr<Texture> whiteTexture_;
     std::unique_ptr<Texture> boundaryLineTexture_;
     std::unique_ptr<Texture> boundaryWallTexture_;
+    // One texture (and one material set below) per mesh variant -- see
+    // treeBarkMeshes_/treeLeafMeshes_/rockMeshes_ -- rather than a single
+    // shared texture, so the small pool of tree/rock shapes also looks
+    // materially different from one instance to the next, not just tinted.
+    std::vector<std::unique_ptr<Texture>> barkTextures_;
+    std::vector<std::unique_ptr<Texture>> leafTextures_;
+    std::vector<std::unique_ptr<Texture>> rockStandaloneTextures_;
     VkDescriptorSet terrainMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet trackMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet cloudMaterialSet_ = VK_NULL_HANDLE;
-    VkDescriptorSet rockMaterialSet_ = VK_NULL_HANDLE;
-    VkDescriptorSet barkMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet crateMaterialSet_ = VK_NULL_HANDLE;
-    VkDescriptorSet leafMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet whiteMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet boundaryLineMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet boundaryWallMaterialSet_ = VK_NULL_HANDLE;
+    std::vector<VkDescriptorSet> barkMaterialSets_;  // one per treeBarkMeshes_ variant
+    std::vector<VkDescriptorSet> leafMaterialSets_;  // one per treeLeafMeshes_ variant
+    std::vector<VkDescriptorSet> rockMaterialSets_;  // one per rockMeshes_ variant
     std::unique_ptr<Mesh> boxMesh_;
     std::unique_ptr<Mesh> shellMesh_;
     std::unique_ptr<Mesh> flashMesh_;

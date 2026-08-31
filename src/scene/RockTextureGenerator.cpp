@@ -74,19 +74,36 @@ std::vector<uint8_t> RockTextureGenerator::generate(uint32_t size, uint32_t vari
     std::vector<uint8_t> pixels(static_cast<size_t>(size) * size * 4);
 
     // Darker than real gravel's usual mid-grey, and hue-varied rather than
-    // just two brightness levels of the same warm-grey tone -- variant 0 is
-    // a cool, near-neutral dark slate/stone; variant 1+ is a warmer, more
-    // saturated dark earth/dirt tone (R noticeably > G > B), so the two
-    // patch-blend into genuinely different-looking ground the way grass's
+    // just brightness levels of the same warm-grey tone -- variant 0 is a
+    // cool, near-neutral dark slate/stone; the others are progressively
+    // warmer/more saturated earth tones (R noticeably > G > B), so any pair
+    // patch-blends into genuinely different-looking ground the way grass's
     // lush-green/dry-yellow-brown variants do, rather than reading as one
-    // material lightened -- see Terrain's painting in basic.frag.
+    // material lightened. Four variants (rather than two) for more variety
+    // when Application picks which pair to use each run, and reused as-is
+    // (cycled by index) for standalone rock/boulder meshes -- see Terrain's
+    // painting in basic.frag and Application's rockMaterialSets_.
     glm::vec3 darkGrey(0.08f, 0.08f, 0.09f);
     glm::vec3 midGrey(0.15f, 0.15f, 0.16f);
     glm::vec3 lightGrey(0.24f, 0.23f, 0.22f);
-    if (variant % 2 == 1) {
-        darkGrey = glm::vec3(0.10f, 0.06f, 0.03f);
-        midGrey = glm::vec3(0.20f, 0.13f, 0.07f);
-        lightGrey = glm::vec3(0.32f, 0.21f, 0.11f);
+    switch (variant % 4) {
+        case 1:  // warm dark earth/dirt
+            darkGrey = glm::vec3(0.10f, 0.06f, 0.03f);
+            midGrey = glm::vec3(0.20f, 0.13f, 0.07f);
+            lightGrey = glm::vec3(0.32f, 0.21f, 0.11f);
+            break;
+        case 2:  // reddish-brown clay -- more saturated than variant 1
+            darkGrey = glm::vec3(0.11f, 0.05f, 0.03f);
+            midGrey = glm::vec3(0.22f, 0.10f, 0.06f);
+            lightGrey = glm::vec3(0.34f, 0.17f, 0.10f);
+            break;
+        case 3:  // pale, dusty warm-neutral grey -- lighter than variant 0
+            darkGrey = glm::vec3(0.10f, 0.10f, 0.09f);
+            midGrey = glm::vec3(0.19f, 0.18f, 0.16f);
+            lightGrey = glm::vec3(0.30f, 0.28f, 0.24f);
+            break;
+        default:
+            break;
     }
     // Shifts the noise pattern itself so variant textures don't just look
     // like the same patches recolored -- periodicity (see fbm's comment)
