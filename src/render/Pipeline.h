@@ -77,6 +77,17 @@ public:
         // it can take a cheaper world-axis-aligned shortcut track marks
         // can't -- see basic.frag.)
         float bumpStrength = 0.0f;
+        // Nonzero for a moving rigid body (currently just the tank) --
+        // basic.frag's temporal shadow/AO history reprojection assumes a
+        // fragment's world position was where it is now back in the
+        // previous frame too, which is only true for static geometry; a
+        // moving object needs this flagged so history is skipped for it
+        // instead of ghosting/smearing. Kept as its own field rather than
+        // inferred from specularStrength (which used to double as this
+        // flag) so the two can vary independently -- see Application's tank
+        // draw loop, which now gives the tank's camo (painted) and metal
+        // parts different specularStrength values.
+        float isDynamicObject = 0.0f;
     };
 
     Pipeline(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthFormat, VkFormat historyFormat);

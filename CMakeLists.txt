@@ -41,6 +41,8 @@ add_executable(tanks
     src/scene/BarkTextureGenerator.cpp
     src/scene/LeafTextureGenerator.cpp
     src/scene/CrateTextureGenerator.cpp
+    src/scene/CamoTextureGenerator.cpp
+    src/scene/MetalTextureGenerator.cpp
     src/scene/Terrain.cpp
     src/scene/Tank.cpp
     src/scene/CollisionSystem.cpp

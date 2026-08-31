@@ -45,6 +45,10 @@ layout(push_constant) uniform PushConstants {
     // luminance as a fake heightfield, via fragTangent -- track marks only;
     // 0 elsewhere. See main()'s litNormal.
     float bumpStrength;
+    // Nonzero for a moving rigid body (currently just the tank) -- see
+    // main()'s isTank and Pipeline::PushConstants::isDynamicObject's
+    // comment for why this can't just be inferred from specularStrength.
+    float isDynamicObject;
 } pc;
 
 layout(location = 0) out vec4 outColor;
@@ -469,9 +473,10 @@ void main() {
                 // just lag, it occasionally mixes in genuinely wrong data,
                 // which is what kept showing up as ghosting no matter how
                 // high the blend alpha went. Skip history for the tank's own
-                // shadow entirely; specularStrength is a unique tag for tank
-                // fragments (0.6, vs 0 for everything else drawn).
-                bool isTank = pc.specularStrength > 0.5;
+                // shadow entirely; isDynamicObject is a dedicated tag for
+                // this rather than inferred from specularStrength (which
+                // now varies between the tank's own camo/metal parts).
+                bool isTank = pc.isDynamicObject > 0.5;
                 float shadowAlpha;
                 if (isTank) {
                     shadowAlpha = 1.0;

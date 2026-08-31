@@ -99,6 +99,8 @@ private:
     std::unique_ptr<Texture> cloudTexture_;
     std::unique_ptr<Texture> crateTexture_;
     std::unique_ptr<Texture> whiteTexture_;
+    std::unique_ptr<Texture> camoTexture_;
+    std::unique_ptr<Texture> metalTexture_;
     std::unique_ptr<Texture> boundaryLineTexture_;
     std::unique_ptr<Texture> boundaryWallTexture_;
     // One texture (and one material set below) per mesh variant -- see
@@ -113,6 +115,8 @@ private:
     VkDescriptorSet cloudMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet crateMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet whiteMaterialSet_ = VK_NULL_HANDLE;
+    VkDescriptorSet camoMaterialSet_ = VK_NULL_HANDLE;
+    VkDescriptorSet metalMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet boundaryLineMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet boundaryWallMaterialSet_ = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> barkMaterialSets_;  // one per treeBarkMeshes_ variant

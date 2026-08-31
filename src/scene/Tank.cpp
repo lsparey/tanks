@@ -30,24 +30,59 @@ Tank::Tank(VulkanContext& ctx, CommandContext& commands, const std::string& mode
 void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string& path) {
     ModelLoader::Result result = ModelLoader::load(path);
 
-    // The .x file's baked material colors read a bit too light/washed-out
-    // for the dull-metal look this tank is going for; darken uniformly
-    // rather than touching ModelLoader (which is generic, not tank-specific).
-    constexpr float kColorDarken = 0.7f;
+    // The .x file's baked per-part material colors (tan hull/turret, sage
+    // tracks, grey barrel) are overridden to near-white here rather than
+    // touching ModelLoader (which is generic, not tank-specific) -- the tank
+    // is drawn with an actual camo texture now (see Application's
+    // camoMaterialSet_/CamoTextureGenerator), and letting the old baked
+    // tints multiply against it would muddy its colors, the same reasoning
+    // the crate/track/bark/leaf textures use their own near-white tint for.
+    constexpr float kColorTint = 0.95f;
     for (auto& part : result.parts) {
-        for (auto& vertex : part.vertices) vertex.color *= kColorDarken;
+        for (auto& vertex : part.vertices) vertex.color = glm::vec3(kColorTint);
+    }
+
+    // This old MilkShape export's UV unwrap is unusable for a tiled material
+    // texture: most materials (Base/Detail/Tracks, i.e. everything that
+    // becomes the hull below) leave every vertex at ModelLoader's (0,0)
+    // fallback, sampling one flat texel instead of the intended camo/metal
+    // pattern; the turret's own unwrap technically has real coordinates but
+    // is a pinched/fan-shaped projection that reads as visibly distorted
+    // (lines converging to a point) rather than a clean tiling. Discard the
+    // model's UVs entirely and substitute one consistent projection for
+    // every vertex: pick whichever local axis its normal points closest to
+    // and project the other two position components onto it, a cheap
+    // triplanar-style approximation -- good enough for a tileable material
+    // texture with no sharp/aligned features to keep consistent across a
+    // seam, and undistorted since it's a straight orthogonal projection
+    // rather than the original's fan unwrap.
+    constexpr float kSyntheticUVScale = 0.4f;
+    for (auto& part : result.parts) {
+        for (auto& vertex : part.vertices) {
+            glm::vec3 n = glm::abs(vertex.normal);
+            if (n.x >= n.y && n.x >= n.z) {
+                vertex.uv = glm::vec2(vertex.position.y, vertex.position.z) * kSyntheticUVScale;
+            } else if (n.y >= n.x && n.y >= n.z) {
+                vertex.uv = glm::vec2(vertex.position.x, vertex.position.z) * kSyntheticUVScale;
+            } else {
+                vertex.uv = glm::vec2(vertex.position.x, vertex.position.y) * kSyntheticUVScale;
+            }
+        }
     }
 
     std::vector<Vertex> hullVertices;
     std::vector<uint32_t> hullIndices;
     ModelLoader::Part* turretPart = nullptr;
     ModelLoader::Part* barrelPart = nullptr;
+    ModelLoader::Part* trackPart = nullptr;
 
     for (auto& part : result.parts) {
         if (containsCaseInsensitive(part.materialName, "turret")) {
             turretPart = &part;
         } else if (containsCaseInsensitive(part.materialName, "barrel")) {
             barrelPart = &part;
+        } else if (containsCaseInsensitive(part.materialName, "track")) {
+            trackPart = &part;
         } else {
             uint32_t base = static_cast<uint32_t>(hullVertices.size());
             hullVertices.insert(hullVertices.end(), part.vertices.begin(), part.vertices.end());
@@ -97,6 +132,11 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
                 muzzleLocal_ = v.position;
             }
         }
+    }
+    if (trackPart) {
+        trackMesh_ = std::make_unique<Mesh>(ctx, commands, trackPart->vertices, trackPart->indices);
+        trackBLAS_ =
+            std::make_unique<AccelerationStructure>(AccelerationStructure::buildBLAS(ctx, commands, *trackMesh_));
     }
 }
 
@@ -170,6 +210,11 @@ glm::mat4 Tank::turretWorldMatrix() const {
 std::vector<Tank::DrawPart> Tank::drawParts() const {
     std::vector<DrawPart> parts;
     parts.push_back({hullMesh_.get(), hullWorldMatrix(), hullBLAS_->deviceAddress()});
+    // Tracks share the hull's own placement (they don't move independently
+    // in this prototype) but are bare metal rather than painted camo.
+    if (trackMesh_) {
+        parts.push_back({trackMesh_.get(), hullWorldMatrix(), trackBLAS_->deviceAddress(), /*metallic=*/true});
+    }
 
     if (turretMesh_ || barrelMesh_) {
         glm::mat4 turretWorld = turretWorldMatrix();
@@ -177,9 +222,11 @@ std::vector<Tank::DrawPart> Tank::drawParts() const {
             parts.push_back({turretMesh_.get(), turretWorld, turretBLAS_->deviceAddress()});
         }
         // The barrel isn't independently elevated yet -- it just rides
-        // along with the turret's yaw, so it shares the same matrix.
+        // along with the turret's yaw, so it shares the same matrix. Bare
+        // metal, like the tracks.
         if (barrelMesh_) {
-            parts.push_back({barrelMesh_.get(), turretWorld, barrelBLAS_->deviceAddress()});
+            parts.push_back(
+                {barrelMesh_.get(), turretWorld, barrelBLAS_->deviceAddress(), /*metallic=*/true});
         }
     }
     return parts;

@@ -17,19 +17,25 @@ class Terrain;
 //
 // The source .x file has no Frame/node hierarchy, but it does have five
 // named materials (Tracks, Base, Detail, Turret, Barrel) -- Assimp always
-// splits a mesh into one sub-mesh per material, so the turret and barrel
-// come out as separate geometry automatically. Everything except the
-// "Turret"/"Barrel" materials is merged into one rigid hull mesh; the
-// turret (and the barrel riding on it) get their own yaw, driven by Q/E,
-// applied as a rotation about the model's local Y axis before the hull's
-// own placement -- the same scheme (and the same hardcoded pivot-at-origin
-// assumption) used by the original DirectX9 project this asset came from.
+// splits a mesh into one sub-mesh per material, so the turret, barrel, and
+// tracks all come out as separate geometry automatically. "Base"/"Detail"
+// (the only two without their own DrawPart) are merged into one rigid hull
+// mesh; the turret (and the barrel riding on it) get their own yaw, driven
+// by Q/E, applied as a rotation about the model's local Y axis before the
+// hull's own placement -- the same scheme (and the same hardcoded
+// pivot-at-origin assumption) used by the original DirectX9 project this
+// asset came from. The tracks share the hull's own placement (they don't
+// move independently in this prototype).
 class Tank {
 public:
     struct DrawPart {
         const Mesh* mesh;
         glm::mat4 worldMatrix;
         VkDeviceAddress blasAddress;
+        // Bare metal (tracks, barrel) vs. painted camo (hull, turret) -- see
+        // Application's camoMaterialSet_/metalMaterialSet_, bound per-part
+        // in the tank draw loop based on this flag.
+        bool metallic = false;
     };
 
     Tank(VulkanContext& ctx, CommandContext& commands, const std::string& modelPath);
@@ -76,12 +82,14 @@ private:
     std::unique_ptr<Mesh> hullMesh_;
     std::unique_ptr<Mesh> turretMesh_;  // null if the model had no separate turret material
     std::unique_ptr<Mesh> barrelMesh_;  // null if the model had no separate barrel material
+    std::unique_ptr<Mesh> trackMesh_;   // null if the model had no separate tracks material
     // BLAS per rigid part, built once at load time alongside the meshes
     // above -- geometry never deforms, only the per-frame world matrix
     // (from hullWorldMatrix()/turretWorldMatrix()) changes.
     std::unique_ptr<AccelerationStructure> hullBLAS_;
     std::unique_ptr<AccelerationStructure> turretBLAS_;
     std::unique_ptr<AccelerationStructure> barrelBLAS_;
+    std::unique_ptr<AccelerationStructure> trackBLAS_;
     // Local-space muzzle tip, valid only when barrelMesh_ is non-null: the
     // barrel part's vertex farthest from the local origin (the turret's
     // pivot, which sits near the barrel's mount/breech end, not its tip).

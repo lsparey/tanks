@@ -15,11 +15,13 @@
 #include "../scene/BarkTextureGenerator.h"
 #include "../scene/BoundaryGenerator.h"
 #include "../scene/BoundaryTextureGenerator.h"
+#include "../scene/CamoTextureGenerator.h"
 #include "../scene/CloudTextureGenerator.h"
 #include "../scene/CollisionSystem.h"
 #include "../scene/CrateTextureGenerator.h"
 #include "../scene/GrassTextureGenerator.h"
 #include "../scene/LeafTextureGenerator.h"
+#include "../scene/MetalTextureGenerator.h"
 #include "../scene/RockTextureGenerator.h"
 #include "../scene/TrackTextureGenerator.h"
 #include "../scene/WaterGenerator.h"
@@ -194,6 +196,14 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
     std::vector<uint8_t> whitePixel = {255, 255, 255, 255};
     whiteTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 1, 1, whitePixel, /*repeat=*/false));
+    // Tiles since the tank model's own UV layout isn't a single clean 0..1
+    // island per part -- see CamoTextureGenerator.
+    std::vector<uint8_t> camoPixels = CamoTextureGenerator::generate(256);
+    camoTexture_ = std::make_unique<Texture>(
+        Texture::fromPixels(*context_, *commands_, 256, 256, camoPixels, /*repeat=*/true));
+    std::vector<uint8_t> metalPixels = MetalTextureGenerator::generate(128);
+    metalTexture_ = std::make_unique<Texture>(
+        Texture::fromPixels(*context_, *commands_, 128, 128, metalPixels, /*repeat=*/true));
     // Both boundary textures tile along the perimeter's length (see
     // BoundaryGenerator's UVs), so repeat=true.
     std::vector<uint8_t> boundaryLinePixels = BoundaryTextureGenerator::generateGroundLine(128);
@@ -220,6 +230,10 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
                                                                   *crateTexture_, *crateTexture_);
     whiteMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*whiteTexture_, *whiteTexture_,
                                                                   *whiteTexture_, *whiteTexture_);
+    camoMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*camoTexture_, *camoTexture_,
+                                                                 *camoTexture_, *camoTexture_);
+    metalMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*metalTexture_, *metalTexture_,
+                                                                  *metalTexture_, *metalTexture_);
     boundaryLineMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(
         *boundaryLineTexture_, *boundaryLineTexture_, *boundaryLineTexture_, *boundaryLineTexture_);
     boundaryWallMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(
@@ -346,6 +360,8 @@ Application::~Application() {
     shellBLAS_.reset();
     boxBLAS_.reset();
     whiteTexture_.reset();
+    metalTexture_.reset();
+    camoTexture_.reset();
     boundaryWallTexture_.reset();
     boundaryLineTexture_.reset();
     crateTexture_.reset();
@@ -1145,14 +1161,27 @@ void Application::drawFrame() {
         waterMesh_->bindAndDraw(frame.commandBuffer);
     }
 
+    // Tank: painted parts (hull, turret) get the camo texture; bare-metal
+    // parts (tracks, barrel) get a plain gunmetal texture instead -- see
+    // CamoTextureGenerator/MetalTextureGenerator and Tank::DrawPart::
+    // metallic. Tank::load's vertex color is kept near-white so either
+    // texture's own baked colors show through unmodified, the same
+    // reasoning as the crate/track/bark/leaf textures. Both materials are
+    // duller than before overall (specularStrength/reflectivity both
+    // lowered) -- painted camo reads as flat matte paint, metal keeps a
+    // little more sheen than paint but still far short of the old shine.
     for (const auto& part : tank_->drawParts()) {
+        VkDescriptorSet materialSet = part.metallic ? metalMaterialSet_ : camoMaterialSet_;
+        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(),
+                                 1, 1, &materialSet, 0, nullptr);
         Pipeline::PushConstants tankPc{};
         tankPc.model = part.worldMatrix;
-        tankPc.specularStrength = 0.6f;
-        // Matches the reflection weight the old specularStrength*0.10
-        // formula gave the tank (0.6*0.10=0.06), so its look is unchanged
-        // by splitting reflectivity out as its own parameter.
-        tankPc.reflectivity = 0.06f;
+        tankPc.specularStrength = part.metallic ? 0.35f : 0.12f;
+        tankPc.reflectivity = part.metallic ? 0.03f : 0.01f;
+        // See Pipeline::PushConstants::isDynamicObject -- specularStrength
+        // alone no longer uniquely identifies the tank now that its own
+        // parts use different values.
+        tankPc.isDynamicObject = 1.0f;
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(tankPc), &tankPc);
