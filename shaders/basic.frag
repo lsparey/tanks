@@ -8,6 +8,10 @@ layout(location = 2) in vec2 fragUV;
 layout(location = 3) in vec3 fragWorldPos;
 layout(location = 4) in vec3 fragTangent;
 
+// Must match DynamicLight.h's kMaxDynamicLights -- GLSL can't share that
+// constant with the C++ side, so the array size here is a plain literal.
+#define MAX_DYNAMIC_LIGHTS 4
+
 layout(set = 0, binding = 0) uniform FrameUBO {
     mat4 view;
     mat4 proj;
@@ -15,6 +19,13 @@ layout(set = 0, binding = 0) uniform FrameUBO {
     vec4 lightDir;   // direction the light travels, xyz
     vec4 cameraPos;
     vec4 prevCameraPos;
+    // Muzzle-flash/explosion point lights -- see DynamicLight.h and
+    // Application::drawFrame, which fills these each frame. xyz position,
+    // w radius; rgb color, w intensity. A radius/intensity of 0 (the
+    // default for any slot beyond however many lights are actually live)
+    // means "inactive, skip" -- see the loop in main().
+    vec4 dynamicLightPosRadius[MAX_DYNAMIC_LIGHTS];
+    vec4 dynamicLightColorIntensity[MAX_DYNAMIC_LIGHTS];
 } frame;
 
 // Four material textures: a "high" (grass) pair and a "low" (gravel) pair,
@@ -601,6 +612,38 @@ void main() {
     // rather than pure black.
     float lighting = 0.2 * aoFactor + 0.8 * diffuse;
 
+    // Muzzle-flash/explosion point lights (see FrameUBO's dynamicLight*
+    // arrays and DynamicLight.h) -- a simple unshadowed Lambertian
+    // contribution per light, added on top of the sun-lit `lighting` above
+    // rather than folded into it, since these are local and can be zero at
+    // any given fragment (most of the time, all of them are). Deliberately
+    // not ray-traced/shadowed: these are brief (<=0.3s) and few (<=4), so
+    // the cost of real shadow rays isn't worth it for what's meant to read
+    // as a quick flash, not a precise light source. Gated by aoFactor for
+    // the same reason the Fresnel term below is: without it, a flash next
+    // to a deep contact-AO crevice (e.g. under the tank) lights the inside
+    // of that crevice as if it weren't occluded at all.
+    vec3 dynamicLight = vec3(0.0);
+    for (int i = 0; i < MAX_DYNAMIC_LIGHTS; ++i) {
+        float lightIntensity = frame.dynamicLightColorIntensity[i].w;
+        if (lightIntensity <= 0.0) continue;
+        vec3 lightPos = frame.dynamicLightPosRadius[i].xyz;
+        float lightRadius = frame.dynamicLightPosRadius[i].w;
+        vec3 toDynLight = lightPos - fragWorldPos;
+        float dynDist = length(toDynLight);
+        if (dynDist >= lightRadius) continue;
+        vec3 dynLightDir = toDynLight / max(dynDist, 0.001);
+        float dynNdotL = max(dot(litNormal, dynLightDir), 0.0);
+        // Smooth falloff to exactly 0 at lightRadius (squared so most of
+        // the falloff happens near the edge, roughly inverse-square-ish
+        // close to the light) -- avoids a hard-edged circle of light
+        // sweeping across the ground as the flash's radius shrinks with it.
+        float dynFalloff = 1.0 - dynDist / lightRadius;
+        dynFalloff *= dynFalloff;
+        dynamicLight += frame.dynamicLightColorIntensity[i].rgb * lightIntensity * dynNdotL * dynFalloff;
+    }
+    dynamicLight *= aoFactor;
+
     // Per-pixel specular map for the tank: tankSpecularGrain gives a fine,
     // scratched-metal-like shimmer across the whole surface -- pure noise,
     // no regular/periodic structure, unlike an earlier version of this that
@@ -620,7 +663,7 @@ void main() {
     // little here rather than left at full brightness before the reflective
     // terms are layered on -- otherwise those terms just wash the color out
     // toward white instead of reading as a highlight on top of it.
-    vec3 base = albedo * lighting * mix(1.0, 0.75, specularStrength);
+    vec3 base = albedo * lighting * mix(1.0, 0.75, specularStrength) + albedo * dynamicLight;
 
     vec3 viewDir = normalize(frame.cameraPos.xyz - fragWorldPos);
 

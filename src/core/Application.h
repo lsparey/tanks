@@ -20,6 +20,7 @@
 #include "../scene/Camera.h"
 #include "../scene/CollisionSystem.h"
 #include "../scene/DebrisParticle.h"
+#include "../scene/DynamicLight.h"
 #include "../scene/ImpactEffect.h"
 #include "../scene/InputManager.h"
 #include "../scene/Projectile.h"
@@ -147,6 +148,11 @@ private:
     std::vector<Projectile> projectiles_;
     std::vector<ImpactEffect> impactEffects_;
     std::vector<DebrisParticle> debris_;
+    // Muzzle-flash/explosion point lights -- see DynamicLight.h. Capped at
+    // kMaxDynamicLights by spawnDynamicLight rather than left to grow like
+    // impactEffects_/debris_, since each one has to round-trip through a
+    // fixed-size FrameUBO array every frame.
+    std::vector<DynamicLight> dynamicLights_;
     std::vector<TrackMark> trackMarks_;
     glm::vec3 lastTrackMarkPosition_{0.0f};
     bool hasTrackMarkAnchor_ = false;
@@ -172,6 +178,8 @@ private:
     void spawnTrees(const WaterGenerator::FloodField& waterField);
     void spawnRocks(const WaterGenerator::FloodField& waterField);
     void spawnExplosion(glm::vec3 position);
+    void spawnDynamicLight(glm::vec3 position, glm::vec3 color, float radius, float intensity,
+                            float lifetime);
     void destroyBox(Box& box);
     void updateTrackMarks(float deltaTime);
     void fireProjectile();

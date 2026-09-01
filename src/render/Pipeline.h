@@ -4,6 +4,7 @@
 
 #include <glm/glm.hpp>
 
+#include "../scene/DynamicLight.h"
 #include "Buffer.h"
 #include "CommandContext.h"
 #include "Texture.h"
@@ -41,6 +42,13 @@ public:
         glm::vec4 lightDir;
         glm::vec4 cameraPos;
         glm::vec4 prevCameraPos;  // for basic.frag's depth-based disocclusion rejection
+        // Muzzle-flash/explosion point lights -- see DynamicLight.h. xyz is
+        // world position, w is the falloff radius (0 means "inactive slot,
+        // skip" -- see basic.frag). rgb is color, w is peak intensity.
+        // Application::drawFrame fills up to kMaxDynamicLights of these
+        // from dynamicLights_ each frame and zeroes the rest.
+        std::array<glm::vec4, kMaxDynamicLights> dynamicLightPosRadius{};
+        std::array<glm::vec4, kMaxDynamicLights> dynamicLightColorIntensity{};
     };
 
     struct PushConstants {

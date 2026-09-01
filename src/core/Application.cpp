@@ -603,7 +603,39 @@ void Application::spawnRocks(const WaterGenerator::FloodField& waterField) {
     }
 }
 
+void Application::spawnDynamicLight(glm::vec3 position, glm::vec3 color, float radius,
+                                     float intensity, float lifetime) {
+    DynamicLight light;
+    light.position = position;
+    light.color = color;
+    light.radius = radius;
+    light.intensity = intensity;
+    light.initialLifetime = light.lifetimeRemaining = lifetime;
+
+    if (dynamicLights_.size() < static_cast<size_t>(kMaxDynamicLights)) {
+        dynamicLights_.push_back(light);
+        return;
+    }
+    // All kMaxDynamicLights slots are taken -- replace whichever existing
+    // light is closest to expiring rather than dropping the new one, so a
+    // fresh muzzle flash/explosion always shows up even if a burst of
+    // shots/hits briefly exceeds the cap.
+    auto soonest = std::min_element(
+        dynamicLights_.begin(), dynamicLights_.end(),
+        [](const DynamicLight& a, const DynamicLight& b) {
+            return a.lifetimeRemaining < b.lifetimeRemaining;
+        });
+    *soonest = light;
+}
+
 void Application::spawnExplosion(glm::vec3 position) {
+    // Bright orange flash, unshadowed -- see DynamicLight.h. Radius/
+    // lifetime roughly matched to the debris burst below so nearby geometry
+    // lights up for about as long as the explosion visually reads as
+    // "happening".
+    spawnDynamicLight(position, glm::vec3(1.0f, 0.45f, 0.12f), /*radius=*/11.0f, /*intensity=*/18.0f,
+                       /*lifetime=*/0.3f);
+
     constexpr int kChunkCount = 7;
     constexpr int kEmberCount = 8;
 
@@ -788,6 +820,12 @@ void Application::fireProjectile() {
     shell.previousPosition = shell.position;
     shell.velocity = tank_->aimDirection() * kShellSpeed;
     projectiles_.push_back(shell);
+
+    // Warm, small, very short-lived flash at the muzzle -- see
+    // DynamicLight.h. Much punchier/briefer than the explosion light below
+    // (0.08s vs 0.3s) so it reads as an instantaneous flash, not a glow.
+    spawnDynamicLight(shell.position, glm::vec3(1.0f, 0.85f, 0.5f), /*radius=*/5.0f, /*intensity=*/25.0f,
+                       /*lifetime=*/0.08f);
 }
 
 void Application::updateProjectilesAndCollisions(float deltaTime) {
@@ -848,6 +886,12 @@ void Application::updateProjectilesAndCollisions(float deltaTime) {
     debris_.erase(std::remove_if(debris_.begin(), debris_.end(),
                                   [](const DebrisParticle& d) { return !d.alive; }),
                   debris_.end());
+
+    for (auto& light : dynamicLights_) light.update(deltaTime);
+    dynamicLights_.erase(
+        std::remove_if(dynamicLights_.begin(), dynamicLights_.end(),
+                        [](const DynamicLight& l) { return !l.alive; }),
+        dynamicLights_.end());
 }
 
 void Application::drawFrame() {
@@ -917,6 +961,15 @@ void Application::drawFrame() {
     // frames' worth of *different* samples actually accumulate into
     // something smooth.
     ubo.cameraPos = glm::vec4(camera_.position(), static_cast<float>(frameCounter_ % 1024));
+    // dynamicLights_ is already capped at kMaxDynamicLights (see
+    // spawnDynamicLight), so this is a direct copy; the UBO arrays default-
+    // initialize to all-zero (see Pipeline::FrameUBO), which basic.frag
+    // reads as "inactive slot" via the w=radius/w=intensity being 0.
+    for (size_t i = 0; i < dynamicLights_.size(); ++i) {
+        const DynamicLight& light = dynamicLights_[i];
+        ubo.dynamicLightPosRadius[i] = glm::vec4(light.position, light.radius);
+        ubo.dynamicLightColorIntensity[i] = glm::vec4(light.color, light.currentIntensity());
+    }
     pipeline_->updateFrameUBO(ubo);
     prevViewProj_ = ubo.proj * ubo.view;
     prevCameraPos_ = camera_.position();
