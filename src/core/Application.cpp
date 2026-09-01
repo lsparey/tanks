@@ -1166,10 +1166,10 @@ void Application::drawFrame() {
     // CamoTextureGenerator/MetalTextureGenerator and Tank::DrawPart::
     // metallic. Tank::load's vertex color is kept near-white so either
     // texture's own baked colors show through unmodified, the same
-    // reasoning as the crate/track/bark/leaf textures. Both materials are
-    // duller than before overall (specularStrength/reflectivity both
-    // lowered) -- painted camo reads as flat matte paint, metal keeps a
-    // little more sheen than paint but still far short of the old shine.
+    // reasoning as the crate/track/bark/leaf textures. No reflectivity on
+    // either -- the tank's own per-pixel specular map (see basic.frag's
+    // isDynamicObject branch) carries the metal/paint highlight instead, so
+    // a real traced reflection on top just muddied it without adding much.
     for (const auto& part : tank_->drawParts()) {
         VkDescriptorSet materialSet = part.metallic ? metalMaterialSet_ : camoMaterialSet_;
         vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(),
@@ -1177,7 +1177,7 @@ void Application::drawFrame() {
         Pipeline::PushConstants tankPc{};
         tankPc.model = part.worldMatrix;
         tankPc.specularStrength = part.metallic ? 0.35f : 0.12f;
-        tankPc.reflectivity = part.metallic ? 0.03f : 0.01f;
+        tankPc.reflectivity = 0.0f;
         // See Pipeline::PushConstants::isDynamicObject -- specularStrength
         // alone no longer uniquely identifies the tank now that its own
         // parts use different values.

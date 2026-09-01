@@ -151,6 +151,19 @@ float cloudFbm(vec2 p) {
     return sum / total;
 }
 
+// Plain two-tone sky gradient, no clouds -- factored out of skyColor below
+// so distance fog (which tints toward this per-fragment, at every fog-
+// affected pixel on screen) can use just the smooth gradient. Using the
+// full cloud-textured skyColor there made the cloud pattern visibly bleed
+// onto nearby opaque geometry (tree trunks, rocks) any time that fragment's
+// camera-to-surface direction pointed even slightly upward, since fog
+// blends in this color starting close to the camera.
+vec3 skyGradient(vec3 dir) {
+    vec3 skyTint = vec3(0.55, 0.65, 0.78);
+    vec3 groundTint = vec3(0.12, 0.11, 0.10);
+    return mix(groundTint, skyTint, clamp(dir.y * 0.5 + 0.5, 0.0, 1.0));
+}
+
 // Analytic sky (two-tone gradient) + clouds for an arbitrary view/reflection
 // direction, evaluated directly rather than sampled from the actual sky
 // dome's texture -- the dome is deliberately kept out of the ray-traced
@@ -161,9 +174,7 @@ float cloudFbm(vec2 p) {
 // to the actual rendered sky dome (different noise implementation/
 // parameters), but reads as the same kind of sky.
 vec3 skyColor(vec3 dir) {
-    vec3 skyTint = vec3(0.55, 0.65, 0.78);
-    vec3 groundTint = vec3(0.12, 0.11, 0.10);
-    vec3 color = mix(groundTint, skyTint, clamp(dir.y * 0.5 + 0.5, 0.0, 1.0));
+    vec3 color = skyGradient(dir);
     if (dir.y > 0.02) {
         // Project onto a distant horizontal plane, same idea as the sky
         // dome mesh's own UV mapping (see Mesh::dome).
@@ -188,6 +199,22 @@ vec3 skyColor(vec3 dir) {
 // period/phase match regardless -- see the derivation in the call site.
 float trackHeightField(vec2 uv) {
     return smoothstep(0.42, 0.58, fract(uv.y * 12.0 + 0.5));
+}
+
+// Fine per-pixel specular variation for the tank -- reads as scratches/
+// micro-imperfections in the paint or brushed-metal grain, giving the
+// specular highlight real texture instead of one flat value per part. Uses
+// fragUV directly: for the tank this is Tank::load's own synthetic
+// per-axis triplanar projection (stable in the model's local space, not a
+// real UV unwrap -- see its comment), so the pattern rides along with the
+// hull through rotation/movement. Two well-separated octaves of plain
+// value noise (deliberately not a regular grid -- an earlier version of
+// this used a seam grid instead and it read as an obviously artificial
+// checkerboard at normal viewing distance) so it doesn't look like one
+// obviously repeating cell size either.
+float tankSpecularGrain(vec2 uv) {
+    return valueNoise2D(uv * 35.0 + vec2(7.3, 91.1)) * 0.6 +
+           valueNoise2D(uv * 90.0 + vec2(41.2, 3.9)) * 0.4;
 }
 
 // Orthonormal basis around `n`, used to jitter a ray direction within a
@@ -279,6 +306,41 @@ float traceAO(vec3 origin, vec3 normal, float seedBase) {
     return 1.0 - kAOStrength * (occlusion / float(kAOSamples));
 }
 
+// The swapchain's attachment format is sRGB (see Swapchain::imageFormat_),
+// so the driver auto-encodes whatever linear color this shader writes --
+// but it does so straight onto an 8-bit target, meaning anything above 1.0
+// (the sun-glint specular term especially, exponent 150 on water) simply
+// clips to flat white with a hard edge. Compressing through a filmic curve
+// first gives those highlights a smooth rolloff instead, and pulls the
+// whole image's contrast a little closer to how a camera/eye actually
+// responds rather than the linear-clip default.
+const float kExposure = 1.0;
+
+// Narkowicz 2015 ACES filmic fit -- a widely-used cheap approximation of
+// the full ACES tonemap curve, accurate enough for this purpose without
+// needing the real curve's 3D LUT.
+vec3 acesFilmicTonemap(vec3 x) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+// Exponential distance fog, tinted by the plain sky gradient (not
+// skyColor's cloud-textured version -- see skyGradient's comment) -- gives
+// the terrain's ~255-unit corner-to-corner diagonal (see Camera::
+// projection's far plane) a depth cue and hazes the far edge toward the
+// horizon instead of it staying full-contrast right up to the view's far
+// clip. kFogStartDistance keeps the near/gameplay range (chase cam sits
+// ~8 units back, see Camera::followTarget) completely clear so fog only
+// ever shows up well beyond the action; density is applied to distance
+// past that start, not total distance, so it ramps in gradually rather
+// than jumping straight to its far-clip value at the start line.
+const float kFogStartDistance = 60.0;
+const float kFogDensity = 0.004;
+
 void main() {
     // Domain-warp the terrain's sample UV with a low-frequency (world-space)
     // noise offset so its many texture repeats (60 across the current
@@ -353,7 +415,7 @@ void main() {
     float finalAlpha = texSample.a * pc.opacity;
 
     if (pc.unlit > 0.5) {
-        outColor = vec4(albedo, finalAlpha);
+        outColor = vec4(acesFilmicTonemap(albedo * kExposure), finalAlpha);
         outShadowHistory = vec4(1.0, 1.0, 50000.0, 0.0);
         return;
     }
@@ -539,13 +601,26 @@ void main() {
     // rather than pure black.
     float lighting = 0.2 * aoFactor + 0.8 * diffuse;
 
+    // Per-pixel specular map for the tank: tankSpecularGrain gives a fine,
+    // scratched-metal-like shimmer across the whole surface -- pure noise,
+    // no regular/periodic structure, unlike an earlier version of this that
+    // also perturbed the normal in a seam grid (removed: at any grid
+    // spacing fine enough to read as detail up close, it read as an
+    // obviously artificial checkerboard at normal viewing distance instead
+    // of like paneling). Left as plain pc.specularStrength for everything
+    // else (terrain, water, etc.), same as before.
+    float specularStrength = pc.specularStrength;
+    if (pc.isDynamicObject > 0.5) {
+        specularStrength = pc.specularStrength * mix(0.5, 1.5, tankSpecularGrain(fragUV));
+    }
+
     // Everything below is gated by specularStrength (0 for terrain/other
     // matte objects), so only opted-in draws (the tank) get these. Real
     // metals have low diffuse reflectance, so the base color is darkened a
     // little here rather than left at full brightness before the reflective
     // terms are layered on -- otherwise those terms just wash the color out
     // toward white instead of reading as a highlight on top of it.
-    vec3 base = albedo * lighting * mix(1.0, 0.75, pc.specularStrength);
+    vec3 base = albedo * lighting * mix(1.0, 0.75, specularStrength);
 
     vec3 viewDir = normalize(frame.cameraPos.xyz - fragWorldPos);
 
@@ -576,12 +651,21 @@ void main() {
     vec3 halfDir = normalize(toLight + viewDir);
     float specAngle = max(dot(shadingNormal, halfDir), 0.0);
     float specExponent = isWater ? 150.0 : 20.0;
-    float specular = pow(specAngle, specExponent) * pc.specularStrength * 0.6 * shadowFactor;
+    float specular = pow(specAngle, specExponent) * specularStrength * 0.6 * shadowFactor;
 
     // Fresnel/rim term: surfaces brighten at grazing view angles, a cheap
     // but very characteristic cue for metal. Kept subtle and tinted toward
     // neutral gray rather than white so it doesn't bleach the paint color.
-    float fresnel = pow(1.0 - max(dot(shadingNormal, viewDir), 0.0), 3.0) * pc.specularStrength * 0.18;
+    // Gated by aoFactor (unlike specular above, which already has
+    // shadowFactor) -- grazing angles cluster inside concave nooks (the
+    // tank turret's own hatch cavity is the clearest example) exactly where
+    // AO is darkest, so without this an occluded crevice still gets a
+    // full-strength rim glow that reads as a lit patch floating in shadow.
+    // Harmless back when specularStrength was a small flat constant; became
+    // visible once the per-pixel specular map (see isDynamicObject above)
+    // started pushing it well above that baseline.
+    float fresnel =
+        pow(1.0 - max(dot(shadingNormal, viewDir), 0.0), 3.0) * specularStrength * 0.18 * aoFactor;
 
     // Environment reflection. Base case is the analytic sky+cloud function
     // above sampled along the reflection vector -- cheap (no ray/texture),
@@ -672,5 +756,17 @@ void main() {
     // "mostly transparent, tinted by depth, plus a reflection"). Negligible
     // difference for the tank's own tiny reflectivity (0.06).
     vec3 result = mix(baseContribution, envColor, effectiveReflectivity) + vec3(specular) + fresnel * vec3(0.6);
-    outColor = vec4(result, finalAlpha);
+
+    // Fogged toward the sky color along the actual camera->fragment
+    // direction (not the reflection vector envColor uses above) so it reads
+    // as haze sitting between the viewer and the surface, not a reflection.
+    // currentViewDist is already computed above for the temporal-history
+    // disocclusion check.
+    vec3 viewToFragDir = normalize(fragWorldPos - frame.cameraPos.xyz);
+    vec3 fogColor = skyGradient(viewToFragDir);
+    float fogDist = max(currentViewDist - kFogStartDistance, 0.0);
+    float fogFactor = 1.0 - exp(-fogDist * kFogDensity);
+    result = mix(result, fogColor, fogFactor);
+
+    outColor = vec4(acesFilmicTonemap(result * kExposure), finalAlpha);
 }
