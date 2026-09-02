@@ -60,6 +60,7 @@ layout(push_constant) uniform PushConstants {
     // main()'s isTank and Pipeline::PushConstants::isDynamicObject's
     // comment for why this can't just be inferred from specularStrength.
     float isDynamicObject;
+    float materialType;
 } pc;
 
 layout(location = 0) out vec4 outColor;
@@ -382,6 +383,7 @@ void main() {
     // pixel -- this is meant to read as fine micro-detail under lighting,
     // not to exactly track the grass/gravel blend.
     vec2 terrainBump = vec2(0.0);
+    float terrainRockiness = 0.0;
     if (pc.heightBlend > 0.5) {
         // Terrain: within each zone (grass, gravel), patch-blend between two
         // texture variants using a large-scale noise mask, so the ground
@@ -432,17 +434,32 @@ void main() {
         float steepness = 1.0 - normalize(fragNormal).y;
         float slopeRockiness = smoothstep(0.32, 0.62, steepness);
         rockiness = max(rockiness, slopeRockiness);
+        terrainRockiness = rockiness;
         texColor = mix(grassColor, gravelColor, rockiness);
 
         const float kTerrainBumpTexelStep = 1.0 / 512.0;  // matches kTerrainTextureRes in Application.cpp
         const float kTerrainBumpStrength = 3.0;
         vec3 luminanceWeights = vec3(0.299, 0.587, 0.114);
-        float heightCenter = dot(texture(materialTexHighA, sampleUV).rgb, luminanceWeights);
-        float heightU = dot(texture(materialTexHighA, sampleUV + vec2(kTerrainBumpTexelStep, 0.0)).rgb,
-                             luminanceWeights);
-        float heightV = dot(texture(materialTexHighA, sampleUV + vec2(0.0, kTerrainBumpTexelStep)).rgb,
-                             luminanceWeights);
-        terrainBump = vec2(heightU - heightCenter, heightV - heightCenter) * kTerrainBumpStrength;
+        // Follow the material visible at this point. Previously every pixel,
+        // including exposed gravel, used the first grass texture as height.
+        vec3 bumpCenterColor = mix(grassColor, gravelColor, rockiness);
+        vec3 grassU = mix(texture(materialTexHighA, sampleUV + vec2(kTerrainBumpTexelStep, 0.0)).rgb,
+                          texture(materialTexHighB, sampleUV + vec2(kTerrainBumpTexelStep, 0.0)).rgb,
+                          smoothstep(0.4, 0.6, grassPatch));
+        vec3 grassV = mix(texture(materialTexHighA, sampleUV + vec2(0.0, kTerrainBumpTexelStep)).rgb,
+                          texture(materialTexHighB, sampleUV + vec2(0.0, kTerrainBumpTexelStep)).rgb,
+                          smoothstep(0.4, 0.6, grassPatch));
+        vec3 gravelU = mix(texture(materialTexLowA, sampleUV + vec2(kTerrainBumpTexelStep, 0.0)).rgb,
+                           texture(materialTexLowB, sampleUV + vec2(kTerrainBumpTexelStep, 0.0)).rgb,
+                           smoothstep(0.4, 0.6, gravelPatch));
+        vec3 gravelV = mix(texture(materialTexLowA, sampleUV + vec2(0.0, kTerrainBumpTexelStep)).rgb,
+                           texture(materialTexLowB, sampleUV + vec2(0.0, kTerrainBumpTexelStep)).rgb,
+                           smoothstep(0.4, 0.6, gravelPatch));
+        float heightCenter = dot(bumpCenterColor, luminanceWeights);
+        float heightU = dot(mix(grassU, gravelU, rockiness), luminanceWeights);
+        float heightV = dot(mix(grassV, gravelV, rockiness), luminanceWeights);
+        float materialBumpStrength = mix(2.2, 5.0, rockiness);
+        terrainBump = vec2(heightU - heightCenter, heightV - heightCenter) * materialBumpStrength;
     }
     vec3 albedo = fragColor * texColor;
     // Texture alpha times the per-draw opacity (PushConstants::opacity) --
@@ -631,12 +648,41 @@ void main() {
         vec2 trackBump = vec2(heightU - heightCenter, heightV - heightCenter) * pc.bumpStrength;
         litNormal = normalize(normal - tangent * trackBump.x - bitangent * trackBump.y);
     }
+    // Opaque foliage blobs and rocks still need fine surface relief. Build a
+    // derivative tangent frame from their real UV mapping, then treat albedo
+    // luminance as a compact height channel. Rock is intentionally stronger.
+    if (pc.materialType > 1.5) {
+        vec3 dpdx = dFdx(fragWorldPos), dpdy = dFdy(fragWorldPos);
+        vec2 duvdx = dFdx(sampleUV), duvdy = dFdy(sampleUV);
+        float det = duvdx.x * duvdy.y - duvdx.y * duvdy.x;
+        if (abs(det) > 1e-6) {
+            vec3 tangent = normalize((dpdx * duvdy.y - dpdy * duvdx.y) / det);
+            vec3 bitangent = normalize((-dpdx * duvdy.x + dpdy * duvdx.x) / det);
+            vec2 texel = 1.0 / vec2(textureSize(materialTexHighA, 0));
+            vec3 lw = vec3(0.299, 0.587, 0.114);
+            float h = dot(texColor, lw);
+            float hu = dot(texture(materialTexHighA, sampleUV + vec2(texel.x, 0.0)).rgb, lw);
+            float hv = dot(texture(materialTexHighA, sampleUV + vec2(0.0, texel.y)).rgb, lw);
+            float strength = pc.materialType > 2.5 ? 7.0 : 2.5;
+            litNormal = normalize(litNormal - tangent * (hu - h) * strength -
+                                  bitangent * (hv - h) * strength);
+        }
+    }
     float diffuse = max(dot(litNormal, toLight), 0.0) * shadowFactor;
     // Ambient/fill term, darkened by AO at contact points (where the tank's
     // tracks, box bases, and tree trunks meet the ground) so those read as
     // grounded rather than floating; faces in shadow still read as dim
     // rather than pure black.
     float lighting = 0.2 * aoFactor + 0.8 * diffuse;
+    if (pc.materialType > 1.5 && pc.materialType < 2.5) {
+        // Thin-leaf transmission: sunlight behind the surface produces a
+        // warm green lift, while wrap lighting keeps solid canopy blobs from
+        // developing unnaturally black hemispheres.
+        float wrappedDiffuse = max((dot(litNormal, toLight) + 0.35) / 1.35, 0.0) * shadowFactor;
+        float transmission = pow(max(dot(-litNormal, toLight), 0.0), 2.0) * shadowFactor;
+        lighting = 0.18 * aoFactor + 0.68 * wrappedDiffuse + 0.22 * transmission;
+        albedo *= mix(vec3(0.88, 0.98, 0.82), vec3(1.08, 1.16, 0.72), transmission);
+    }
 
     // Muzzle-flash/explosion point lights (see FrameUBO's dynamicLight*
     // arrays and DynamicLight.h) -- a simple unshadowed Lambertian
@@ -682,6 +728,10 @@ void main() {
     if (pc.isDynamicObject > 0.5) {
         specularStrength = pc.specularStrength * mix(0.5, 1.5, tankSpecularGrain(fragUV));
     }
+    // Stone has a broad, faint mineral response; foliage only a tiny waxy
+    // sheen. Both remain much rougher than painted metal.
+    if (pc.materialType > 2.5) specularStrength = 0.055;
+    else if (pc.materialType > 1.5) specularStrength = 0.025;
 
     // Everything below is gated by specularStrength (0 for terrain/other
     // matte objects), so only opted-in draws (the tank) get these. Real
@@ -719,7 +769,7 @@ void main() {
     // small, sharp highlight, not a broad sheen.
     vec3 halfDir = normalize(toLight + viewDir);
     float specAngle = max(dot(shadingNormal, halfDir), 0.0);
-    float specExponent = isWater ? 150.0 : 20.0;
+    float specExponent = isWater ? 150.0 : (pc.materialType > 2.5 ? 9.0 : 20.0);
     float specular = pow(specAngle, specExponent) * specularStrength * 0.6 * shadowFactor;
 
     // Fresnel/rim term: surfaces brighten at grazing view angles, a cheap

@@ -163,10 +163,9 @@ HeightmapGenerator::Heightmap HeightmapGenerator::generateHills(int resolution, 
     std::uniform_real_distribution<float> offsetDist(0.0f, 1000.0f);
 
     // Base gentle rolling hills -- same two-sine shape as the original
-    // generator. This alone still covers most of the map (and, with the
-    // spawn-clearing below, all of the area right around the tank's spawn
-    // at the world origin), with the plateau/river layered on top farther
-    // out.
+    // generator. This alone still covers most of the map (including the
+    // area around the tank spawn), with raised and carved features layered
+    // on top farther out.
     float freqX1 = freqDist(rng), freqZ1 = freqDist(rng);
     float phaseX1 = phaseDist(rng), phaseZ1 = phaseDist(rng);
     float freqX2 = freqDist(rng), freqZ2 = freqDist(rng);
@@ -180,12 +179,46 @@ HeightmapGenerator::Heightmap HeightmapGenerator::generateHills(int resolution, 
     float plateauOffsetX = offsetDist(rng);
     float plateauOffsetY = offsetDist(rng);
 
+    // One or two isolated mountain masses. Keeping these as explicit,
+    // seeded features lets the rest of the field sit lower without losing
+    // a strong skyline. Centres stay away from the spawn and map edge so
+    // each peak has room for a broad, naturally traversable base.
+    struct Peak {
+        glm::vec2 center;
+        float radius;
+        float height;
+        glm::vec2 noiseOffset;
+    };
+    std::uniform_int_distribution<int> peakCountDist(1, 2);
+    std::uniform_real_distribution<float> peakPositionDist(-worldSize * 0.34f,
+                                                            worldSize * 0.34f);
+    std::uniform_real_distribution<float> peakRadiusDist(worldSize * 0.09f,
+                                                          worldSize * 0.14f);
+    std::uniform_real_distribution<float> peakHeightDist(amplitude * 1.55f,
+                                                          amplitude * 2.05f);
+    std::vector<Peak> peaks;
+    int peakCount = peakCountDist(rng);
+    for (int p = 0; p < peakCount; ++p) {
+        glm::vec2 center(0.0f);
+        for (int attempt = 0; attempt < 32; ++attempt) {
+            center = {peakPositionDist(rng), peakPositionDist(rng)};
+            bool clearOfSpawn = glm::length(center) > worldSize * 0.18f;
+            bool clearOfOtherPeaks = true;
+            for (const Peak& other : peaks) {
+                clearOfOtherPeaks &= glm::length(center - other.center) > worldSize * 0.22f;
+            }
+            if (clearOfSpawn && clearOfOtherPeaks) break;
+        }
+        peaks.push_back({center, peakRadiusDist(rng), peakHeightDist(rng),
+                         glm::vec2(offsetDist(rng), offsetDist(rng))});
+    }
+
     Heightmap map;
     map.resolution = resolution;
     map.worldSize = worldSize;
     map.heights.resize(static_cast<size_t>(resolution) * resolution);
 
-    // Pass 1: base terrain (rolling hills + plateau), no river yet -- the
+    // Pass 1: base terrain (rolling hills + plateau + peaks), no river yet -- the
     // river trace below needs a complete height field to walk downhill
     // across, and "below the halfway point" needs the base terrain's own
     // actual min/max, so this has to be a separate pass rather than folded
@@ -215,13 +248,30 @@ HeightmapGenerator::Heightmap HeightmapGenerator::generateHills(int resolution, 
             // Raw (uncompressed) height the plateau would reach at full
             // mask strength; compressed above flatCap so the interior
             // reads as a near-flat tabletop instead of just another hill.
-            float plateauRaw = amplitude * 1.1f;
-            float flatCap = amplitude * 0.95f;
+            float plateauRaw = amplitude * 0.82f;
+            float flatCap = amplitude * 0.72f;
             float plateauHeight =
                 plateauRaw > flatCap ? flatCap + (plateauRaw - flatCap) * 0.1f : plateauRaw;
             float plateau = plateauMask * plateauHeight * featureStrength;
 
-            map.heights[static_cast<size_t>(j) * resolution + i] = baseHills + plateau;
+            float peakHeight = 0.0f;
+            for (const Peak& peak : peaks) {
+                float distance = glm::length(glm::vec2(x, z) - peak.center);
+                float peakMask = 1.0f - glm::smoothstep(0.0f, peak.radius, distance);
+                // Low-frequency modulation prevents a perfectly radial
+                // cone while preserving one clear summit per peak mass.
+                float irregularity =
+                    0.86f + 0.22f * fbm(x * 0.035f + peak.noiseOffset.x,
+                                        z * 0.035f + peak.noiseOffset.y, 3);
+                peakHeight += peak.height * peakMask * peakMask * irregularity;
+            }
+
+            // Lower the dominant terrain level slightly. Peaks are added
+            // after the bias so their summits remain distinctly higher
+            // than the old broad plateau-dominated skyline.
+            constexpr float kAverageHeightBias = -0.4f;
+            map.heights[static_cast<size_t>(j) * resolution + i] =
+                baseHills + plateau + peakHeight + kAverageHeightBias;
         }
     }
 

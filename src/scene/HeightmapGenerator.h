@@ -5,10 +5,10 @@
 
 // Produces a flat, row-major grid of height values: gentle rolling hills
 // (a hand-rolled sum of sines) as a base layer, plus a raised flat-topped
-// plateau and a carved winding river/valley channel (both hand-rolled value
-// noise, same style as the texture generators) layered on top. Both
-// features fade out near the world origin so the tank's spawn point always
-// lands on the plain rolling-hills base -- see generateHills' own comments.
+// plateau, one or two isolated higher peaks, and a carved winding
+// river/valley channel (all hand-rolled procedural fields) layered on top.
+// Major raised features stay away from the world origin so the tank's spawn
+// point lands on the plain rolling-hills base -- see generateHills' comments.
 // `seed` randomizes frequencies/phases/offsets throughout so different
 // seeds give visibly different layouts.
 class HeightmapGenerator {

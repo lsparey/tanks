@@ -1506,6 +1506,7 @@ void Application::drawFrame() {
     Pipeline::PushConstants terrainPc{};
     terrainPc.model = glm::mat4(1.0f);
     terrainPc.heightBlend = 1.0f;
+    terrainPc.materialType = 1.0f;
     vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                         sizeof(terrainPc), &terrainPc);
@@ -1631,6 +1632,7 @@ void Application::drawFrame() {
                                  1, 1, &leafMaterialSets_[tree.meshVariant], 0, nullptr);
         Pipeline::PushConstants leafPc{};
         leafPc.model = tree.worldMatrix();
+        leafPc.materialType = 2.0f;
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(leafPc), &leafPc);
@@ -1644,6 +1646,7 @@ void Application::drawFrame() {
                                  1, 1, &rockMaterialSets_[rock.meshVariant], 0, nullptr);
         Pipeline::PushConstants rockPc{};
         rockPc.model = rock.worldMatrix();
+        rockPc.materialType = 3.0f;
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(rockPc), &rockPc);
@@ -1658,6 +1661,7 @@ void Application::drawFrame() {
                                  1, 1, &rockMaterialSets_[rock.meshVariant], 0, nullptr);
         Pipeline::PushConstants rockPc{};
         rockPc.model = rock.worldMatrix();
+        rockPc.materialType = 3.0f;
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(rockPc), &rockPc);
@@ -1671,6 +1675,7 @@ void Application::drawFrame() {
     for (const auto& cliff : sedimentaryCliffs_) {
         Pipeline::PushConstants cliffPc{};
         cliffPc.model = cliff.worldMatrix();
+        cliffPc.materialType = 3.0f;
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(cliffPc), &cliffPc);
@@ -1685,6 +1690,7 @@ void Application::drawFrame() {
     for (const auto& cliff : sedimentaryCliffs_) {
         Pipeline::PushConstants grassPc{};
         grassPc.model = cliff.worldMatrix();
+        grassPc.materialType = 1.0f;
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(grassPc), &grassPc);
@@ -1697,6 +1703,7 @@ void Application::drawFrame() {
                                  1, 1, &leafMaterialSets_[shrub.meshVariant], 0, nullptr);
         Pipeline::PushConstants shrubPc{};
         shrubPc.model = shrub.worldMatrix();
+        shrubPc.materialType = 2.0f;
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(shrubPc), &shrubPc);

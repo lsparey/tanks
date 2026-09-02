@@ -96,6 +96,9 @@ public:
         // draw loop, which now gives the tank's camo (painted) and metal
         // parts different specularStrength values.
         float isDynamicObject = 0.0f;
+        // Material-specific shading without another descriptor set. Values
+        // must match basic.frag: 0 generic, 1 terrain, 2 foliage, 3 rock.
+        float materialType = 0.0f;
     };
 
     Pipeline(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthFormat, VkFormat historyFormat);

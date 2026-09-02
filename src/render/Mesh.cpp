@@ -181,6 +181,25 @@ void appendLeafBlob(std::vector<Vertex>& vertices, std::vector<uint32_t>& indice
         deformed[i] = base[i] * displacement * radius;
     }
 
+    // Average the surrounding face normals at every shared source vertex.
+    // The render vertices below are still duplicated per triangle (which
+    // keeps the simple spherical UV seam intact), but sharing these normals
+    // makes lighting flow continuously over the foliage blob instead of
+    // revealing every triangle as a separate flat-shaded polygon.
+    std::vector<glm::vec3> smoothNormals(base.size(), glm::vec3(0.0f));
+    for (const auto& face : faces) {
+        const glm::vec3& p0 = deformed[face[0]];
+        const glm::vec3& p1 = deformed[face[1]];
+        const glm::vec3& p2 = deformed[face[2]];
+        glm::vec3 weightedNormal = glm::cross(p1 - p0, p2 - p0);
+        glm::vec3 centroid = (p0 + p1 + p2) / 3.0f;
+        if (glm::dot(weightedNormal, centroid) < 0.0f) weightedNormal = -weightedNormal;
+        smoothNormals[face[0]] += weightedNormal;
+        smoothNormals[face[1]] += weightedNormal;
+        smoothNormals[face[2]] += weightedNormal;
+    }
+    for (glm::vec3& normal : smoothNormals) normal = glm::normalize(normal);
+
     for (const auto& face : faces) {
         glm::vec3 dir0 = base[face[0]];
         glm::vec3 dir1 = base[face[1]];
@@ -188,12 +207,16 @@ void appendLeafBlob(std::vector<Vertex>& vertices, std::vector<uint32_t>& indice
         glm::vec3 p0 = center + deformed[face[0]];
         glm::vec3 p1 = center + deformed[face[1]];
         glm::vec3 p2 = center + deformed[face[2]];
+        glm::vec3 n0 = smoothNormals[face[0]];
+        glm::vec3 n1 = smoothNormals[face[1]];
+        glm::vec3 n2 = smoothNormals[face[2]];
 
         glm::vec3 normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
         glm::vec3 centroid = (p0 + p1 + p2) / 3.0f - center;
         if (glm::dot(normal, centroid) < 0.0f) {
             std::swap(p1, p2);
             std::swap(dir1, dir2);
+            std::swap(n1, n2);
             normal = -normal;
         }
 
@@ -205,9 +228,9 @@ void appendLeafBlob(std::vector<Vertex>& vertices, std::vector<uint32_t>& indice
         };
 
         uint32_t base_ = static_cast<uint32_t>(vertices.size());
-        vertices.push_back({p0, normal, color, sphericalUV(dir0)});
-        vertices.push_back({p1, normal, color, sphericalUV(dir1)});
-        vertices.push_back({p2, normal, color, sphericalUV(dir2)});
+        vertices.push_back({p0, n0, color, sphericalUV(dir0)});
+        vertices.push_back({p1, n1, color, sphericalUV(dir1)});
+        vertices.push_back({p2, n2, color, sphericalUV(dir2)});
         indices.insert(indices.end(), {base_ + 0, base_ + 1, base_ + 2});
     }
 }
@@ -308,12 +331,12 @@ Mesh Mesh::rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColo
         {3, 8, 9},  {4, 9, 5},  {2, 4, 11}, {6, 2, 10}, {8, 6, 7},  {9, 8, 1},
     };
 
-    // Subdivide twice (20 -> 80 -> 320 faces): split each triangle into 4
-    // via shared edge midpoints so the multi-scale fractal
-    // displacement below varies smoothly across it instead of tearing the
-    // surface at the original icosahedron's edges. This alone is what
-    // makes the noise below read as organic bumps rather than one uniform
-    // wobble per original vertex.
+    // Three subdivisions (20 -> 80 -> 320 -> 1280 faces) provide enough
+    // vertices for small chips and ridges to affect the silhouette rather
+    // than existing only in the material normal. The resulting meshes are
+    // still tiny compared with the terrain and are reused by every rock
+    // instance, so this doesn't multiply geometry by the instance count.
+    subdivideIcosphere(verts, faces);
     subdivideIcosphere(verts, faces);
     subdivideIcosphere(verts, faces);
 
@@ -326,15 +349,26 @@ Mesh Mesh::rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColo
     std::mt19937 rng(seed);
     std::uniform_real_distribution<float> offsetDist(0.0f, 1000.0f);
     glm::vec3 seedOffset(offsetDist(rng), offsetDist(rng), offsetDist(rng));
+    std::uniform_real_distribution<float> proportionDist(0.84f, 1.16f);
+    glm::vec3 proportions(proportionDist(rng), proportionDist(rng), proportionDist(rng));
     std::uniform_real_distribution<float> colorJitter(-0.05f, 0.05f);
 
     std::vector<glm::vec3> deformed(verts.size());
     for (size_t i = 0; i < verts.size(); ++i) {
         float broad = fractalNoise3D(verts[i] * 1.35f + seedOffset, 5);
         float detail = fractalNoise3D(verts[i] * 4.5f + seedOffset * 1.73f, 4);
+        float chips = fractalNoise3D(verts[i] * 11.0f + seedOffset * 2.41f, 3);
         float ridge = 1.0f - std::abs(detail * 2.0f - 1.0f);
-        float radius = 0.62f + broad * 0.52f + ridge * broad * 0.2f;
-        deformed[i] = verts[i] * radius;
+        // A thresholded high-frequency field cuts localized shallow chips
+        // into the surface. The ridge term adds raised fracture lines, and
+        // a broad directional lobe stops the underlying form reading as a
+        // uniformly noisy sphere.
+        float chippedDepression = glm::smoothstep(0.68f, 0.82f, chips) * 0.13f;
+        float directionalLobe = std::sin(verts[i].x * 3.7f + seedOffset.x) *
+                                std::sin(verts[i].z * 2.9f + seedOffset.z) * 0.055f;
+        float radius = 0.62f + broad * 0.48f + ridge * broad * 0.18f + directionalLobe -
+                       chippedDepression;
+        deformed[i] = verts[i] * radius * proportions;
         deformed[i].y *= 0.78f;
     }
 
@@ -342,6 +376,25 @@ Mesh Mesh::rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColo
     std::vector<uint32_t> indices;
     vertices.reserve(faces.size() * 3);
     indices.reserve(faces.size() * 3);
+
+    // Accumulate area-weighted face normals on the shared, deformed source
+    // mesh. Render vertices remain duplicated below for the spherical UV
+    // seam, but reuse these averaged normals so illumination is continuous
+    // across triangle boundaries. Geometric chips remain visible in the
+    // silhouette and through the rock material's fine normal detail.
+    std::vector<glm::vec3> smoothNormals(verts.size(), glm::vec3(0.0f));
+    for (const auto& face : faces) {
+        const glm::vec3& p0 = deformed[face[0]];
+        const glm::vec3& p1 = deformed[face[1]];
+        const glm::vec3& p2 = deformed[face[2]];
+        glm::vec3 weightedNormal = glm::cross(p1 - p0, p2 - p0);
+        glm::vec3 centroid = (p0 + p1 + p2) / 3.0f;
+        if (glm::dot(weightedNormal, centroid) < 0.0f) weightedNormal = -weightedNormal;
+        smoothNormals[face[0]] += weightedNormal;
+        smoothNormals[face[1]] += weightedNormal;
+        smoothNormals[face[2]] += weightedNormal;
+    }
+    for (glm::vec3& normal : smoothNormals) normal = glm::normalize(normal);
 
     // Spherical UV, scaled to repeat the (already-tileable) rock texture a
     // few times across the rock's surface for close-up surface detail --
@@ -361,6 +414,9 @@ Mesh Mesh::rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColo
         glm::vec3 p0 = deformed[face[0]];
         glm::vec3 p1 = deformed[face[1]];
         glm::vec3 p2 = deformed[face[2]];
+        glm::vec3 n0 = smoothNormals[face[0]];
+        glm::vec3 n1 = smoothNormals[face[1]];
+        glm::vec3 n2 = smoothNormals[face[2]];
 
         // The icosahedron's own face winding isn't verified against this
         // project's CCW-outward convention, so derive it from the actual
@@ -371,6 +427,7 @@ Mesh Mesh::rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColo
         if (glm::dot(normal, centroid) < 0.0f) {
             std::swap(p1, p2);
             std::swap(dir1, dir2);
+            std::swap(n1, n2);
             normal = -normal;
         }
 
@@ -378,9 +435,9 @@ Mesh Mesh::rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColo
                                       glm::vec3(1.0f));
 
         uint32_t base_ = static_cast<uint32_t>(vertices.size());
-        vertices.push_back({p0, normal, color, sphericalUV(dir0)});
-        vertices.push_back({p1, normal, color, sphericalUV(dir1)});
-        vertices.push_back({p2, normal, color, sphericalUV(dir2)});
+        vertices.push_back({p0, n0, color, sphericalUV(dir0)});
+        vertices.push_back({p1, n1, color, sphericalUV(dir1)});
+        vertices.push_back({p2, n2, color, sphericalUV(dir2)});
         indices.insert(indices.end(), {base_ + 0, base_ + 1, base_ + 2});
     }
 
