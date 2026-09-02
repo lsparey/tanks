@@ -32,14 +32,14 @@ constexpr uint32_t kWindowWidth = 1280;
 constexpr uint32_t kWindowHeight = 720;
 
 // Terrain height below which a basin can start filling with water -- tuned
-// against the heightmap's actual range (roughly -3..-5.5 on the low end,
+// against the heightmap's actual range (roughly -2.2..-4 on the low end,
 // seed-dependent, now that HeightmapGenerator layers a plateau and a
 // steepest-descent-traced river valley on top of the base rolling hills,
-// versus the plain +-3 of the old hills-only version), and against the rock
+// versus the plain +-2.2 of a hills-only field), and against the rock
 // texture's own rockyThreshold blend band in basic.frag, so water sits
 // within the already-rocky lowest terrain (the river's deepest points)
 // rather than on obviously grassy ground.
-constexpr float kWaterThreshold = -2.6f;
+constexpr float kWaterThreshold = -1.9f;
 // How deep any single body of water is allowed to get above its own basin
 // floor -- kept shallow per the user's request, and this is also what
 // keeps separate basins from all settling at one shared "sea level" (see
@@ -76,6 +76,39 @@ const bool kSevenSegmentTable[10][7] = {
     {true, true, true, true, true, true, true},      // 8
     {true, true, true, true, false, true, true},     // 9
 };
+
+// CPU counterpart to basic.frag's terrain value noise. Keeping this in
+// lockstep with the shader lets decorative pebbles use the same wandering
+// gravel boundary that is actually visible on the ground.
+float terrainHash(glm::vec2 p) {
+    p = glm::fract(p * glm::vec2(123.34f, 456.21f));
+    p += glm::dot(p, p + 45.32f);
+    return glm::fract(p.x * p.y);
+}
+
+float terrainValueNoise(glm::vec2 p) {
+    glm::vec2 i = glm::floor(p);
+    glm::vec2 f = glm::fract(p);
+    float a = terrainHash(i);
+    float b = terrainHash(i + glm::vec2(1.0f, 0.0f));
+    float c = terrainHash(i + glm::vec2(0.0f, 1.0f));
+    float d = terrainHash(i + glm::vec2(1.0f, 1.0f));
+    glm::vec2 u = f * f * (3.0f - 2.0f * f);
+    return glm::mix(glm::mix(a, b, u.x), glm::mix(c, d, u.x), u.y);
+}
+
+float terrainGravelAmount(const Terrain& terrain, float x, float z) {
+    constexpr float kRockyBaseHeight = -1.7f;  // matches basic.frag
+    float threshold = kRockyBaseHeight +
+                      (terrainValueNoise(glm::vec2(x, z) * 0.05f + glm::vec2(153.2f, 88.7f)) -
+                       0.5f) *
+                          1.05f;
+    float heightRockiness =
+        1.0f - glm::smoothstep(threshold - 0.3f, threshold + 0.3f, terrain.heightAt(x, z));
+    float steepness = 1.0f - terrain.normalAt(x, z).y;
+    float slopeRockiness = glm::smoothstep(0.32f, 0.62f, steepness);
+    return std::max(heightRockiness, slopeRockiness);
+}
 
 void addDigit(HudRenderer& hud, glm::vec2 centerNDC, float halfHeight, float aspect, int digit,
               glm::vec3 color) {
@@ -254,7 +287,7 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
     // hardware ray tracing either way -- (256-1)^2*2 ~= 130k triangles for
     // the whole terrain BLAS, built once at load time.
     terrain_ = std::make_unique<Terrain>(*context_, *commands_, /*resolution=*/256,
-                                          /*worldSize=*/180.0f, /*amplitude=*/3.0f, terrainSeed);
+                                          /*worldSize=*/180.0f, /*amplitude=*/2.2f, terrainSeed);
     WaterGenerator::FloodField waterField =
         WaterGenerator::computeFloodField(*terrain_, kWaterThreshold, kWaterMaxDepth);
     waterMesh_ = WaterGenerator::buildMesh(*context_, *commands_, *terrain_, waterField);
@@ -316,6 +349,10 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
             *rockStandaloneTextures_.back(), *rockStandaloneTextures_.back(),
             *rockStandaloneTextures_.back(), *rockStandaloneTextures_.back()));
     }
+    sedimentaryCliffMesh_ = std::make_unique<Mesh>(Mesh::sedimentaryCliff(
+        *context_, *commands_, glm::vec3(1.0f, 1.0f, 1.0f), 7331));
+    sedimentaryCliffGrassMesh_ = std::make_unique<Mesh>(Mesh::sedimentaryCliff(
+        *context_, *commands_, glm::vec3(1.0f), 7331, /*topOnly=*/true));
     // A small pool of distinct fractal branch structures (see
     // Mesh::treeBark/treeLeaves) -- matching seeds so each variant's bark
     // and leaves share the same branch skeleton. Tints kept close to white
@@ -361,6 +398,7 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
     spawnBoxes();
     spawnTrees(waterField);
     spawnRocks(waterField);
+    spawnSedimentaryCliffs(waterField);
     spawnShrubs(waterField);
     spawnSmallRocks(waterField);
 
@@ -377,6 +415,23 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
         obstacles_.push_back(
             {glm::vec2(rock.position.x, rock.position.z), 0.8f * rock.scale});
     }
+    for (const auto& cliff : sedimentaryCliffs_) {
+        // Approximate the long, curved plate formation with a capsule-like
+        // chain of small circles instead of one enormous bounding circle.
+        // This follows the actual occupied strip closely and leaves the
+        // open ground around its ends and sides driveable.
+        constexpr int kCliffCollisionPieces = 21;
+        constexpr float kCliffHalfLength = 9.0f;
+        constexpr float kCliffPieceRadius = 1.5f;
+        glm::vec2 localXAxis(std::cos(cliff.yaw), -std::sin(cliff.yaw));
+        glm::vec2 cliffCenter(cliff.position.x, cliff.position.z);
+        for (int piece = 0; piece < kCliffCollisionPieces; ++piece) {
+            float t = static_cast<float>(piece) / (kCliffCollisionPieces - 1);
+            float localX = glm::mix(-kCliffHalfLength, kCliffHalfLength, t);
+            glm::vec2 center = cliffCenter + localXAxis * (localX * cliff.scale);
+            obstacles_.push_back({center, kCliffPieceRadius * cliff.scale});
+        }
+    }
 
     buildAccelerationStructures();
     input_ = std::make_unique<InputManager>(window_);
@@ -389,6 +444,7 @@ Application::~Application() {
     // Destroy in dependency order before the GLFW window disappears.
     historyBuffer_.reset();
     sceneAS_.reset();
+    sedimentaryCliffBLAS_.reset();
     treeLeafBLAS_.clear();
     treeBarkBLAS_.clear();
     rockBLAS_.clear();
@@ -414,6 +470,8 @@ Application::~Application() {
     boundaryWallMesh_.reset();
     boundaryLineMesh_.reset();
     waterMesh_.reset();
+    sedimentaryCliffGrassMesh_.reset();
+    sedimentaryCliffMesh_.reset();
     rockMeshes_.clear();
     treeLeafMeshes_.clear();
     treeBarkMeshes_.clear();
@@ -640,6 +698,61 @@ void Application::spawnRocks(const WaterGenerator::FloodField& waterField) {
     }
 }
 
+void Application::spawnSedimentaryCliffs(const WaterGenerator::FloodField& waterField) {
+    constexpr int kMaxCliffs = 5;
+    constexpr float kGridStep = 3.0f;
+    constexpr float kMinSeparation = 22.0f;
+    constexpr float kEdgeMargin = 5.0f;
+    constexpr float kSpawnClearRadius = 10.0f;
+
+    std::mt19937 rng(std::random_device{}());
+    std::uniform_real_distribution<float> scaleDist(1.0625f, 1.5f);
+    struct CliffCandidate {
+        glm::vec2 position;
+        float steepness;
+    };
+    std::vector<CliffCandidate> candidates;
+    float half = terrain_->worldSize() * 0.5f - kEdgeMargin;
+    for (float x = -half; x <= half; x += kGridStep) {
+        for (float z = -half; z <= half; z += kGridStep) {
+            glm::vec2 position(x, z);
+            if (glm::length(position) < kSpawnClearRadius) continue;
+            if (WaterGenerator::isUnderwater(waterField, x, z)) continue;
+            float steepness = 1.0f - terrain_->normalAt(x, z).y;
+            candidates.push_back({position, steepness});
+        }
+    }
+    // The terrain seed changes its absolute slope range considerably, and
+    // the deliberately flatter terrain can have no samples above a fixed
+    // threshold. Ranking candidates makes these formations reliably follow
+    // the steepest ground available on every generated map.
+    std::shuffle(candidates.begin(), candidates.end(), rng);  // random tie-breaking
+    std::stable_sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) {
+        return a.steepness > b.steepness;
+    });
+
+    std::vector<glm::vec2> placed;
+    for (const CliffCandidate& candidate : candidates) {
+        if (static_cast<int>(sedimentaryCliffs_.size()) >= kMaxCliffs) break;
+        glm::vec2 position = candidate.position;
+        bool tooClose = std::any_of(placed.begin(), placed.end(), [&](glm::vec2 other) {
+            return glm::length(position - other) < kMinSeparation;
+        });
+        if (tooClose) continue;
+
+        glm::vec3 normal = terrain_->normalAt(position.x, position.y);
+        RockInstance cliff;
+        cliff.position = {position.x, terrain_->heightAt(position.x, position.y) - 0.1f, position.y};
+        // The mesh's broad exposed face points along local +Z. Terrain's
+        // horizontal normal points downhill, so this turns the strata to
+        // present their face naturally at the foot of the slope.
+        cliff.yaw = std::atan2(normal.x, normal.z);
+        cliff.scale = scaleDist(rng);
+        sedimentaryCliffs_.push_back(cliff);
+        placed.push_back(position);
+    }
+}
+
 void Application::spawnShrubs(const WaterGenerator::FloodField& waterField) {
     constexpr int kShrubCount = 140;
     constexpr float kEdgeMargin = 3.0f;
@@ -687,7 +800,8 @@ void Application::spawnShrubs(const WaterGenerator::FloodField& waterField) {
 }
 
 void Application::spawnSmallRocks(const WaterGenerator::FloodField& waterField) {
-    // Small decorative scree/pebbles, concentrated on steep ground -- NOT
+    // Small decorative scree/pebbles, concentrated wherever the rendered
+    // terrain is gravel -- NOT
     // added to the ray-traced TLAS (see gatherRayTracingInstances' comment
     // on debris/track marks for the same reasoning: numerous and small
     // enough that individually shadow-casting each one isn't worth the TLAS
@@ -696,39 +810,32 @@ void Application::spawnSmallRocks(const WaterGenerator::FloodField& waterField) 
     // pool above is deliberately kept small for exactly that budget reason.
     //
     // Scanned over a grid rather than randomly scattered like trees/rocks/
-    // shrubs above: steep ground (plateau edges, valley/river banks -- see
-    // HeightmapGenerator) is a small fraction of the map, so randomly
-    // guessing positions and rejecting flat ones would waste most attempts
-    // and under-fill. Walking the grid directly and testing each cell's own
-    // slope finds every qualifying area reliably.
+    // shrubs above. terrainGravelAmount mirrors basic.frag's noisy low-area
+    // and steep-slope blend, so the geometry follows the visible material
+    // rather than merely assuming every gravel patch is a steep bank.
     constexpr float kGridStep = 2.5f;
-    // Matches basic.frag's own slopeRockiness smoothstep(0.45, 0.78, ...)
-    // -- this is what makes the pebbles cluster exactly where the ground
-    // already reads as rocky in the texture blend, instead of scattering
-    // independently of it.
-    constexpr float kMinSteepness = 0.3f;
+    constexpr float kMinGravelAmount = 0.55f;
     constexpr float kEdgeMargin = 3.0f;
     constexpr float kMinDistanceFromSpawn = 5.0f;
     constexpr float kJitter = kGridStep * 0.5f;
     // Not every qualifying cell spawns rocks, and jitter jitters the
     // position within the cell -- both so this reads as scattered scree
     // rather than a visibly regular grid.
-    constexpr float kSpawnChance = 0.8f;
+    constexpr float kSpawnChance = 0.72f;
 
     std::mt19937 rng(std::random_device{}());
     std::uniform_real_distribution<float> jitterDist(-kJitter, kJitter);
     std::uniform_real_distribution<float> yawDist(0.0f, 6.2831853f);
     std::uniform_real_distribution<float> scaleDist(0.08f, 0.22f);
     std::uniform_real_distribution<float> chanceDist(0.0f, 1.0f);
-    std::uniform_int_distribution<int> countDist(2, 4);
+    std::uniform_int_distribution<int> countDist(2, 5);
     std::uniform_int_distribution<int> variantDist(0, static_cast<int>(rockMeshes_.size()) - 1);
 
     float half = terrain_->worldSize() * 0.5f - kEdgeMargin;
     for (float gx = -half; gx <= half; gx += kGridStep) {
         for (float gz = -half; gz <= half; gz += kGridStep) {
             if (glm::length(glm::vec2(gx, gz)) < kMinDistanceFromSpawn) continue;
-            float steepness = 1.0f - terrain_->normalAt(gx, gz).y;
-            if (steepness < kMinSteepness) continue;
+            if (terrainGravelAmount(*terrain_, gx, gz) < kMinGravelAmount) continue;
             if (chanceDist(rng) > kSpawnChance) continue;
 
             int count = countDist(rng);
@@ -891,6 +998,8 @@ void Application::buildAccelerationStructures() {
         rockBLAS_.push_back(std::make_unique<AccelerationStructure>(
             AccelerationStructure::buildBLAS(*context_, *commands_, *mesh)));
     }
+    sedimentaryCliffBLAS_ = std::make_unique<AccelerationStructure>(
+        AccelerationStructure::buildBLAS(*context_, *commands_, *sedimentaryCliffMesh_));
     for (const auto& mesh : treeBarkMeshes_) {
         treeBarkBLAS_.push_back(std::make_unique<AccelerationStructure>(
             AccelerationStructure::buildBLAS(*context_, *commands_, *mesh)));
@@ -926,6 +1035,9 @@ std::vector<AccelerationStructure::Instance> Application::gatherRayTracingInstan
     }
     for (const auto& rock : rocks_) {
         instances.push_back({rockBLAS_[rock.meshVariant]->deviceAddress(), rock.worldMatrix()});
+    }
+    for (const auto& cliff : sedimentaryCliffs_) {
+        instances.push_back({sedimentaryCliffBLAS_->deviceAddress(), cliff.worldMatrix()});
     }
     for (const auto& part : tank_->drawParts()) {
         instances.push_back({part.blasAddress, part.worldMatrix});
@@ -1550,6 +1662,33 @@ void Application::drawFrame() {
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(rockPc), &rockPc);
         rockMeshes_[rock.meshVariant]->bindAndDraw(frame.commandBuffer);
+    }
+
+    // Layered cliff outcrops use a warm gravel variant, but distinct
+    // geometry and placement from the ordinary boulder pool.
+    vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                             pipeline_->layout(), 1, 1, &rockMaterialSets_[1], 0, nullptr);
+    for (const auto& cliff : sedimentaryCliffs_) {
+        Pipeline::PushConstants cliffPc{};
+        cliffPc.model = cliff.worldMatrix();
+        vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
+                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                            sizeof(cliffPc), &cliffPc);
+        sedimentaryCliffMesh_->bindAndDraw(frame.commandBuffer);
+    }
+
+    // A matching cap covers the stone tops and extends down around their
+    // edges as a substantial turf layer, while the deeper fractured faces
+    // remain exposed rock.
+    vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                             pipeline_->layout(), 1, 1, &terrainMaterialSet_, 0, nullptr);
+    for (const auto& cliff : sedimentaryCliffs_) {
+        Pipeline::PushConstants grassPc{};
+        grassPc.model = cliff.worldMatrix();
+        vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
+                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                            sizeof(grassPc), &grassPc);
+        sedimentaryCliffGrassMesh_->bindAndDraw(frame.commandBuffer);
     }
 
     // Shrubs -- reuse leafMaterialSets_ (see their mesh creation comment).

@@ -46,10 +46,9 @@ public:
     static Mesh treeBark(VulkanContext& ctx, CommandContext& commands, glm::vec3 tint, uint32_t seed);
     static Mesh treeLeaves(VulkanContext& ctx, CommandContext& commands, glm::vec3 tint, uint32_t seed);
 
-    // A procedural boulder: a once-subdivided icosahedron (80 faces) with
-    // each vertex's radius displaced by multi-octave (fractal) 3D noise for
-    // an irregular, organic-looking lumpy silhouette -- notably more
-    // detailed than a single random jitter per base icosahedron vertex.
+    // A procedural boulder: a twice-subdivided icosahedron (320 faces) with
+    // broad, ridged, and fine layers of fractal displacement for an
+    // irregular silhouette reminiscent of the canopy's nested forms.
     // Flat per-face normals (same faceted-shading approach as cube()), a
     // slight per-face color jitter around baseColor, and a spherical UV so
     // an actual rock texture (see Application's rockMaterialSet_) wraps
@@ -59,6 +58,12 @@ public:
     // same shape copy-pasted everywhere.
     static Mesh rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColor,
                       uint32_t seed);
+
+    // A long, low chain of overlapping sedimentary plates with shallow
+    // strata, an uneven top, and fractured ends. Intended to emerge from
+    // hillsides as one extended outcrop rather than isolated stones.
+    static Mesh sedimentaryCliff(VulkanContext& ctx, CommandContext& commands,
+                                 glm::vec3 baseColor, uint32_t seed, bool topOnly = false);
 
     // A unit-radius upper hemisphere (Y >= 0), meant to be scaled up and
     // recentered on the camera each frame as a sky backdrop for clouds

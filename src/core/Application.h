@@ -135,6 +135,8 @@ private:
     std::unique_ptr<Mesh> waterMesh_;  // null if no qualifying low-lying basin exists this run
     std::unique_ptr<Mesh> boundaryLineMesh_;
     std::unique_ptr<Mesh> boundaryWallMesh_;
+    std::unique_ptr<Mesh> sedimentaryCliffMesh_;
+    std::unique_ptr<Mesh> sedimentaryCliffGrassMesh_;
     // Half-extent of the square play-area boundary (see BoundaryGenerator)
     // -- also used by Tank::update to keep the hull from driving through
     // the boundary's wall of light.
@@ -163,9 +165,10 @@ private:
     bool hasTrackMarkAnchor_ = false;
     std::vector<TreeInstance> trees_;
     std::vector<RockInstance> rocks_;
+    std::vector<RockInstance> sedimentaryCliffs_;
     std::vector<ShrubInstance> shrubs_;
-    // Small decorative scree/pebbles, biased toward steep ground (plateau
-    // edges, valley/river banks) -- see spawnSmallRocks. Reuses RockInstance
+    // Small decorative scree/pebbles, biased toward the terrain's visible
+    // gravel areas -- see spawnSmallRocks. Reuses RockInstance
     // and the same rockMeshes_/rockMaterialSets_ pool as rocks_ (just many
     // more, much smaller, and never added to the ray-traced TLAS -- see
     // gatherRayTracingInstances).
@@ -181,6 +184,7 @@ private:
     std::unique_ptr<AccelerationStructure> boxBLAS_;
     std::unique_ptr<AccelerationStructure> shellBLAS_;
     std::vector<std::unique_ptr<AccelerationStructure>> rockBLAS_;      // one per rockMeshes_ variant
+    std::unique_ptr<AccelerationStructure> sedimentaryCliffBLAS_;
     std::vector<std::unique_ptr<AccelerationStructure>> treeBarkBLAS_;  // one per treeBarkMeshes_ variant
     std::vector<std::unique_ptr<AccelerationStructure>> treeLeafBLAS_;  // one per treeLeafMeshes_ variant
     std::unique_ptr<SceneAccelerationStructure> sceneAS_;
@@ -189,6 +193,7 @@ private:
     void spawnBoxes();
     void spawnTrees(const WaterGenerator::FloodField& waterField);
     void spawnRocks(const WaterGenerator::FloodField& waterField);
+    void spawnSedimentaryCliffs(const WaterGenerator::FloodField& waterField);
     void spawnShrubs(const WaterGenerator::FloodField& waterField);
     void spawnSmallRocks(const WaterGenerator::FloodField& waterField);
     void spawnExplosion(glm::vec3 position);

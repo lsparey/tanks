@@ -401,10 +401,10 @@ void main() {
                                 smoothstep(0.4, 0.6, gravelPatch));
 
         // Fade to the low-point (gravel) blend in valleys. Center threshold
-        // tuned against the heightmap's actual range (roughly -3..-5.5 on
+        // tuned against the heightmap's actual range (roughly -2.2..-4 on
         // the low end, seed-dependent, now that HeightmapGenerator layers a
         // plateau and a steepest-descent-traced river valley on top of the
-        // base rolling hills, versus the plain +-3 of the old hills-only
+        // base rolling hills, versus the plain +-2.2 of a hills-only
         // version -- see HeightmapGenerator.cpp). The
         // threshold itself is jittered by a low-frequency noise
         // (independent of grassPatch/gravelPatch above, different
@@ -415,8 +415,8 @@ void main() {
         // terrain; jittering it makes the boundary wander like an actual
         // patchy transition instead.
         float rockyThreshold =
-            -2.3 + (valueNoise2D(fragWorldPos.xz * 0.05 + vec2(153.2, 88.7)) - 0.5) * 1.4;
-        float rockiness = 1.0 - smoothstep(rockyThreshold - 0.4, rockyThreshold + 0.4, fragWorldPos.y);
+            -1.7 + (valueNoise2D(fragWorldPos.xz * 0.05 + vec2(153.2, 88.7)) - 0.5) * 1.05;
+        float rockiness = 1.0 - smoothstep(rockyThreshold - 0.3, rockyThreshold + 0.3, fragWorldPos.y);
 
         // Steep ground reads as rocky regardless of height -- the plateau's
         // raised edges and the river/valley's banks (see HeightmapGenerator)
@@ -430,7 +430,7 @@ void main() {
         // gentle hillsides (most of the map) stay grass and only genuinely
         // steep faces pick this up.
         float steepness = 1.0 - normalize(fragNormal).y;
-        float slopeRockiness = smoothstep(0.45, 0.78, steepness);
+        float slopeRockiness = smoothstep(0.32, 0.62, steepness);
         rockiness = max(rockiness, slopeRockiness);
         texColor = mix(grassColor, gravelColor, rockiness);
 
