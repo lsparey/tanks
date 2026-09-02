@@ -466,10 +466,12 @@ Mesh Mesh::sedimentaryCliff(VulkanContext& ctx, CommandContext& commands, glm::v
             float lx = std::cos(theta) * width * 0.5f * radial;
             float lz = std::sin(theta) * depth * 0.5f * radial;
             glm::vec3 offset(ca * lx + sa * lz, 0.0f, -sa * lx + ca * lz);
-            // Extend the plate downward below its authored center. This
-            // extra buried skirt prevents gaps on uneven terrain without
-            // lowering the visible top of the outcrop.
-            bottom[i] = center + offset - glm::vec3(0.0f, 0.3f, 0.0f);
+            // Extend the stone well below its authored center. Even the
+            // contour-following sections span some local dips across their
+            // width; a deep buried skirt closes those gaps without moving
+            // or thickening the visible top/turf surface.
+            constexpr float kBuriedSkirtDepth = 1.15f;
+            bottom[i] = center + offset - glm::vec3(0.0f, kBuriedSkirtDepth, 0.0f);
             top[i] = center + offset +
                      glm::vec3(signedUnit(rng) * 0.025f, thickness, signedUnit(rng) * 0.025f);
         }
@@ -513,10 +515,14 @@ Mesh Mesh::sedimentaryCliff(VulkanContext& ctx, CommandContext& commands, glm::v
         }
     };
 
-    constexpr int kBasePlates = 15;
+    // This mesh is one short section of a longer formation. Application
+    // places several copies independently along a terrain contour, allowing
+    // their heights and headings to conform to curved ground instead of
+    // forcing one long rigid slab through it.
+    constexpr int kBasePlates = 5;
     for (int i = 0; i < kBasePlates; ++i) {
         float t = static_cast<float>(i) / (kBasePlates - 1);
-        float x = (t - 0.5f) * 19.2f + signedUnit(rng) * 0.34f;
+        float x = (t - 0.5f) * 5.8f + signedUnit(rng) * 0.2f;
         // Broad, slow bends make the combined formation follow a natural
         // seam instead of forming one ruler-straight row of stones.
         float z = std::sin(t * kPi * 2.0f + seed * 0.17f) * 0.72f + signedUnit(rng) * 0.34f;

@@ -364,6 +364,12 @@ void main() {
     // else's UVs are meaningful exact mappings (e.g. the crate's one UV
     // island per face) that warping would visibly distort.
     vec2 sampleUV = fragUV;
+    // Terrain and turf caps share one continuous world-space projection.
+    // The cap meshes have independent polygon-local UV islands, which used
+    // to make each plate show a conspicuous circular/radial texture pattern.
+    if (pc.materialType > 0.5 && pc.materialType < 1.5) {
+        sampleUV = fragWorldPos.xz / 3.0;  // matches Terrain.cpp
+    }
     if (pc.heightBlend > 0.5) {
         vec2 warp = vec2(valueNoise2D(fragWorldPos.xz * 0.015 + vec2(5.2, 88.1)),
                           valueNoise2D(fragWorldPos.xz * 0.017 + vec2(41.7, 12.3)));

@@ -416,20 +416,32 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
             {glm::vec2(rock.position.x, rock.position.z), 0.8f * rock.scale});
     }
     for (const auto& cliff : sedimentaryCliffs_) {
-        // Approximate the long, curved plate formation with a capsule-like
-        // chain of small circles instead of one enormous bounding circle.
-        // This follows the actual occupied strip closely and leaves the
-        // open ground around its ends and sides driveable.
-        constexpr int kCliffCollisionPieces = 21;
-        constexpr float kCliffHalfLength = 9.0f;
-        constexpr float kCliffPieceRadius = 1.5f;
+        // Each independently terrain-fitted section is approximated by a
+        // short capsule-like chain rather than the old formation-wide one.
+        // CollisionSystem is 2D, so explicitly test how much stone is above
+        // the terrain at each circle: a buried/flush plate should not become
+        // an invisible wall merely because its mesh extends underground.
+        constexpr int kCliffCollisionPieces = 5;
+        constexpr float kCliffHalfLength = 4.4f;
+        constexpr float kCliffTopLocalHeight = 0.5f;  // includes the turf cap
+        constexpr float kMinimumBlockingExposure = 0.24f;
+        constexpr float kFullBlockingExposure = 0.65f;
+        constexpr float kMinPieceRadius = 0.55f;
+        constexpr float kMaxPieceRadius = 1.2f;
         glm::vec2 localXAxis(std::cos(cliff.yaw), -std::sin(cliff.yaw));
         glm::vec2 cliffCenter(cliff.position.x, cliff.position.z);
         for (int piece = 0; piece < kCliffCollisionPieces; ++piece) {
             float t = static_cast<float>(piece) / (kCliffCollisionPieces - 1);
             float localX = glm::mix(-kCliffHalfLength, kCliffHalfLength, t);
             glm::vec2 center = cliffCenter + localXAxis * (localX * cliff.scale);
-            obstacles_.push_back({center, kCliffPieceRadius * cliff.scale});
+            float visibleTop = cliff.position.y + kCliffTopLocalHeight * cliff.scale;
+            float exposedHeight = visibleTop - terrain_->heightAt(center.x, center.y);
+            if (exposedHeight <= kMinimumBlockingExposure) continue;
+
+            float exposure = glm::smoothstep(kMinimumBlockingExposure,
+                                             kFullBlockingExposure, exposedHeight);
+            float radius = glm::mix(kMinPieceRadius, kMaxPieceRadius, exposure) * cliff.scale;
+            obstacles_.push_back({center, radius});
         }
     }
 
@@ -699,10 +711,12 @@ void Application::spawnRocks(const WaterGenerator::FloodField& waterField) {
 }
 
 void Application::spawnSedimentaryCliffs(const WaterGenerator::FloodField& waterField) {
-    constexpr int kMaxCliffs = 5;
+    constexpr int kMaxFormations = 5;
+    constexpr int kSectionsPerFormation = 5;
+    constexpr float kSectionSpacing = 5.0f;
     constexpr float kGridStep = 3.0f;
     constexpr float kMinSeparation = 22.0f;
-    constexpr float kEdgeMargin = 5.0f;
+    constexpr float kEdgeMargin = 18.0f;
     constexpr float kSpawnClearRadius = 10.0f;
 
     std::mt19937 rng(std::random_device{}());
@@ -732,23 +746,63 @@ void Application::spawnSedimentaryCliffs(const WaterGenerator::FloodField& water
     });
 
     std::vector<glm::vec2> placed;
+    int formationsPlaced = 0;
     for (const CliffCandidate& candidate : candidates) {
-        if (static_cast<int>(sedimentaryCliffs_.size()) >= kMaxCliffs) break;
+        if (formationsPlaced >= kMaxFormations) break;
         glm::vec2 position = candidate.position;
         bool tooClose = std::any_of(placed.begin(), placed.end(), [&](glm::vec2 other) {
             return glm::length(position - other) < kMinSeparation;
         });
         if (tooClose) continue;
 
-        glm::vec3 normal = terrain_->normalAt(position.x, position.y);
-        RockInstance cliff;
-        cliff.position = {position.x, terrain_->heightAt(position.x, position.y) - 0.1f, position.y};
-        // The mesh's broad exposed face points along local +Z. Terrain's
-        // horizontal normal points downhill, so this turns the strata to
-        // present their face naturally at the foot of the slope.
-        cliff.yaw = std::atan2(normal.x, normal.z);
-        cliff.scale = scaleDist(rng);
-        sedimentaryCliffs_.push_back(cliff);
+        float formationScale = scaleDist(rng);
+
+        // Walk outward in both directions along the local contour. At every
+        // step the tangent is recomputed from the terrain normal, allowing
+        // the chain to bend with the hillside instead of remaining a rigid
+        // straight slab. Preserve tangent direction from step to step so a
+        // changing normal cannot suddenly reverse the walk.
+        std::vector<glm::vec2> sectionPositions(kSectionsPerFormation);
+        int middle = kSectionsPerFormation / 2;
+        sectionPositions[middle] = position;
+        auto contourTangent = [&](glm::vec2 p, glm::vec2 preferredDirection) {
+            glm::vec3 n = terrain_->normalAt(p.x, p.y);
+            glm::vec2 tangent(n.z, -n.x);
+            float length = glm::length(tangent);
+            if (length < 0.001f) tangent = preferredDirection;
+            else tangent /= length;
+            if (glm::dot(tangent, preferredDirection) < 0.0f) tangent = -tangent;
+            return tangent;
+        };
+
+        glm::vec3 centerNormal = terrain_->normalAt(position.x, position.y);
+        glm::vec2 initialTangent(centerNormal.z, -centerNormal.x);
+        if (glm::length(initialTangent) < 0.001f) initialTangent = glm::vec2(1.0f, 0.0f);
+        else initialTangent = glm::normalize(initialTangent);
+        glm::vec2 direction = initialTangent;
+        for (int section = middle + 1; section < kSectionsPerFormation; ++section) {
+            direction = contourTangent(sectionPositions[section - 1], direction);
+            sectionPositions[section] =
+                sectionPositions[section - 1] + direction * (kSectionSpacing * formationScale);
+        }
+        direction = -initialTangent;
+        for (int section = middle - 1; section >= 0; --section) {
+            direction = contourTangent(sectionPositions[section + 1], direction);
+            sectionPositions[section] =
+                sectionPositions[section + 1] + direction * (kSectionSpacing * formationScale);
+        }
+
+        for (glm::vec2 sectionPosition : sectionPositions) {
+            glm::vec3 normal = terrain_->normalAt(sectionPosition.x, sectionPosition.y);
+            RockInstance cliff;
+            cliff.position = {sectionPosition.x,
+                              terrain_->heightAt(sectionPosition.x, sectionPosition.y) - 0.08f,
+                              sectionPosition.y};
+            cliff.yaw = std::atan2(normal.x, normal.z);
+            cliff.scale = formationScale;
+            sedimentaryCliffs_.push_back(cliff);
+        }
+        ++formationsPlaced;
         placed.push_back(position);
     }
 }
@@ -1691,6 +1745,7 @@ void Application::drawFrame() {
         Pipeline::PushConstants grassPc{};
         grassPc.model = cliff.worldMatrix();
         grassPc.materialType = 1.0f;
+        grassPc.heightBlend = 1.0f;
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(grassPc), &grassPc);
