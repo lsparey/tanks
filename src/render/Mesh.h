@@ -73,6 +73,27 @@ public:
     static Mesh dome(VulkanContext& ctx, CommandContext& commands, glm::vec3 color,
                       float uvScale);
 
+    // An artillery shell: a short cylindrical body plus a tapered nose,
+    // built from the same oriented-frustum helper tree branches use,
+    // oriented along local +Z ("forward", matching Tank/fragTangent's
+    // convention) with the nose pointing +Z -- see Projectile::worldMatrix,
+    // which builds a basis mapping local +Z to the shell's actual flight
+    // direction. Unit-ish local dimensions (not full world scale); the
+    // instance-facing scale is baked into Projectile's own dimensions
+    // rather than here, same reasoning as quad()'s doc comment.
+    static Mesh shell(VulkanContext& ctx, CommandContext& commands, glm::vec3 color);
+
+    // A soft, irregular blob -- three overlapping gently-jittered lumps
+    // (same low-poly rounded shape appendLeafBlob uses for foliage
+    // clusters), meant to be drawn alpha-blended and unlit. Generic enough
+    // to reuse for anything that wants a rounded, non-geometric puffy
+    // shape rather than a hard-edged primitive: smoke (muzzle blast/shell
+    // trail, see SmokePuff.h, tinted grey) and the explosion flash (see
+    // ImpactEffect, tinted bright warm white) both use this one shared
+    // mesh -- they only differ in color (baked in here) and per-instance
+    // scale/position/opacity, not shape.
+    static Mesh blobCluster(VulkanContext& ctx, CommandContext& commands, glm::vec3 color);
+
 private:
     Buffer vertexBuffer_;
     Buffer indexBuffer_;

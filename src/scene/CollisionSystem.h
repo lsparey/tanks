@@ -15,6 +15,14 @@ public:
     static bool segmentIntersectsAABB(glm::vec3 from, glm::vec3 to, glm::vec3 boxMin,
                                        glm::vec3 boxMax, float* outT = nullptr);
 
+    // Same swept-segment idea as segmentIntersectsAABB, for a sphere instead
+    // of a box -- used for shell-vs-tree/rock hits (see
+    // Application::updateProjectilesAndCollisions), where a real silhouette
+    // isn't worth the complexity and a sphere is a closer approximation
+    // than an axis-aligned box would be for a roughly-round canopy/boulder.
+    static bool segmentIntersectsSphere(glm::vec3 from, glm::vec3 to, glm::vec3 center, float radius,
+                                         float* outT = nullptr);
+
     // A simple round, static obstacle in the XZ plane -- used to approximate
     // trees/rocks for tank collision without needing their real (irregular)
     // silhouettes.

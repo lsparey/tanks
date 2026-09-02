@@ -257,8 +257,15 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
     // Near-white so the crate texture's own wood color/detail shows through
     // unmodified (same reasoning as the bark/leaf/rock tints).
     boxMesh_ = std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(1.0f)));
-    shellMesh_ = std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(1.0f, 0.85f, 0.2f)));
-    flashMesh_ = std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(1.0f, 1.0f, 0.9f)));
+    // Muted brass/gunmetal, not the old placeholder cube's bright yellow --
+    // reads as an actual metal shell casing under the specularStrength this
+    // gets in the draw loop below.
+    shellMesh_ =
+        std::make_unique<Mesh>(Mesh::shell(*context_, *commands_, glm::vec3(0.58f, 0.52f, 0.4f)));
+    // An irregular blob rather than a literal flat-faced cube -- reads as
+    // an actual fireball/burst instead of a scaling box.
+    flashMesh_ =
+        std::make_unique<Mesh>(Mesh::blobCluster(*context_, *commands_, glm::vec3(1.0f, 0.85f, 0.55f)));
     // Explosion debris: a darker, splintered-looking chunk of the box
     // (normally lit, so it tumbles through the scene's light/shadow like
     // real debris) and a small, bright unlit ember (a spark/fire glow that
@@ -267,6 +274,10 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
         std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(0.32f, 0.22f, 0.12f)));
     debrisEmberMesh_ =
         std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(1.0f, 0.55f, 0.1f)));
+    // Neutral grey, drawn unlit and alpha-blended (see the smokePuffs_ draw
+    // loop) -- muzzle blast and shell-trail wisps, see SmokePuff.h.
+    smokePuffMesh_ =
+        std::make_unique<Mesh>(Mesh::blobCluster(*context_, *commands_, glm::vec3(0.5f, 0.5f, 0.5f)));
     // White so the track texture's own baked-in brown color shows through
     // unmodified (same reasoning as terrain's kTerrainColor).
     trackMarkMesh_ = std::make_unique<Mesh>(Mesh::quad(*context_, *commands_, glm::vec3(1.0f)));
@@ -385,6 +396,7 @@ Application::~Application() {
     trackMarkMesh_.reset();
     debrisEmberMesh_.reset();
     debrisChunkMesh_.reset();
+    smokePuffMesh_.reset();
     flashMesh_.reset();
     shellMesh_.reset();
     boxMesh_.reset();
@@ -628,6 +640,17 @@ void Application::spawnDynamicLight(glm::vec3 position, glm::vec3 color, float r
     *soonest = light;
 }
 
+void Application::spawnSmokePuff(glm::vec3 position, glm::vec3 velocity, float initialScale,
+                                  float finalScale, float lifetime) {
+    SmokePuff puff;
+    puff.position = position;
+    puff.velocity = velocity;
+    puff.initialScale = initialScale;
+    puff.finalScale = finalScale;
+    puff.initialLifetime = puff.lifetimeRemaining = lifetime;
+    smokePuffs_.push_back(puff);
+}
+
 void Application::spawnExplosion(glm::vec3 position) {
     // Bright orange flash, unshadowed -- see DynamicLight.h. Radius/
     // lifetime roughly matched to the debris burst below so nearby geometry
@@ -826,25 +849,108 @@ void Application::fireProjectile() {
     // (0.08s vs 0.3s) so it reads as an instantaneous flash, not a glow.
     spawnDynamicLight(shell.position, glm::vec3(1.0f, 0.85f, 0.5f), /*radius=*/5.0f, /*intensity=*/25.0f,
                        /*lifetime=*/0.08f);
+
+    // Muzzle blast: a small burst of smoke puffs kicked mostly forward
+    // along the barrel (like a real muzzle blast) with some outward spread
+    // and a little upward drift, not a single puff -- one puff alone reads
+    // as a ball, a handful with varied speed/spread/scale reads as an
+    // actual blast of gas dissipating.
+    std::mt19937 blastRng(std::random_device{}());
+    std::uniform_real_distribution<float> blastSpread(-0.5f, 0.5f);
+    std::uniform_real_distribution<float> blastSpeed(1.5f, 4.0f);
+    std::uniform_real_distribution<float> blastScale(0.3f, 0.5f);
+    glm::vec3 blastUp(0.0f, 1.0f, 0.0f);
+    glm::vec3 blastRight = glm::normalize(glm::cross(blastUp, shell.velocity));
+    for (int i = 0; i < 5; ++i) {
+        glm::vec3 spread = blastRight * blastSpread(blastRng) + blastUp * blastSpread(blastRng);
+        glm::vec3 puffVelocity =
+            glm::normalize(tank_->aimDirection() + spread * 0.6f) * blastSpeed(blastRng) +
+            blastUp * 0.6f;
+        spawnSmokePuff(shell.position, puffVelocity, blastScale(blastRng), blastScale(blastRng) * 2.2f,
+                       /*lifetime=*/0.5f);
+    }
 }
 
 void Application::updateProjectilesAndCollisions(float deltaTime) {
+    // Every kTrailSpacing units of travel, drop a small fading wisp behind
+    // the shell -- distance-based rather than one per frame (same idea as
+    // updateTrackMarks' spacing for the tank's own tread marks), so the
+    // trail's density on screen doesn't depend on framerate and doesn't
+    // flood smokePuffs_ with a puff every single frame at 25 units/sec.
+    constexpr float kTrailSpacing = 1.1f;
     for (auto& shell : projectiles_) {
         if (!shell.alive) continue;
+        glm::vec3 prePosition = shell.position;
         shell.update(deltaTime);
+        shell.distanceSinceLastPuff += glm::length(shell.position - prePosition);
+        if (shell.distanceSinceLastPuff >= kTrailSpacing) {
+            shell.distanceSinceLastPuff -= kTrailSpacing;
+            // Slow, mostly-upward drift and a short lifetime/small scale --
+            // a wisp, not another blast -- with a little backward velocity
+            // (relative to the shell) so it doesn't look like it's still
+            // glued to and moving with the shell that dropped it.
+            glm::vec3 puffVelocity = -glm::normalize(shell.velocity) * 0.4f + glm::vec3(0.0f, 0.5f, 0.0f);
+            spawnSmokePuff(shell.position, puffVelocity, 0.18f, 0.4f, /*lifetime=*/0.35f);
+        }
+        // Shared by every hit case below: drop the shell, spawn the flash +
+        // explosion at the actual entry point along the segment (not just
+        // the shell's post-move position, which can already be well past
+        // the surface it hit for a fast-moving shell).
+        auto triggerHit = [&](glm::vec3 hitPoint) {
+            shell.alive = false;
+            ImpactEffect effect;
+            effect.position = hitPoint;
+            impactEffects_.push_back(effect);
+            spawnExplosion(hitPoint);
+        };
+
         for (auto& box : boxes_) {
             if (!box.alive) continue;
             float t = 0.0f;
             if (CollisionSystem::segmentIntersectsAABB(shell.previousPosition, shell.position,
                                                          box.aabbMin(), box.aabbMax(), &t)) {
                 box.alive = false;
-                shell.alive = false;
-                glm::vec3 hitPoint = glm::mix(shell.previousPosition, shell.position, t);
-                ImpactEffect effect;
-                effect.position = hitPoint;
-                impactEffects_.push_back(effect);
-                spawnExplosion(hitPoint);
+                triggerHit(glm::mix(shell.previousPosition, shell.position, t));
                 break;
+            }
+        }
+
+        // Trees/rocks are static and never destroyed (unlike boxes), so
+        // there's no obstacles_-style shared list to reuse here -- that one
+        // only carries an XZ circle sized for the tank's ground-level trunk
+        // collision, which would let a shell fly straight through a tree's
+        // actual (much wider/taller) canopy untouched. These spheres are
+        // sized/centered to roughly match what's actually drawn instead.
+        if (shell.alive) {
+            for (const auto& tree : trees_) {
+                glm::vec3 canopyCenter = tree.position + glm::vec3(0.0f, 1.0f * tree.scale, 0.0f);
+                float t = 0.0f;
+                if (CollisionSystem::segmentIntersectsSphere(shell.previousPosition, shell.position,
+                                                               canopyCenter, 1.1f * tree.scale, &t)) {
+                    triggerHit(glm::mix(shell.previousPosition, shell.position, t));
+                    break;
+                }
+            }
+        }
+        if (shell.alive) {
+            for (const auto& rock : rocks_) {
+                glm::vec3 rockCenter = rock.position + glm::vec3(0.0f, 0.4f * rock.scale, 0.0f);
+                float t = 0.0f;
+                if (CollisionSystem::segmentIntersectsSphere(shell.previousPosition, shell.position,
+                                                               rockCenter, 0.85f * rock.scale, &t)) {
+                    triggerHit(glm::mix(shell.previousPosition, shell.position, t));
+                    break;
+                }
+            }
+        }
+        // Terrain last -- a catch-all "the shell has embedded itself in the
+        // ground" check, deliberately checked after every specific object
+        // above so a shell that clips a tree/rock right at ground level
+        // reads as hitting that object, not the ground under it.
+        if (shell.alive) {
+            float groundHeight = terrain_->heightAt(shell.position.x, shell.position.z);
+            if (shell.position.y <= groundHeight) {
+                triggerHit(glm::vec3(shell.position.x, groundHeight, shell.position.z));
             }
         }
     }
@@ -892,6 +998,11 @@ void Application::updateProjectilesAndCollisions(float deltaTime) {
         std::remove_if(dynamicLights_.begin(), dynamicLights_.end(),
                         [](const DynamicLight& l) { return !l.alive; }),
         dynamicLights_.end());
+
+    for (auto& puff : smokePuffs_) puff.update(deltaTime);
+    smokePuffs_.erase(std::remove_if(smokePuffs_.begin(), smokePuffs_.end(),
+                                      [](const SmokePuff& p) { return !p.alive; }),
+                       smokePuffs_.end());
 }
 
 void Application::drawFrame() {
@@ -1317,10 +1428,28 @@ void Application::drawFrame() {
     for (const auto& shell : projectiles_) {
         Pipeline::PushConstants shellPc{};
         shellPc.model = shell.worldMatrix();
+        // Metal casing highlight, same idea as the tank's own bare-metal
+        // parts -- see Mesh::shell's comment on the mesh's brass/gunmetal
+        // vertex color this is meant to catch a highlight on top of.
+        shellPc.specularStrength = 0.4f;
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(shellPc), &shellPc);
         shellMesh_->bindAndDraw(frame.commandBuffer);
+    }
+
+    // Smoke puffs (muzzle blast + shell trail wisps) -- unlit, like the
+    // impact flash/embers below, and alpha-blended via opacity() rather
+    // than opaque like everything else here.
+    for (const auto& puff : smokePuffs_) {
+        Pipeline::PushConstants puffPc{};
+        puffPc.model = puff.worldMatrix();
+        puffPc.unlit = 1.0f;
+        puffPc.opacity = puff.opacity();
+        vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
+                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                            sizeof(puffPc), &puffPc);
+        smokePuffMesh_->bindAndDraw(frame.commandBuffer);
     }
 
     for (const auto& effect : impactEffects_) {

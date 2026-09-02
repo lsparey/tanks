@@ -106,7 +106,7 @@ private:
 
     float moveSpeed_ = 6.0f;                 // m/s
     float turnSpeedRadians_ = 1.2f;          // rad/s, hull
-    float turretTurnSpeedRadians_ = 1.5f;    // rad/s, turret
+    float turretTurnSpeedRadians_ = 0.6f;    // rad/s, turret -- slower than hull for finer aiming
 
     glm::mat4 modelCorrection_{1.0f};
 };

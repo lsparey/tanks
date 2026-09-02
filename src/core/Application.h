@@ -25,6 +25,7 @@
 #include "../scene/InputManager.h"
 #include "../scene/Projectile.h"
 #include "../scene/RockInstance.h"
+#include "../scene/SmokePuff.h"
 #include "../scene/Tank.h"
 #include "../scene/Terrain.h"
 #include "../scene/TrackMark.h"
@@ -128,6 +129,7 @@ private:
     std::unique_ptr<Mesh> flashMesh_;
     std::unique_ptr<Mesh> debrisChunkMesh_;
     std::unique_ptr<Mesh> debrisEmberMesh_;
+    std::unique_ptr<Mesh> smokePuffMesh_;
     std::unique_ptr<Mesh> trackMarkMesh_;
     std::unique_ptr<Mesh> waterMesh_;  // null if no qualifying low-lying basin exists this run
     std::unique_ptr<Mesh> boundaryLineMesh_;
@@ -153,6 +155,7 @@ private:
     // impactEffects_/debris_, since each one has to round-trip through a
     // fixed-size FrameUBO array every frame.
     std::vector<DynamicLight> dynamicLights_;
+    std::vector<SmokePuff> smokePuffs_;
     std::vector<TrackMark> trackMarks_;
     glm::vec3 lastTrackMarkPosition_{0.0f};
     bool hasTrackMarkAnchor_ = false;
@@ -180,6 +183,8 @@ private:
     void spawnExplosion(glm::vec3 position);
     void spawnDynamicLight(glm::vec3 position, glm::vec3 color, float radius, float intensity,
                             float lifetime);
+    void spawnSmokePuff(glm::vec3 position, glm::vec3 velocity, float initialScale, float finalScale,
+                         float lifetime);
     void destroyBox(Box& box);
     void updateTrackMarks(float deltaTime);
     void fireProjectile();

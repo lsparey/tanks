@@ -422,6 +422,74 @@ Mesh Mesh::dome(VulkanContext& ctx, CommandContext& commands, glm::vec3 color, f
     return Mesh(ctx, commands, vertices, indices);
 }
 
+Mesh Mesh::shell(VulkanContext& ctx, CommandContext& commands, glm::vec3 color) {
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+
+    constexpr int kSides = 8;
+    constexpr float kBodyRadius = 0.07f;
+    constexpr float kBodyLength = 0.22f;
+    constexpr float kNoseLength = 0.13f;
+    // Not a literal 0 -- see appendOrientedFrustum's own comment on why a
+    // near-pointed tip avoids degenerate zero-area triangles there.
+    constexpr float kTipRadius = 0.01f;
+
+    const glm::vec3 dir(0.0f, 0.0f, 1.0f);
+    const glm::vec3 bodyBase(0.0f, 0.0f, -(kBodyLength + kNoseLength) * 0.5f);
+    appendOrientedFrustum(vertices, indices, bodyBase, dir, kBodyLength, kBodyRadius, kBodyRadius,
+                          color, kSides, 1.0f);
+    glm::vec3 noseBase = bodyBase + dir * kBodyLength;
+    appendOrientedFrustum(vertices, indices, noseBase, dir, kNoseLength, kBodyRadius, kTipRadius, color,
+                          kSides, 1.0f);
+
+    // Flat cap closing the body's open rear end -- a fan from a center
+    // vertex to the same ring appendOrientedFrustum's first call already
+    // built at bodyBase, using the same (right, fwd) = ((1,0,0), (0,1,0))
+    // basis it derives internally for this exact dir so the cap's ring
+    // matches the body's without recomputing/duplicating those vertices.
+    // Winding verified defensively rather than reasoned out by hand, same
+    // spirit as appendOrientedFrustum's own check.
+    uint32_t centerIdx = static_cast<uint32_t>(vertices.size());
+    vertices.push_back({bodyBase, -dir, color, glm::vec2(0.5f)});
+    uint32_t ringStart = static_cast<uint32_t>(vertices.size());
+    for (int i = 0; i <= kSides; ++i) {
+        float angle = static_cast<float>(i) / static_cast<float>(kSides) * 2.0f * kPi;
+        glm::vec3 ringDir = std::cos(angle) * glm::vec3(1.0f, 0.0f, 0.0f) +
+                             std::sin(angle) * glm::vec3(0.0f, 1.0f, 0.0f);
+        vertices.push_back({bodyBase + ringDir * kBodyRadius, -dir, color,
+                             glm::vec2(0.5f) + 0.5f * glm::vec2(ringDir.x, ringDir.y)});
+    }
+    glm::vec3 c0 = vertices[centerIdx].position;
+    glm::vec3 c1 = vertices[ringStart].position;
+    glm::vec3 c2 = vertices[ringStart + 1].position;
+    bool capFlip = glm::dot(glm::normalize(glm::cross(c1 - c0, c2 - c0)), -dir) < 0.0f;
+    for (int i = 0; i < kSides; ++i) {
+        uint32_t a = ringStart + i;
+        uint32_t b = ringStart + i + 1;
+        if (!capFlip) {
+            indices.insert(indices.end(), {centerIdx, a, b});
+        } else {
+            indices.insert(indices.end(), {centerIdx, b, a});
+        }
+    }
+
+    return Mesh(ctx, commands, vertices, indices);
+}
+
+Mesh Mesh::blobCluster(VulkanContext& ctx, CommandContext& commands, glm::vec3 color) {
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    // Fixed seed: this mesh's own irregularity doesn't need to vary --
+    // per-instance variety comes from the caller randomizing each
+    // instance's own position/scale/velocity instead (see SmokePuff.h and
+    // Application::fireProjectile/spawnExplosion).
+    std::mt19937 rng(1337);
+    appendLeafBlob(vertices, indices, glm::vec3(0.0f), 0.5f, color, rng);
+    appendLeafBlob(vertices, indices, glm::vec3(0.2f, 0.06f, 0.05f), 0.34f, color, rng);
+    appendLeafBlob(vertices, indices, glm::vec3(-0.16f, -0.08f, -0.1f), 0.3f, color, rng);
+    return Mesh(ctx, commands, vertices, indices);
+}
+
 // Recursively builds one branch (as an oriented frustum) and, at the
 // bottom of the recursion, a small leaf cluster -- the fractal structure
 // that gives the tree its shape: each branch is a smaller, randomly
