@@ -31,16 +31,21 @@ namespace {
 constexpr uint32_t kWindowWidth = 1280;
 constexpr uint32_t kWindowHeight = 720;
 
-// Terrain height below which a basin can start filling with water (tuned
-// against the heightmap's actual +-3 amplitude, and against the rock
-// texture's own -1.3..-0.4 blend band in basic.frag, so water sits within
-// the already-rocky lowest terrain rather than on obviously grassy ground).
-constexpr float kWaterThreshold = -1.0f;
+// Terrain height below which a basin can start filling with water -- tuned
+// against the heightmap's actual range (roughly -3..-5.5 on the low end,
+// seed-dependent, now that HeightmapGenerator layers a plateau and a
+// steepest-descent-traced river valley on top of the base rolling hills,
+// versus the plain +-3 of the old hills-only version), and against the rock
+// texture's own rockyThreshold blend band in basic.frag, so water sits
+// within the already-rocky lowest terrain (the river's deepest points)
+// rather than on obviously grassy ground.
+constexpr float kWaterThreshold = -2.6f;
 // How deep any single body of water is allowed to get above its own basin
 // floor -- kept shallow per the user's request, and this is also what
 // keeps separate basins from all settling at one shared "sea level" (see
-// WaterGenerator).
-constexpr float kWaterMaxDepth = 0.6f;
+// WaterGenerator). Nudged up slightly from the old 0.6 alongside the wider
+// height range above.
+constexpr float kWaterMaxDepth = 0.9f;
 
 // How far in from the terrain's actual edge the play-area boundary sits,
 // as a fraction of the terrain's total width (see BoundaryGenerator).
@@ -240,7 +245,15 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
         *boundaryWallTexture_, *boundaryWallTexture_, *boundaryWallTexture_, *boundaryWallTexture_);
 
     uint32_t terrainSeed = std::random_device{}();
-    terrain_ = std::make_unique<Terrain>(*context_, *commands_, /*resolution=*/64,
+    // 256, not the old 64 -> 128 -> 256 progression: coarser hills' large
+    // flat triangles were visible as faceting at grazing angles/close
+    // range, and the sharper features HeightmapGenerator now carves (the
+    // plateau's edge, the river's banks) need considerably more grid
+    // resolution than gentle sine-wave hills ever did to read as an actual
+    // slope instead of a single blocky triangle strip. Still cheap for
+    // hardware ray tracing either way -- (256-1)^2*2 ~= 130k triangles for
+    // the whole terrain BLAS, built once at load time.
+    terrain_ = std::make_unique<Terrain>(*context_, *commands_, /*resolution=*/256,
                                           /*worldSize=*/180.0f, /*amplitude=*/3.0f, terrainSeed);
     WaterGenerator::FloodField waterField =
         WaterGenerator::computeFloodField(*terrain_, kWaterThreshold, kWaterMaxDepth);
@@ -331,6 +344,15 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
         leafMaterialSets_.push_back(pipeline_->allocateMaterialDescriptorSet(
             *leafTextures_.back(), *leafTextures_.back(), *leafTextures_.back(), *leafTextures_.back()));
     }
+    // Small bushes -- reuse the same leaf textures/material sets as tree
+    // foliage (leafMaterialSets_ above) rather than a texture pool of their
+    // own; a shrub is basically "foliage clump with no trunk", so the same
+    // material reads fine on it. One shrub mesh variant per leaf texture
+    // variant, drawn by matching index (see the shrubs_ draw loop).
+    for (int i = 0; i < kTreeVariantCount; ++i) {
+        shrubMeshes_.push_back(std::make_unique<Mesh>(
+            Mesh::shrub(*context_, *commands_, leafTint, static_cast<uint32_t>(i) + 101)));
+    }
     // White so the cloud texture's own baked-in white/grey shading shows
     // through unmodified; uvScale tuned by eye for plausible-looking cloud
     // size once projected onto the dome's "distant plane" mapping.
@@ -339,6 +361,8 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
     spawnBoxes();
     spawnTrees(waterField);
     spawnRocks(waterField);
+    spawnShrubs(waterField);
+    spawnSmallRocks(waterField);
 
     // Static collision circles for the tank's own movement (see
     // Tank::update) -- trees/rocks never move, so this is built once
@@ -393,6 +417,7 @@ Application::~Application() {
     rockMeshes_.clear();
     treeLeafMeshes_.clear();
     treeBarkMeshes_.clear();
+    shrubMeshes_.clear();
     trackMarkMesh_.reset();
     debrisEmberMesh_.reset();
     debrisChunkMesh_.reset();
@@ -611,6 +636,114 @@ void Application::spawnRocks(const WaterGenerator::FloodField& waterField) {
             rock.scale = scaleDist(rng);
             rock.meshVariant = variantDist(rng);
             rocks_.push_back(rock);
+        }
+    }
+}
+
+void Application::spawnShrubs(const WaterGenerator::FloodField& waterField) {
+    constexpr int kShrubCount = 140;
+    constexpr float kEdgeMargin = 3.0f;
+    constexpr float kMinDistanceFromSpawn = 6.0f;
+    constexpr float kMinDistanceBetweenShrubs = 2.0f;
+    constexpr int kMaxAttemptsPerShrub = 20;
+
+    std::mt19937 rng(std::random_device{}());
+    float half = terrain_->worldSize() * 0.5f - kEdgeMargin;
+    std::uniform_real_distribution<float> coordDist(-half, half);
+    std::uniform_real_distribution<float> yawDist(0.0f, 6.2831853f);
+    std::uniform_real_distribution<float> scaleDist(0.7f, 1.3f);
+    std::uniform_int_distribution<int> variantDist(0, static_cast<int>(shrubMeshes_.size()) - 1);
+
+    std::vector<glm::vec2> placed;
+    for (int i = 0; i < kShrubCount; ++i) {
+        glm::vec2 pos{0.0f, 0.0f};
+        bool found = false;
+        for (int attempt = 0; attempt < kMaxAttemptsPerShrub; ++attempt) {
+            glm::vec2 candidate(coordDist(rng), coordDist(rng));
+            bool tooCloseToSpawn = glm::length(candidate) < kMinDistanceFromSpawn;
+            bool tooCloseToOther = std::any_of(placed.begin(), placed.end(), [&](glm::vec2 p) {
+                return glm::length(p - candidate) < kMinDistanceBetweenShrubs;
+            });
+            bool underwater = WaterGenerator::isUnderwater(waterField, candidate.x, candidate.y);
+            if (tooCloseToSpawn || tooCloseToOther || underwater) continue;
+            pos = candidate;
+            found = true;
+            break;
+        }
+        // Unlike trees/rocks (which fall back to placing wherever the last
+        // attempt landed), just skip this one -- a shrub or two short of
+        // kShrubCount is invisible; forcing a placement that failed every
+        // rejection check isn't worth the risk of landing in water.
+        if (!found) continue;
+        placed.push_back(pos);
+
+        ShrubInstance shrub;
+        shrub.position = glm::vec3(pos.x, terrain_->heightAt(pos.x, pos.y), pos.y);
+        shrub.yaw = yawDist(rng);
+        shrub.scale = scaleDist(rng);
+        shrub.meshVariant = variantDist(rng);
+        shrubs_.push_back(shrub);
+    }
+}
+
+void Application::spawnSmallRocks(const WaterGenerator::FloodField& waterField) {
+    // Small decorative scree/pebbles, concentrated on steep ground -- NOT
+    // added to the ray-traced TLAS (see gatherRayTracingInstances' comment
+    // on debris/track marks for the same reasoning: numerous and small
+    // enough that individually shadow-casting each one isn't worth the TLAS
+    // churn). That's what actually lets this be "lots" without threatening
+    // SceneAccelerationStructure::kMaxInstances -- the ray-traced rocks_
+    // pool above is deliberately kept small for exactly that budget reason.
+    //
+    // Scanned over a grid rather than randomly scattered like trees/rocks/
+    // shrubs above: steep ground (plateau edges, valley/river banks -- see
+    // HeightmapGenerator) is a small fraction of the map, so randomly
+    // guessing positions and rejecting flat ones would waste most attempts
+    // and under-fill. Walking the grid directly and testing each cell's own
+    // slope finds every qualifying area reliably.
+    constexpr float kGridStep = 2.5f;
+    // Matches basic.frag's own slopeRockiness smoothstep(0.45, 0.78, ...)
+    // -- this is what makes the pebbles cluster exactly where the ground
+    // already reads as rocky in the texture blend, instead of scattering
+    // independently of it.
+    constexpr float kMinSteepness = 0.3f;
+    constexpr float kEdgeMargin = 3.0f;
+    constexpr float kMinDistanceFromSpawn = 5.0f;
+    constexpr float kJitter = kGridStep * 0.5f;
+    // Not every qualifying cell spawns rocks, and jitter jitters the
+    // position within the cell -- both so this reads as scattered scree
+    // rather than a visibly regular grid.
+    constexpr float kSpawnChance = 0.8f;
+
+    std::mt19937 rng(std::random_device{}());
+    std::uniform_real_distribution<float> jitterDist(-kJitter, kJitter);
+    std::uniform_real_distribution<float> yawDist(0.0f, 6.2831853f);
+    std::uniform_real_distribution<float> scaleDist(0.08f, 0.22f);
+    std::uniform_real_distribution<float> chanceDist(0.0f, 1.0f);
+    std::uniform_int_distribution<int> countDist(2, 4);
+    std::uniform_int_distribution<int> variantDist(0, static_cast<int>(rockMeshes_.size()) - 1);
+
+    float half = terrain_->worldSize() * 0.5f - kEdgeMargin;
+    for (float gx = -half; gx <= half; gx += kGridStep) {
+        for (float gz = -half; gz <= half; gz += kGridStep) {
+            if (glm::length(glm::vec2(gx, gz)) < kMinDistanceFromSpawn) continue;
+            float steepness = 1.0f - terrain_->normalAt(gx, gz).y;
+            if (steepness < kMinSteepness) continue;
+            if (chanceDist(rng) > kSpawnChance) continue;
+
+            int count = countDist(rng);
+            for (int k = 0; k < count; ++k) {
+                float px = gx + jitterDist(rng);
+                float pz = gz + jitterDist(rng);
+                if (WaterGenerator::isUnderwater(waterField, px, pz)) continue;
+
+                RockInstance rock;
+                rock.position = glm::vec3(px, terrain_->heightAt(px, pz) - 0.05f, pz);
+                rock.yaw = yawDist(rng);
+                rock.scale = scaleDist(rng);
+                rock.meshVariant = variantDist(rng);
+                smallRocks_.push_back(rock);
+            }
         }
     }
 }
@@ -1403,6 +1536,32 @@ void Application::drawFrame() {
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(rockPc), &rockPc);
         rockMeshes_[rock.meshVariant]->bindAndDraw(frame.commandBuffer);
+    }
+
+    // Small scree/pebbles -- same rockMeshes_/rockMaterialSets_ pool as
+    // rocks_ above, just many more, much smaller, and (see
+    // gatherRayTracingInstances) not ray-traced.
+    for (const auto& rock : smallRocks_) {
+        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(),
+                                 1, 1, &rockMaterialSets_[rock.meshVariant], 0, nullptr);
+        Pipeline::PushConstants rockPc{};
+        rockPc.model = rock.worldMatrix();
+        vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
+                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                            sizeof(rockPc), &rockPc);
+        rockMeshes_[rock.meshVariant]->bindAndDraw(frame.commandBuffer);
+    }
+
+    // Shrubs -- reuse leafMaterialSets_ (see their mesh creation comment).
+    for (const auto& shrub : shrubs_) {
+        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(),
+                                 1, 1, &leafMaterialSets_[shrub.meshVariant], 0, nullptr);
+        Pipeline::PushConstants shrubPc{};
+        shrubPc.model = shrub.worldMatrix();
+        vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
+                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                            sizeof(shrubPc), &shrubPc);
+        shrubMeshes_[shrub.meshVariant]->bindAndDraw(frame.commandBuffer);
     }
 
     // Play-area boundary wall: a translucent "wall of light" rising from

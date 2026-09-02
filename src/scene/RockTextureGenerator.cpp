@@ -124,7 +124,23 @@ std::vector<uint8_t> RockTextureGenerator::generate(uint32_t size, uint32_t vari
 
             glm::vec3 color = t < 0.5f ? glm::mix(darkGrey, midGrey, t * 2.0f)
                                         : glm::mix(midGrey, lightGrey, (t - 0.5f) * 2.0f);
-            color *= 0.5f;
+            color *= 0.6f;
+
+            // Sharp single-texel flecks -- see GrassTextureGenerator's copy
+            // of this for why: smoothNoise/fbm are smootherstep-interpolated
+            // between lattice points no matter how high their frequency
+            // goes, so every layer above is soft by construction. The raw
+            // (non-interpolated) hash lattice value used directly is the
+            // one genuinely sharp signal, which is what actually reads as
+            // grit up close instead of a blur. A bit stronger/more frequent
+            // than grass's version -- gravel should look grittier than turf.
+            float fleck = hash(static_cast<int>(x) * 3 + static_cast<int>(variant) * 7919,
+                                static_cast<int>(y) * 5 + static_cast<int>(variant) * 104729);
+            if (fleck > 0.86f) {
+                color *= 0.5f;
+            } else if (fleck < 0.05f) {
+                color *= 1.45f;
+            }
 
             size_t idx = (static_cast<size_t>(y) * size + x) * 4;
             pixels[idx + 0] = static_cast<uint8_t>(glm::clamp(color.r, 0.0f, 1.0f) * 255.0f);

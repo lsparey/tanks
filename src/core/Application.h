@@ -25,6 +25,7 @@
 #include "../scene/InputManager.h"
 #include "../scene/Projectile.h"
 #include "../scene/RockInstance.h"
+#include "../scene/ShrubInstance.h"
 #include "../scene/SmokePuff.h"
 #include "../scene/Tank.h"
 #include "../scene/Terrain.h"
@@ -145,6 +146,7 @@ private:
     // up.
     std::vector<std::unique_ptr<Mesh>> treeBarkMeshes_;
     std::vector<std::unique_ptr<Mesh>> treeLeafMeshes_;
+    std::vector<std::unique_ptr<Mesh>> shrubMeshes_;  // small pool of distinct bush shapes
     std::unique_ptr<Mesh> cloudDomeMesh_;
     std::vector<Box> boxes_;
     std::vector<Projectile> projectiles_;
@@ -161,6 +163,13 @@ private:
     bool hasTrackMarkAnchor_ = false;
     std::vector<TreeInstance> trees_;
     std::vector<RockInstance> rocks_;
+    std::vector<ShrubInstance> shrubs_;
+    // Small decorative scree/pebbles, biased toward steep ground (plateau
+    // edges, valley/river banks) -- see spawnSmallRocks. Reuses RockInstance
+    // and the same rockMeshes_/rockMaterialSets_ pool as rocks_ (just many
+    // more, much smaller, and never added to the ray-traced TLAS -- see
+    // gatherRayTracingInstances).
+    std::vector<RockInstance> smallRocks_;
     // Static collision circles for trees/rocks, built once after spawning
     // both -- see Tank::update.
     std::vector<CollisionSystem::CircleObstacle> obstacles_;
@@ -180,6 +189,8 @@ private:
     void spawnBoxes();
     void spawnTrees(const WaterGenerator::FloodField& waterField);
     void spawnRocks(const WaterGenerator::FloodField& waterField);
+    void spawnShrubs(const WaterGenerator::FloodField& waterField);
+    void spawnSmallRocks(const WaterGenerator::FloodField& waterField);
     void spawnExplosion(glm::vec3 position);
     void spawnDynamicLight(glm::vec3 position, glm::vec3 color, float radius, float intensity,
                             float lifetime);

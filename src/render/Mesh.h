@@ -94,6 +94,15 @@ public:
     // scale/position/opacity, not shape.
     static Mesh blobCluster(VulkanContext& ctx, CommandContext& commands, glm::vec3 color);
 
+    // A small low bush: three overlapping gently-jittered blobs like
+    // blobCluster, but low to the ground and opaque/lit (not alpha-blended)
+    // -- same appendLeafBlob shape foliage clusters use, just without the
+    // trunk/branch structure underneath, so it reads as a shrub rather than
+    // a tree. `seed` varies the blobs' own jitter per variant (see
+    // Application's shrubMeshes_, which builds a handful of these) the same
+    // way Mesh::rock's seed does.
+    static Mesh shrub(VulkanContext& ctx, CommandContext& commands, glm::vec3 color, uint32_t seed);
+
 private:
     Buffer vertexBuffer_;
     Buffer indexBuffer_;

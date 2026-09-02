@@ -116,14 +116,41 @@ std::vector<uint8_t> GrassTextureGenerator::generate(uint32_t size, uint32_t var
         for (uint32_t x = 0; x < size; ++x) {
             float patches = fbm(static_cast<float>(x) * 0.05f + seedX, static_cast<float>(y) * 0.05f + seedY,
                                  4, static_cast<float>(size) * 0.05f);
-            float speckle = fbm(static_cast<float>(x) * 0.35f + 91.7f + seedX,
-                                 static_cast<float>(y) * 0.35f + 13.2f + seedY, 2,
-                                 static_cast<float>(size) * 0.35f);
-            float t = glm::clamp(patches * 0.7f + speckle * 0.3f, 0.0f, 1.0f);
+            float speckle = fbm(static_cast<float>(x) * 0.4f + 91.7f + seedX,
+                                 static_cast<float>(y) * 0.4f + 13.2f + seedY, 3,
+                                 static_cast<float>(size) * 0.4f);
+            float t = glm::clamp(patches * 0.65f + speckle * 0.35f, 0.0f, 1.0f);
 
             glm::vec3 color = t < 0.5f ? glm::mix(darkGreen, midGreen, t * 2.0f)
                                         : glm::mix(midGreen, lightGreen, (t - 0.5f) * 2.0f);
-            color *= 0.68f;
+
+            // Fine per-texel-ish grain, applied as a brightness modulation
+            // on the final color -- multiplying the finished color directly
+            // (rather than blending another layer into t above, where it'd
+            // get smoothstep-interpolated color stops applied on top and
+            // washed out) is what actually reads as grain.
+            float grain = fbm(static_cast<float>(x) * 0.3f + 47.3f + seedX,
+                               static_cast<float>(y) * 0.3f + 205.9f + seedY, 2,
+                               static_cast<float>(size) * 0.3f);
+            color *= 0.78f + 0.44f * grain;
+
+            // Sharp single-texel flecks, using the raw hash lattice value
+            // directly rather than smoothNoise's interpolated version --
+            // every layer above (however high its frequency) is
+            // smootherstep-interpolated between lattice points by
+            // construction, so it's soft no matter how far the frequency is
+            // pushed. This is the one genuinely sharp, non-interpolated
+            // signal in the whole texture -- without it the result stays a
+            // soft blur at any zoom level, which is what actually read as
+            // "blurry" up close in-game despite the smooth layers above
+            // technically carrying real spatial frequency content.
+            float fleck = hash(static_cast<int>(x) * 3 + static_cast<int>(variant) * 7919,
+                                static_cast<int>(y) * 5 + static_cast<int>(variant) * 104729);
+            if (fleck > 0.9f) {
+                color *= 0.55f;
+            } else if (fleck < 0.035f) {
+                color *= 1.4f;
+            }
 
             size_t idx = (static_cast<size_t>(y) * size + x) * 4;
             pixels[idx + 0] = static_cast<uint8_t>(glm::clamp(color.r, 0.0f, 1.0f) * 255.0f);

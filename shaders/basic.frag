@@ -400,12 +400,38 @@ void main() {
         vec3 gravelColor = mix(texture(materialTexLowA, sampleUV).rgb, texture(materialTexLowB, sampleUV).rgb,
                                 smoothstep(0.4, 0.6, gravelPatch));
 
-        // Fade to the low-point (gravel) blend in valleys. Thresholds are
-        // tuned against the heightmap's actual amplitude (+-3 world units,
-        // see HeightmapGenerator) -- below -1.3, fully gravel; above -0.4,
-        // fully grass; smoothstep between so the seam doesn't read as a
-        // hard line.
-        float rockiness = 1.0 - smoothstep(-1.3, -0.4, fragWorldPos.y);
+        // Fade to the low-point (gravel) blend in valleys. Center threshold
+        // tuned against the heightmap's actual range (roughly -3..-5.5 on
+        // the low end, seed-dependent, now that HeightmapGenerator layers a
+        // plateau and a steepest-descent-traced river valley on top of the
+        // base rolling hills, versus the plain +-3 of the old hills-only
+        // version -- see HeightmapGenerator.cpp). The
+        // threshold itself is jittered by a low-frequency noise
+        // (independent of grassPatch/gravelPatch above, different
+        // frequency/offset so it doesn't line up with either) rather than
+        // being a pure function of height -- a plain height threshold draws
+        // a smooth iso-height contour line around every hill, which reads
+        // as an artificial gradient band running exactly level around the
+        // terrain; jittering it makes the boundary wander like an actual
+        // patchy transition instead.
+        float rockyThreshold =
+            -2.3 + (valueNoise2D(fragWorldPos.xz * 0.05 + vec2(153.2, 88.7)) - 0.5) * 1.4;
+        float rockiness = 1.0 - smoothstep(rockyThreshold - 0.4, rockyThreshold + 0.4, fragWorldPos.y);
+
+        // Steep ground reads as rocky regardless of height -- the plateau's
+        // raised edges and the river/valley's banks (see HeightmapGenerator)
+        // are exactly the steepest parts of the terrain, and real slopes
+        // that steep don't hold a grass root system/soil the way flatter
+        // ground does; they show bare rock/scree instead. Uses the raw
+        // interpolated fragNormal directly (not the later-computed `normal`
+        // variable, which doesn't exist yet at this point in main()) --
+        // steepness only needs the geometric slope, not the fully
+        // normalized/bump-mapped shading normal. smoothstep range chosen so
+        // gentle hillsides (most of the map) stay grass and only genuinely
+        // steep faces pick this up.
+        float steepness = 1.0 - normalize(fragNormal).y;
+        float slopeRockiness = smoothstep(0.45, 0.78, steepness);
+        rockiness = max(rockiness, slopeRockiness);
         texColor = mix(grassColor, gravelColor, rockiness);
 
         const float kTerrainBumpTexelStep = 1.0 / 512.0;  // matches kTerrainTextureRes in Application.cpp

@@ -490,6 +490,20 @@ Mesh Mesh::blobCluster(VulkanContext& ctx, CommandContext& commands, glm::vec3 c
     return Mesh(ctx, commands, vertices, indices);
 }
 
+Mesh Mesh::shrub(VulkanContext& ctx, CommandContext& commands, glm::vec3 color, uint32_t seed) {
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    std::mt19937 rng(seed);
+    // Centers offset upward by roughly their own radius so the cluster's
+    // underside sits near y=0 (ground level) instead of the whole thing
+    // floating centered on it -- same "sits on the ground" reasoning as
+    // DebrisParticle/RockInstance's own embed-depth handling elsewhere.
+    appendLeafBlob(vertices, indices, glm::vec3(0.0f, 0.24f, 0.0f), 0.28f, color, rng);
+    appendLeafBlob(vertices, indices, glm::vec3(0.18f, 0.17f, 0.08f), 0.2f, color, rng);
+    appendLeafBlob(vertices, indices, glm::vec3(-0.15f, 0.15f, -0.1f), 0.18f, color, rng);
+    return Mesh(ctx, commands, vertices, indices);
+}
+
 // Recursively builds one branch (as an oriented frustum) and, at the
 // bottom of the recursion, a small leaf cluster -- the fractal structure
 // that gives the tree its shape: each branch is a smaller, randomly
