@@ -151,11 +151,12 @@ void subdivideIcosphere(std::vector<glm::vec3>& vertices,
     faces = std::move(subdivided);
 }
 
-// Appends a gently-irregular, once-subdivided icosphere blob centered at
-// `center`, for tree leaf clusters and shrubs. Fractal displacement keeps
-// the extra geometry organic instead of merely making a smoother sphere.
+// Appends a gently-irregular icosphere blob centered at `center`, for tree
+// leaf clusters and shrubs. The default once-subdivided form has 80 faces;
+// far tree LODs request the base 20-face form. Fractal displacement keeps
+// either version organic instead of merely making a smoother sphere.
 void appendLeafBlob(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices, glm::vec3 center,
-                     float radius, glm::vec3 color, std::mt19937& rng) {
+                     float radius, glm::vec3 color, std::mt19937& rng, int subdivisions = 1) {
     const float t = (1.0f + std::sqrt(5.0f)) / 2.0f;
     std::vector<glm::vec3> base = {
         glm::normalize(glm::vec3(-1, t, 0)), glm::normalize(glm::vec3(1, t, 0)),
@@ -171,7 +172,7 @@ void appendLeafBlob(std::vector<Vertex>& vertices, std::vector<uint32_t>& indice
         {3, 8, 9},  {4, 9, 5},  {2, 4, 11}, {6, 2, 10}, {8, 6, 7},  {9, 8, 1},
     };
 
-    subdivideIcosphere(base, faces);
+    for (int level = 0; level < subdivisions; ++level) subdivideIcosphere(base, faces);
 
     std::uniform_real_distribution<float> offsetDist(0.0f, 1000.0f);
     glm::vec3 noiseOffset(offsetDist(rng), offsetDist(rng), offsetDist(rng));
@@ -325,7 +326,7 @@ Mesh Mesh::quad(VulkanContext& ctx, CommandContext& commands, glm::vec3 color) {
 }
 
 Mesh Mesh::rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColor, uint32_t seed,
-                int subdivisions) {
+                int subdivisions, float radiusScale) {
     const float t = (1.0f + std::sqrt(5.0f)) / 2.0f;
     std::vector<glm::vec3> verts = {
         glm::normalize(glm::vec3(-1, t, 0)), glm::normalize(glm::vec3(1, t, 0)),
@@ -377,7 +378,7 @@ Mesh Mesh::rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColo
                                 std::sin(verts[i].z * 2.9f + seedOffset.z) * 0.055f;
         float radius = 0.62f + broad * 0.48f + ridge * broad * 0.18f + directionalLobe -
                        chippedDepression;
-        deformed[i] = verts[i] * radius * proportions;
+        deformed[i] = verts[i] * radius * proportions * radiusScale;
         deformed[i].y *= 0.78f;
     }
 
@@ -695,13 +696,19 @@ Mesh Mesh::shrub(VulkanContext& ctx, CommandContext& commands, glm::vec3 color, 
 // walked so the RNG sequence -- and therefore the branch structure/leaf
 // placement -- stays identical between the two calls for the same seed.
 void buildTreeBranch(std::vector<Vertex>& barkV, std::vector<uint32_t>& barkI,
-                      std::vector<Vertex>& leafV, std::vector<uint32_t>& leafI, std::mt19937& rng,
-                      glm::vec3 base, glm::vec3 dir, float length, float radius, int depth,
-                      glm::vec3 barkColor, glm::vec3 leafColor) {
+                      std::vector<Vertex>& leafV, std::vector<uint32_t>& leafI,
+                      std::mt19937& structureRng, std::mt19937& foliageRng, glm::vec3 base,
+                      glm::vec3 dir, float length, float radius, int depth, glm::vec3 barkColor,
+                      glm::vec3 leafColor, int lod) {
     dir = glm::normalize(dir);
     float tipRadius = std::max(radius * 0.6f, 0.01f);
-    int sides = depth >= 2 ? 10 : 8;
-    appendOrientedFrustum(barkV, barkI, base, dir, length, radius, tipRadius, barkColor, sides, 1.2f);
+    int sides = lod == 0 ? (depth >= 2 ? 10 : 8) : (lod == 1 ? 6 : 5);
+    // At the far LOD the terminal twig is hidden inside its leaf blob and
+    // contributes no useful silhouette, so omit it entirely.
+    if (lod < 2 || depth > 0) {
+        appendOrientedFrustum(barkV, barkI, base, dir, length, radius, tipRadius, barkColor, sides,
+                              1.2f);
+    }
     glm::vec3 tip = base + dir * length;
 
     if (depth <= 0) {
@@ -709,11 +716,30 @@ void buildTreeBranch(std::vector<Vertex>& barkV, std::vector<uint32_t>& barkI,
         // smaller ones clustered around it, instead of thin cones -- reads
         // as an actual mass of foliage rather than a pine-tree silhouette.
         float blobRadius = radius * 16.0f + 0.35f;
-        appendLeafBlob(leafV, leafI, tip, blobRadius, leafColor, rng);
+        // Coarser raster LODs collapse the two satellite blobs into the
+        // primary one and enlarge it slightly so canopy volume does not
+        // visibly shrink. LOD 3 instead contracts the ray-only proxy far
+        // enough to remain inside the rendered leaves and avoid self-shadow.
+        float radiusScale = lod == 0 ? 1.0f : (lod == 1 ? 1.08f : (lod == 2 ? 1.15f : 0.64f));
+        float primaryRadius = blobRadius * radiusScale;
+        appendLeafBlob(leafV, leafI, tip, primaryRadius, leafColor, foliageRng,
+                       lod >= 2 ? 0 : 1);
         std::uniform_real_distribution<float> smallOffsetDist(-blobRadius * 0.5f, blobRadius * 0.5f);
+        // Satellite geometry must not advance the primary-blob RNG: the
+        // next branch tip's primary blob then gets the same displacement in
+        // every LOD, allowing the inset LOD-3 proxy to remain contained by
+        // the corresponding detailed surface.
+        std::mt19937 satelliteRng = foliageRng;
         for (int i = 0; i < 2; ++i) {
-            glm::vec3 offset(smallOffsetDist(rng), smallOffsetDist(rng), smallOffsetDist(rng));
-            appendLeafBlob(leafV, leafI, tip + offset, blobRadius * 0.65f, leafColor, rng);
+            // Always consume the structure values so branch/leaf centres are
+            // identical between LODs. Only the near mesh emits these two
+            // satellite blobs.
+            glm::vec3 offset(smallOffsetDist(structureRng), smallOffsetDist(structureRng),
+                             smallOffsetDist(structureRng));
+            if (lod == 0) {
+                appendLeafBlob(leafV, leafI, tip + offset, blobRadius * 0.65f, leafColor,
+                               satelliteRng);
+            }
         }
         return;
     }
@@ -726,32 +752,38 @@ void buildTreeBranch(std::vector<Vertex>& barkV, std::vector<uint32_t>& barkI,
     glm::vec3 perp1 = glm::normalize(glm::cross(up, dir));
     glm::vec3 perp2 = glm::cross(dir, perp1);
 
-    int branchCount = branchCountDist(rng);
+    int branchCount = branchCountDist(structureRng);
     for (int i = 0; i < branchCount; ++i) {
-        float azimuth = azimuthDist(rng);
+        float azimuth = azimuthDist(structureRng);
         glm::vec3 axis = glm::normalize(std::cos(azimuth) * perp1 + std::sin(azimuth) * perp2);
-        float deviation = deviationDist(rng);
+        float deviation = deviationDist(structureRng);
         glm::vec3 newDir = glm::vec3(
             glm::rotate(glm::mat4(1.0f), deviation, axis) * glm::vec4(dir, 0.0f));
-        buildTreeBranch(barkV, barkI, leafV, leafI, rng, tip, newDir, length * 0.68f, radius * 0.62f,
-                         depth - 1, barkColor, leafColor);
+        buildTreeBranch(barkV, barkI, leafV, leafI, structureRng, foliageRng, tip, newDir,
+                        length * 0.68f, radius * 0.62f, depth - 1, barkColor, leafColor, lod);
     }
 }
 
-Mesh Mesh::treeBark(VulkanContext& ctx, CommandContext& commands, glm::vec3 tint, uint32_t seed) {
+Mesh Mesh::treeBark(VulkanContext& ctx, CommandContext& commands, glm::vec3 tint, uint32_t seed,
+                    int lod) {
     std::vector<Vertex> barkV, leafV;
     std::vector<uint32_t> barkI, leafI;
-    std::mt19937 rng(seed);
-    buildTreeBranch(barkV, barkI, leafV, leafI, rng, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f), 1.1f,
-                     0.14f, 3, tint, glm::vec3(0.0f));
+    std::mt19937 structureRng(seed);
+    std::mt19937 foliageRng(seed ^ 0x9e3779b9u);
+    buildTreeBranch(barkV, barkI, leafV, leafI, structureRng, foliageRng, glm::vec3(0.0f),
+                    glm::vec3(0.0f, 1.0f, 0.0f), 1.1f, 0.14f, 3, tint, glm::vec3(0.0f),
+                    std::clamp(lod, 0, 2));
     return Mesh(ctx, commands, barkV, barkI);
 }
 
-Mesh Mesh::treeLeaves(VulkanContext& ctx, CommandContext& commands, glm::vec3 tint, uint32_t seed) {
+Mesh Mesh::treeLeaves(VulkanContext& ctx, CommandContext& commands, glm::vec3 tint, uint32_t seed,
+                      int lod) {
     std::vector<Vertex> barkV, leafV;
     std::vector<uint32_t> barkI, leafI;
-    std::mt19937 rng(seed);
-    buildTreeBranch(barkV, barkI, leafV, leafI, rng, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f), 1.1f,
-                     0.14f, 3, glm::vec3(0.0f), tint);
+    std::mt19937 structureRng(seed);
+    std::mt19937 foliageRng(seed ^ 0x9e3779b9u);
+    buildTreeBranch(barkV, barkI, leafV, leafI, structureRng, foliageRng, glm::vec3(0.0f),
+                    glm::vec3(0.0f, 1.0f, 0.0f), 1.1f, 0.14f, 3, glm::vec3(0.0f), tint,
+                    std::clamp(lod, 0, 3));
     return Mesh(ctx, commands, leafV, leafI);
 }

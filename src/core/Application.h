@@ -162,16 +162,26 @@ private:
     // -- also used by Tank::update to keep the hull from driving through
     // the boundary's wall of light.
     float boundaryHalfExtent_ = 0.0f;
-    std::vector<std::unique_ptr<Mesh>> rockMeshes_;  // small pool of distinct rock shapes
-    // 80-face versions for decorative scree that only covers a few pixels;
-    // never used for collision or ray tracing.
+    std::vector<std::unique_ptr<Mesh>> rockMeshes_;        // LOD 0: 1280 faces
+    std::vector<std::unique_ptr<Mesh>> mediumRockMeshes_;  // LOD 1: 320 faces
+    // LOD 2: 80 faces, shared by far boulders, decorative scree, and
+    // ordinary far-distance rasterization.
     std::vector<std::unique_ptr<Mesh>> smallRockMeshes_;
+    // Inset copies of LOD 2 used only for ray queries. Keeping these inside
+    // the visible boulders prevents the proxy from self-shadowing them.
+    std::vector<std::unique_ptr<Mesh>> rockProxyMeshes_;
     // Small pool of distinct fractal branch structures, one bark + one
     // leaves mesh per variant (see Mesh::treeBark/treeLeaves) -- matching
     // indices in each vector share the same seed, so their branch tips line
     // up.
     std::vector<std::unique_ptr<Mesh>> treeBarkMeshes_;
     std::vector<std::unique_ptr<Mesh>> treeLeafMeshes_;
+    std::vector<std::unique_ptr<Mesh>> mediumTreeBarkMeshes_;
+    std::vector<std::unique_ptr<Mesh>> mediumTreeLeafMeshes_;
+    // Far raster LOD and simplified ray-tracing proxy geometry.
+    std::vector<std::unique_ptr<Mesh>> farTreeBarkMeshes_;
+    std::vector<std::unique_ptr<Mesh>> farTreeLeafMeshes_;
+    std::vector<std::unique_ptr<Mesh>> treeLeafProxyMeshes_;
     std::vector<std::unique_ptr<Mesh>> shrubMeshes_;  // small pool of distinct bush shapes
     std::unique_ptr<Mesh> cloudDomeMesh_;
     std::vector<Box> boxes_;
@@ -207,7 +217,7 @@ private:
     // itself since it owns those meshes.
     std::unique_ptr<AccelerationStructure> boxBLAS_;
     std::unique_ptr<AccelerationStructure> shellBLAS_;
-    std::vector<std::unique_ptr<AccelerationStructure>> rockBLAS_;      // one per rockMeshes_ variant
+    std::vector<std::unique_ptr<AccelerationStructure>> rockBLAS_;  // one inset proxy per rock variant
     std::unique_ptr<AccelerationStructure> sedimentaryCliffBLAS_;
     std::vector<std::unique_ptr<AccelerationStructure>> treeBarkBLAS_;  // one per treeBarkMeshes_ variant
     std::vector<std::unique_ptr<AccelerationStructure>> treeLeafBLAS_;  // one per treeLeafMeshes_ variant

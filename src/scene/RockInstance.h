@@ -12,6 +12,7 @@ struct RockInstance {
     float yaw = 0.0f;
     float scale = 1.0f;
     int meshVariant = 0;
+    int lod = 0;  // regular boulders only; decorative scree always uses LOD 2
 
     glm::mat4 worldMatrix() const {
         glm::mat4 m = glm::translate(glm::mat4(1.0f), position);

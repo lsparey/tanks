@@ -45,8 +45,14 @@ public:
     // branch structure (and therefore where the leaf clusters end up) is
     // fully determined by seed, so two calls with the same seed reproduce
     // the identical skeleton.
-    static Mesh treeBark(VulkanContext& ctx, CommandContext& commands, glm::vec3 tint, uint32_t seed);
-    static Mesh treeLeaves(VulkanContext& ctx, CommandContext& commands, glm::vec3 tint, uint32_t seed);
+    // lod 0/1/2 progressively reduces branch sides, terminal twigs, leaf
+    // blob count, and leaf-blob tessellation while preserving the same
+    // seed-driven branch structure. treeLeaves lod 3 is an inset ray-only
+    // proxy that stays safely inside the visible canopy.
+    static Mesh treeBark(VulkanContext& ctx, CommandContext& commands, glm::vec3 tint,
+                         uint32_t seed, int lod = 0);
+    static Mesh treeLeaves(VulkanContext& ctx, CommandContext& commands, glm::vec3 tint,
+                           uint32_t seed, int lod = 0);
 
     // A procedural boulder: a subdivided icosahedron with
     // broad, ridged, and fine layers of fractal displacement for an
@@ -60,8 +66,10 @@ public:
     // same shape copy-pasted everywhere.
     // subdivisions defaults to the full 1280-face version; callers drawing
     // tiny scree can request a cheaper LOD with the same overall shape.
+    // radiusScale is normally 1; ray-only proxies use a modest inset so
+    // their coarse triangles remain inside the rendered surface.
     static Mesh rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColor,
-                      uint32_t seed, int subdivisions = 3);
+                      uint32_t seed, int subdivisions = 3, float radiusScale = 1.0f);
 
     // A long, low chain of overlapping sedimentary plates with shallow
     // strata, an uneven top, and fractured ends. Intended to emerge from

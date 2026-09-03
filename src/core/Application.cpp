@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <string>
 #include <utility>
@@ -50,6 +51,34 @@ bool sphereIntersectsFrustum(const glm::mat4& viewProjection, glm::vec3 center, 
         if (glm::dot(glm::vec3(plane), center) + plane.w < -radius * normalLength) return false;
     }
     return true;
+}
+
+float projectedRadiusPixels(const glm::mat4& view, const glm::mat4& projection,
+                            float viewportHeight, glm::vec3 center, float radius) {
+    glm::vec4 viewCenter = view * glm::vec4(center, 1.0f);
+    float depth = -viewCenter.z;
+    if (depth <= 0.001f) return std::numeric_limits<float>::max();
+    return std::abs(projection[1][1]) * viewportHeight * 0.5f * radius / depth;
+}
+
+int selectLodWithHysteresis(int currentLod, float projectedRadius, float nearThreshold,
+                            float farThreshold) {
+    constexpr float kDownshiftScale = 0.88f;
+    constexpr float kUpshiftScale = 1.12f;
+    currentLod = std::clamp(currentLod, 0, 2);
+    if (currentLod == 0) {
+        if (projectedRadius < farThreshold * kDownshiftScale) return 2;
+        if (projectedRadius < nearThreshold * kDownshiftScale) return 1;
+        return 0;
+    }
+    if (currentLod == 1) {
+        if (projectedRadius > nearThreshold * kUpshiftScale) return 0;
+        if (projectedRadius < farThreshold * kDownshiftScale) return 2;
+        return 1;
+    }
+    if (projectedRadius > nearThreshold * kUpshiftScale) return 0;
+    if (projectedRadius > farThreshold * kUpshiftScale) return 1;
+    return 2;
 }
 
 // Terrain height below which a basin can start filling with water -- tuned
@@ -430,9 +459,15 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
     for (size_t i = 0; i < sizeof(rockShades) / sizeof(rockShades[0]); ++i) {
         rockMeshes_.push_back(std::make_unique<Mesh>(
             Mesh::rock(*context_, *commands_, rockShades[i], static_cast<uint32_t>(i) + 1)));
+        mediumRockMeshes_.push_back(std::make_unique<Mesh>(Mesh::rock(
+            *context_, *commands_, rockShades[i], static_cast<uint32_t>(i) + 1,
+            /*subdivisions=*/2)));
         smallRockMeshes_.push_back(std::make_unique<Mesh>(Mesh::rock(
             *context_, *commands_, rockShades[i], static_cast<uint32_t>(i) + 1,
             /*subdivisions=*/1)));
+        rockProxyMeshes_.push_back(std::make_unique<Mesh>(Mesh::rock(
+            *context_, *commands_, rockShades[i], static_cast<uint32_t>(i) + 1,
+            /*subdivisions=*/1, /*radiusScale=*/0.78f)));
 
         std::vector<uint8_t> rockPixels = RockTextureGenerator::generate(128, static_cast<uint32_t>(i));
         rockStandaloneTextures_.push_back(std::make_unique<Texture>(
@@ -460,6 +495,16 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
             std::make_unique<Mesh>(Mesh::treeBark(*context_, *commands_, barkTint, seed)));
         treeLeafMeshes_.push_back(
             std::make_unique<Mesh>(Mesh::treeLeaves(*context_, *commands_, leafTint, seed)));
+        mediumTreeBarkMeshes_.push_back(
+            std::make_unique<Mesh>(Mesh::treeBark(*context_, *commands_, barkTint, seed, 1)));
+        mediumTreeLeafMeshes_.push_back(
+            std::make_unique<Mesh>(Mesh::treeLeaves(*context_, *commands_, leafTint, seed, 1)));
+        farTreeBarkMeshes_.push_back(
+            std::make_unique<Mesh>(Mesh::treeBark(*context_, *commands_, barkTint, seed, 2)));
+        farTreeLeafMeshes_.push_back(
+            std::make_unique<Mesh>(Mesh::treeLeaves(*context_, *commands_, leafTint, seed, 2)));
+        treeLeafProxyMeshes_.push_back(
+            std::make_unique<Mesh>(Mesh::treeLeaves(*context_, *commands_, leafTint, seed, 3)));
 
         std::vector<uint8_t> barkPixels = BarkTextureGenerator::generate(128, static_cast<uint32_t>(i));
         barkTextures_.push_back(std::make_unique<Texture>(
@@ -582,8 +627,15 @@ Application::~Application() {
     waterMesh_.reset();
     sedimentaryCliffGrassMesh_.reset();
     sedimentaryCliffMesh_.reset();
+    rockProxyMeshes_.clear();
     smallRockMeshes_.clear();
+    mediumRockMeshes_.clear();
     rockMeshes_.clear();
+    farTreeLeafMeshes_.clear();
+    farTreeBarkMeshes_.clear();
+    treeLeafProxyMeshes_.clear();
+    mediumTreeLeafMeshes_.clear();
+    mediumTreeBarkMeshes_.clear();
     treeLeafMeshes_.clear();
     treeBarkMeshes_.clear();
     shrubMeshes_.clear();
@@ -1147,17 +1199,20 @@ void Application::buildAccelerationStructures() {
         AccelerationStructure::buildBLAS(*context_, *commands_, *boxMesh_));
     shellBLAS_ = std::make_unique<AccelerationStructure>(
         AccelerationStructure::buildBLAS(*context_, *commands_, *shellMesh_));
-    for (const auto& mesh : rockMeshes_) {
+    // Ray queries only need a stable occlusion silhouette, not the raster
+    // mesh's fine chips. Build proxy BLASes from the cheapest matching LODs;
+    // visible close-up geometry remains completely independent.
+    for (const auto& mesh : rockProxyMeshes_) {
         rockBLAS_.push_back(std::make_unique<AccelerationStructure>(
             AccelerationStructure::buildBLAS(*context_, *commands_, *mesh)));
     }
     sedimentaryCliffBLAS_ = std::make_unique<AccelerationStructure>(
         AccelerationStructure::buildBLAS(*context_, *commands_, *sedimentaryCliffMesh_));
-    for (const auto& mesh : treeBarkMeshes_) {
+    for (const auto& mesh : farTreeBarkMeshes_) {
         treeBarkBLAS_.push_back(std::make_unique<AccelerationStructure>(
             AccelerationStructure::buildBLAS(*context_, *commands_, *mesh)));
     }
-    for (const auto& mesh : treeLeafMeshes_) {
+    for (const auto& mesh : treeLeafProxyMeshes_) {
         treeLeafBLAS_.push_back(std::make_unique<AccelerationStructure>(
             AccelerationStructure::buildBLAS(*context_, *commands_, *mesh)));
     }
@@ -1523,25 +1578,45 @@ void Application::drawFrame() {
     }
     pipeline_->updateFrameUBO(ubo);
 
-    // Cull repeated static props and group their transforms by the shared
-    // mesh/material variant. The resulting ranges are consumed by one
-    // instanced draw per non-empty variant later in this frame.
+    // Cull repeated static props and group their transforms by shared
+    // mesh/material variant and projected-size LOD. Each non-empty group is
+    // still one instanced draw; adding LODs does not regress to per-object
+    // draw calls. Hysteresis stored on each instance prevents threshold
+    // flicker while the camera or tank moves slowly.
     glm::mat4 viewProjection = ubo.proj * ubo.view;
-    std::vector<std::vector<glm::mat4>> treeGroups(treeBarkMeshes_.size());
-    std::vector<std::vector<glm::mat4>> rockGroups(rockMeshes_.size());
+    constexpr size_t kLodCount = 3;
+    const size_t treeVariantCount = treeBarkMeshes_.size();
+    const size_t rockVariantCount = rockMeshes_.size();
+    std::vector<std::vector<glm::mat4>> treeGroups(treeVariantCount * kLodCount);
+    std::vector<std::vector<glm::mat4>> rockGroups(rockVariantCount * kLodCount);
     std::vector<std::vector<glm::mat4>> smallRockGroups(smallRockMeshes_.size());
     std::vector<std::vector<glm::mat4>> shrubGroups(shrubMeshes_.size());
     std::vector<std::vector<glm::mat4>> cliffGroups(1);
+    float viewportHeight = static_cast<float>(swapchain_->extent().height);
 
-    for (const TreeInstance& tree : trees_) {
+    for (TreeInstance& tree : trees_) {
         glm::vec3 center = tree.position + glm::vec3(0.0f, 2.4f * tree.scale, 0.0f);
-        if (sphereIntersectsFrustum(viewProjection, center, 3.5f * tree.scale))
-            treeGroups[tree.meshVariant].push_back(tree.worldMatrix());
+        float radius = 3.5f * tree.scale;
+        if (!sphereIntersectsFrustum(viewProjection, center, radius)) continue;
+        float projectedRadius =
+            projectedRadiusPixels(ubo.view, ubo.proj, viewportHeight, center, radius);
+        tree.lod = selectLodWithHysteresis(tree.lod, projectedRadius,
+                                           /*nearThreshold=*/60.0f,
+                                           /*farThreshold=*/32.0f);
+        size_t group = static_cast<size_t>(tree.lod) * treeVariantCount + tree.meshVariant;
+        treeGroups[group].push_back(tree.worldMatrix());
     }
-    for (const RockInstance& rock : rocks_) {
+    for (RockInstance& rock : rocks_) {
         glm::vec3 center = rock.position + glm::vec3(0.0f, 0.4f * rock.scale, 0.0f);
-        if (sphereIntersectsFrustum(viewProjection, center, 1.3f * rock.scale))
-            rockGroups[rock.meshVariant].push_back(rock.worldMatrix());
+        float radius = 1.3f * rock.scale;
+        if (!sphereIntersectsFrustum(viewProjection, center, radius)) continue;
+        float projectedRadius =
+            projectedRadiusPixels(ubo.view, ubo.proj, viewportHeight, center, radius);
+        rock.lod = selectLodWithHysteresis(rock.lod, projectedRadius,
+                                           /*nearThreshold=*/55.0f,
+                                           /*farThreshold=*/20.0f);
+        size_t group = static_cast<size_t>(rock.lod) * rockVariantCount + rock.meshVariant;
+        rockGroups[group].push_back(rock.worldMatrix());
     }
     for (const RockInstance& rock : smallRocks_) {
         constexpr float kSmallRockDrawDistance = 55.0f;
@@ -1879,12 +1954,17 @@ void Application::drawFrame() {
                          gpuTimestampPool_, timestampBase + 3);
 
     // Trees: bark and leaves are separate meshes/materials (see
-    // Mesh::treeBark/treeLeaves), so each gets its own pass over all tree
-    // instances. Visible transforms are grouped by mesh/material variant,
-    // reducing each bark or leaf variant to one instanced draw.
-    for (size_t variant = 0; variant < treeBatches.size(); ++variant) {
-        const InstanceBatch& batch = treeBatches[variant];
+    // Mesh::treeBark/treeLeaves), and each LOD/variant group remains one
+    // instanced draw. Bark and foliage consume the same transform batch so
+    // their independently generated matching meshes stay aligned.
+    for (size_t group = 0; group < treeBatches.size(); ++group) {
+        const InstanceBatch& batch = treeBatches[group];
         if (batch.count == 0) continue;
+        size_t lod = group / treeVariantCount;
+        size_t variant = group % treeVariantCount;
+        const Mesh* barkMesh = lod == 0   ? treeBarkMeshes_[variant].get()
+                               : lod == 1 ? mediumTreeBarkMeshes_[variant].get()
+                                          : farTreeBarkMeshes_[variant].get();
         vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(),
                                  1, 1, &barkMaterialSets_[variant], 0, nullptr);
         Pipeline::PushConstants treePc{};
@@ -1892,12 +1972,17 @@ void Application::drawFrame() {
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(treePc), &treePc);
-        treeBarkMeshes_[variant]->bindAndDrawInstanced(frame.commandBuffer, batch.count, batch.first);
+        barkMesh->bindAndDrawInstanced(frame.commandBuffer, batch.count, batch.first);
     }
 
-    for (size_t variant = 0; variant < treeBatches.size(); ++variant) {
-        const InstanceBatch& batch = treeBatches[variant];
+    for (size_t group = 0; group < treeBatches.size(); ++group) {
+        const InstanceBatch& batch = treeBatches[group];
         if (batch.count == 0) continue;
+        size_t lod = group / treeVariantCount;
+        size_t variant = group % treeVariantCount;
+        const Mesh* leafMesh = lod == 0   ? treeLeafMeshes_[variant].get()
+                               : lod == 1 ? mediumTreeLeafMeshes_[variant].get()
+                                          : farTreeLeafMeshes_[variant].get();
         vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(),
                                  1, 1, &leafMaterialSets_[variant], 0, nullptr);
         Pipeline::PushConstants leafPc{};
@@ -1906,13 +1991,18 @@ void Application::drawFrame() {
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(leafPc), &leafPc);
-        treeLeafMeshes_[variant]->bindAndDrawInstanced(frame.commandBuffer, batch.count, batch.first);
+        leafMesh->bindAndDrawInstanced(frame.commandBuffer, batch.count, batch.first);
     }
 
-    // Rocks: one culled, instanced draw per geometry/material variant.
-    for (size_t variant = 0; variant < rockBatches.size(); ++variant) {
-        const InstanceBatch& batch = rockBatches[variant];
+    // Rocks: one culled, instanced draw per geometry/material/LOD group.
+    for (size_t group = 0; group < rockBatches.size(); ++group) {
+        const InstanceBatch& batch = rockBatches[group];
         if (batch.count == 0) continue;
+        size_t lod = group / rockVariantCount;
+        size_t variant = group % rockVariantCount;
+        const Mesh* rockMesh = lod == 0   ? rockMeshes_[variant].get()
+                               : lod == 1 ? mediumRockMeshes_[variant].get()
+                                          : smallRockMeshes_[variant].get();
         vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(),
                                  1, 1, &rockMaterialSets_[variant], 0, nullptr);
         Pipeline::PushConstants rockPc{};
@@ -1921,7 +2011,7 @@ void Application::drawFrame() {
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(rockPc), &rockPc);
-        rockMeshes_[variant]->bindAndDrawInstanced(frame.commandBuffer, batch.count, batch.first);
+        rockMesh->bindAndDrawInstanced(frame.commandBuffer, batch.count, batch.first);
     }
 
     // Small scree/pebbles use their dedicated low-detail geometry and one
