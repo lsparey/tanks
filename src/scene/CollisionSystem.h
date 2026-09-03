@@ -31,12 +31,19 @@ public:
         float radius;
     };
 
-    // Pushes `position` (XZ only) directly out of any obstacle it overlaps,
-    // treating the moving object itself as a circle of `selfRadius`. A
-    // single pass over the obstacle list rather than an iterative solver --
-    // fine for the sparse, well-separated obstacle placement trees/rocks
-    // use; two obstacles close enough to fight over the same push in one
-    // frame isn't a case this scene's spacing produces.
-    static glm::vec2 resolveCircleCollisions(glm::vec2 position, float selfRadius,
-                                              const std::vector<CircleObstacle>& obstacles);
+    struct CircleCollisionResult {
+        glm::vec2 position;
+        glm::vec2 velocity;
+    };
+
+    // Pushes a moving circle out of overlapping static obstacles in the XZ
+    // plane. Any velocity pointing into a contact is removed while the
+    // tangential component is preserved, so the object slides along a rock
+    // or tree instead of repeatedly driving into it. Several inexpensive
+    // solver passes make chains of cliff proxy circles behave as one solid
+    // formation rather than allowing one correction to create an overlap
+    // with the previous circle.
+    static CircleCollisionResult resolveCircleCollisions(
+        glm::vec2 position, glm::vec2 velocity, float selfRadius,
+        const std::vector<CircleObstacle>& obstacles, int solverIterations = 4);
 };

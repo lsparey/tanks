@@ -14,6 +14,29 @@
 
 namespace {
 
+constexpr float kFixedMovementStep = 1.0f / 120.0f;
+constexpr float kMaxFrameDelta = 0.1f;
+constexpr float kForwardTopSpeed = 7.5f;
+constexpr float kReverseTopSpeed = 4.5f;
+constexpr float kEngineAcceleration = 7.5f;
+constexpr float kBrakingAcceleration = 11.0f;
+constexpr float kRollingResistance = 0.7f;
+constexpr float kLongitudinalDrag = 0.055f;
+constexpr float kLateralGrip = 9.0f;
+constexpr float kAngularAcceleration = 5.5f;
+constexpr float kAngularDrag = 3.5f;
+constexpr float kPivotYawRate = 1.35f;
+constexpr float kMovingYawRate = 0.82f;
+constexpr float kSlopeGravityScale = 0.72f;
+constexpr float kGravity = 9.81f;
+constexpr float kMaximumGroundSpeed = 11.0f;
+constexpr float kMinimumClimbNormalY = 0.7880108f;  // cos(38 degrees)
+
+float moveTowards(float value, float target, float maxDelta) {
+    if (value < target) return std::min(value + maxDelta, target);
+    return std::max(value - maxDelta, target);
+}
+
 bool containsCaseInsensitive(const std::string& haystack, const char* needle) {
     std::string lower = haystack;
     std::transform(lower.begin(), lower.end(), lower.begin(),
@@ -151,23 +174,90 @@ void Tank::update(const InputManager& input, float deltaTime, const Terrain& ter
     if (input.isKeyDown(GLFW_KEY_A)) turn += 1.0f;
     if (input.isKeyDown(GLFW_KEY_D)) turn -= 1.0f;
 
-    yaw_ += turn * turnSpeedRadians_ * deltaTime;
-
     if (input.isKeyDown(GLFW_KEY_Q)) turretYaw_ += turretTurnSpeedRadians_ * deltaTime;
     if (input.isKeyDown(GLFW_KEY_E)) turretYaw_ -= turretTurnSpeedRadians_ * deltaTime;
 
-    glm::vec3 flatForward(std::sin(yaw_), 0.0f, std::cos(yaw_));
-    position_ += flatForward * (throttle * moveSpeed_ * deltaTime);
+    // Fixed simulation steps make force integration and collision response
+    // independent of render cadence. Discard excessive time after a stall or
+    // debugger pause rather than trying to simulate a huge, unstable jump.
+    movementAccumulator_ += glm::clamp(deltaTime, 0.0f, kMaxFrameDelta);
+    while (movementAccumulator_ >= kFixedMovementStep) {
+        simulateMovement(throttle, turn, kFixedMovementStep, terrain, obstacles,
+                         boundaryHalfExtent);
+        movementAccumulator_ -= kFixedMovementStep;
+    }
+
+    // Ensure the initial pose is grounded even on a render frame too short
+    // to produce its first fixed simulation step.
+    updateGroundPose(terrain);
+}
+
+void Tank::simulateMovement(
+    float throttle, float turn, float deltaTime, const Terrain& terrain,
+    const std::vector<CollisionSystem::CircleObstacle>& obstacles, float boundaryHalfExtent) {
+    glm::vec2 flatForward(std::sin(yaw_), std::cos(yaw_));
+    glm::vec2 flatRight(flatForward.y, -flatForward.x);
+
+    // Interpret controls as independent track demands. Their average creates
+    // longitudinal drive, while their difference creates turning torque.
+    // This naturally permits pivot turns and reduces drive force in a hard
+    // moving turn because the inside track slows or reverses.
+    float leftTrack = glm::clamp(throttle - turn, -1.0f, 1.0f);
+    float rightTrack = glm::clamp(throttle + turn, -1.0f, 1.0f);
+    float driveDemand = 0.5f * (leftTrack + rightTrack);
+    float turnDemand = 0.5f * (rightTrack - leftTrack);
+
+    float forwardSpeed = glm::dot(velocity_, flatForward);
+    float lateralSpeed = glm::dot(velocity_, flatRight);
+
+    if (std::abs(driveDemand) > 1e-4f) {
+        bool braking = forwardSpeed * driveDemand < -0.05f;
+        float acceleration = kBrakingAcceleration;
+        if (!braking) {
+            float topSpeed = driveDemand > 0.0f ? kForwardTopSpeed : kReverseTopSpeed;
+            float speedAlongDemand = forwardSpeed * (driveDemand > 0.0f ? 1.0f : -1.0f);
+            float motorFactor = glm::clamp(1.0f - speedAlongDemand / topSpeed, 0.0f, 1.0f);
+            acceleration = kEngineAcceleration * motorFactor;
+        }
+        forwardSpeed += driveDemand * acceleration * deltaTime;
+    } else {
+        forwardSpeed = moveTowards(forwardSpeed, 0.0f, kRollingResistance * deltaTime);
+    }
+
+    // Air/drive-train drag grows with speed, while strong lateral track grip
+    // quickly scrubs sideways motion without making it disappear instantly.
+    forwardSpeed *= std::exp(-kLongitudinalDrag * std::abs(forwardSpeed) * deltaTime);
+    lateralSpeed *= std::exp(-kLateralGrip * deltaTime);
+    velocity_ = flatForward * forwardSpeed + flatRight * lateralSpeed;
+
+    glm::vec3 groundNormal = terrain.normalAt(position_.x, position_.z);
+    glm::vec3 gravity(0.0f, -kGravity, 0.0f);
+    glm::vec3 slopeGravity = gravity - groundNormal * glm::dot(gravity, groundNormal);
+    velocity_ += glm::vec2(slopeGravity.x, slopeGravity.z) *
+                 (kSlopeGravityScale * deltaTime);
+
+    float speedRatio = glm::clamp(std::abs(forwardSpeed) / kForwardTopSpeed, 0.0f, 1.0f);
+    float yawLimit = glm::mix(kPivotYawRate, kMovingYawRate, speedRatio);
+    float turnAuthority = glm::mix(1.0f, 0.65f, speedRatio);
+    angularVelocity_ += turnDemand * kAngularAcceleration * turnAuthority * deltaTime;
+    angularVelocity_ *= std::exp(-kAngularDrag * deltaTime);
+    angularVelocity_ = glm::clamp(angularVelocity_, -yawLimit, yawLimit);
+
+    yaw_ += angularVelocity_ * deltaTime;
+    position_.x += velocity_.x * deltaTime;
+    position_.z += velocity_.y * deltaTime;
 
     // Hull-width-derived collision radius (a circle is a rough stand-in for
     // the hull's actual rectangular footprint, but is enough to stop the
     // tank driving through a tree/rock without needing real hull-vs-hull
     // shape collision).
     float collisionRadius = hullWidth_ * 0.6f;
-    glm::vec2 resolvedXZ = CollisionSystem::resolveCircleCollisions(
-        glm::vec2(position_.x, position_.z), collisionRadius, obstacles);
-    position_.x = resolvedXZ.x;
-    position_.z = resolvedXZ.y;
+    CollisionSystem::CircleCollisionResult collision =
+        CollisionSystem::resolveCircleCollisions(glm::vec2(position_.x, position_.z), velocity_,
+                                                  collisionRadius, obstacles);
+    position_.x = collision.position.x;
+    position_.z = collision.position.y;
+    velocity_ = collision.velocity;
 
     // Keep the hull fully inside the play-area boundary (see
     // BoundaryGenerator) rather than letting it drive out through the wall
@@ -176,8 +266,42 @@ void Tank::update(const InputManager& input, float deltaTime, const Terrain& ter
     // rather than the hull's center (and therefore half its body) crossing
     // through before the clamp takes effect.
     float clampExtent = boundaryHalfExtent - collisionRadius;
-    position_.x = glm::clamp(position_.x, -clampExtent, clampExtent);
-    position_.z = glm::clamp(position_.z, -clampExtent, clampExtent);
+    if (position_.x < -clampExtent) {
+        position_.x = -clampExtent;
+        if (velocity_.x < 0.0f) velocity_.x = 0.0f;
+    } else if (position_.x > clampExtent) {
+        position_.x = clampExtent;
+        if (velocity_.x > 0.0f) velocity_.x = 0.0f;
+    }
+    if (position_.z < -clampExtent) {
+        position_.z = -clampExtent;
+        if (velocity_.y < 0.0f) velocity_.y = 0.0f;
+    } else if (position_.z > clampExtent) {
+        position_.z = clampExtent;
+        if (velocity_.y > 0.0f) velocity_.y = 0.0f;
+    }
+
+    groundNormal = terrain.normalAt(position_.x, position_.z);
+    if (groundNormal.y < kMinimumClimbNormalY) {
+        glm::vec2 uphill(-groundNormal.x, -groundNormal.z);
+        float uphillLength = glm::length(uphill);
+        if (uphillLength > 1e-5f) {
+            uphill /= uphillLength;
+            float uphillSpeed = glm::dot(velocity_, uphill);
+            if (uphillSpeed > 0.0f) velocity_ -= uphill * uphillSpeed;
+        }
+    }
+
+    float groundSpeed = glm::length(velocity_);
+    if (groundSpeed > kMaximumGroundSpeed) {
+        velocity_ *= kMaximumGroundSpeed / groundSpeed;
+    }
+
+    updateGroundPose(terrain);
+}
+
+void Tank::updateGroundPose(const Terrain& terrain) {
+    glm::vec3 flatForward(std::sin(yaw_), 0.0f, std::cos(yaw_));
 
     glm::vec3 normal = terrain.normalAt(position_.x, position_.z);
     position_.y = terrain.heightAt(position_.x, position_.z);

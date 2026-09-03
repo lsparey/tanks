@@ -40,14 +40,13 @@ public:
 
     Tank(VulkanContext& ctx, CommandContext& commands, const std::string& modelPath);
 
-    // Arcade steering (W/S throttle, A/D yaw) plus terrain ground-clamping,
-    // plus turret traverse (Q/E, independent of hull yaw). `obstacles`
-    // (trees/rocks, see Application::obstacles_) blocks the hull from
-    // driving through them -- approximated as circles in the XZ plane
-    // rather than their real irregular silhouettes. `boundaryHalfExtent`
-    // (see Application::boundaryHalfExtent_/BoundaryGenerator) likewise
-    // keeps the hull from driving through the play-area boundary's wall of
-    // light.
+    // Track-driven movement (W/S throttle, A/D differential steering) plus
+    // turret traverse (Q/E, independent of hull yaw). Movement is simulated
+    // in fixed-size substeps with acceleration, braking, traction, slope
+    // gravity, and velocity-aware collision response. `obstacles`
+    // (trees/rocks, see Application::obstacles_) approximates irregular
+    // silhouettes as circles in the XZ plane. `boundaryHalfExtent` likewise
+    // keeps the hull behind the play-area boundary's wall of light.
     void update(const InputManager& input, float deltaTime, const Terrain& terrain,
                 const std::vector<CollisionSystem::CircleObstacle>& obstacles,
                 float boundaryHalfExtent);
@@ -76,6 +75,10 @@ public:
 
 private:
     void load(VulkanContext& ctx, CommandContext& commands, const std::string& path);
+    void simulateMovement(float throttle, float turn, float deltaTime, const Terrain& terrain,
+                          const std::vector<CollisionSystem::CircleObstacle>& obstacles,
+                          float boundaryHalfExtent);
+    void updateGroundPose(const Terrain& terrain);
     glm::mat4 hullWorldMatrix() const;
     glm::mat4 turretWorldMatrix() const;
 
@@ -102,10 +105,16 @@ private:
     glm::vec3 up_{0.0f, 1.0f, 0.0f};
     glm::vec3 right_{1.0f, 0.0f, 0.0f};
 
+    // Planar rigid-body state. The tank remains constrained to the terrain
+    // surface, while its XZ velocity and yaw velocity carry momentum between
+    // frames. A world-space velocity lets collision response preserve the
+    // component tangent to an obstacle instead of losing all movement.
+    glm::vec2 velocity_{0.0f};
+    float angularVelocity_ = 0.0f;
+    float movementAccumulator_ = 0.0f;
+
     float turretYaw_ = 0.0f;  // radians, relative to the hull, about local +Y
 
-    float moveSpeed_ = 6.0f;                 // m/s
-    float turnSpeedRadians_ = 1.2f;          // rad/s, hull
     float turretTurnSpeedRadians_ = 0.6f;    // rad/s, turret -- slower than hull for finer aiming
 
     glm::mat4 modelCorrection_{1.0f};

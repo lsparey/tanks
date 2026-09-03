@@ -53,20 +53,32 @@ bool CollisionSystem::segmentIntersectsSphere(glm::vec3 from, glm::vec3 to, glm:
     return true;
 }
 
-glm::vec2 CollisionSystem::resolveCircleCollisions(glm::vec2 position, float selfRadius,
-                                                    const std::vector<CircleObstacle>& obstacles) {
-    for (const auto& obstacle : obstacles) {
-        glm::vec2 delta = position - obstacle.center;
-        float dist = glm::length(delta);
-        float minDist = selfRadius + obstacle.radius;
-        if (dist < minDist) {
+CollisionSystem::CircleCollisionResult CollisionSystem::resolveCircleCollisions(
+    glm::vec2 position, glm::vec2 velocity, float selfRadius,
+    const std::vector<CircleObstacle>& obstacles, int solverIterations) {
+    for (int iteration = 0; iteration < solverIterations; ++iteration) {
+        bool corrected = false;
+        for (const auto& obstacle : obstacles) {
+            glm::vec2 delta = position - obstacle.center;
+            float dist = glm::length(delta);
+            float minDist = selfRadius + obstacle.radius;
+            if (dist >= minDist) continue;
+
             // Degenerate case (dead center on the obstacle, dist ~ 0) has no
-            // well-defined push direction -- push along an arbitrary fixed
-            // axis rather than producing a NaN from normalizing a zero
-            // vector.
-            glm::vec2 pushDir = dist > 1e-5f ? delta / dist : glm::vec2(1.0f, 0.0f);
-            position = obstacle.center + pushDir * minDist;
+            // geometric normal. Oppose the incoming velocity when possible,
+            // otherwise use a stable arbitrary axis.
+            glm::vec2 normal = dist > 1e-5f
+                                   ? delta / dist
+                                   : (glm::length(velocity) > 1e-5f
+                                          ? -glm::normalize(velocity)
+                                          : glm::vec2(1.0f, 0.0f));
+            position = obstacle.center + normal * minDist;
+
+            float inwardSpeed = glm::dot(velocity, normal);
+            if (inwardSpeed < 0.0f) velocity -= normal * inwardSpeed;
+            corrected = true;
         }
+        if (!corrected) break;
     }
-    return position;
+    return {position, velocity};
 }
