@@ -117,10 +117,11 @@ public:
     void updateFrameUBO(const FrameUBO& ubo);
     void updateInstanceTransforms(const std::vector<glm::mat4>& transforms);
     // highA/highB and lowA/lowB are only sampled/blended when a draw's
-    // PushConstants::heightBlend is nonzero (terrain); everything else can
-    // pass the same texture for all four and ignore the rest.
+    // PushConstants::heightBlend is nonzero (terrain). terrainControl is an
+    // optional fifth terrain-only lookup; other sets fall back to highA.
     VkDescriptorSet allocateMaterialDescriptorSet(const Texture& highA, const Texture& highB,
-                                                   const Texture& lowA, const Texture& lowB);
+                                                   const Texture& lowA, const Texture& lowB,
+                                                   const Texture* terrainControl = nullptr);
     void updateTLASDescriptor(size_t frameIndex, VkAccelerationStructureKHR tlas);
     void updateHistoryDescriptor(size_t frameIndex, VkImageView historyView, VkSampler historySampler);
 

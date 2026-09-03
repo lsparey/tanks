@@ -1,6 +1,7 @@
 #include "Application.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <iomanip>
 #include <iostream>
@@ -115,6 +116,41 @@ float terrainValueNoise(glm::vec2 p) {
     float d = terrainHash(i + glm::vec2(1.0f, 1.0f));
     glm::vec2 u = f * f * (3.0f - 2.0f * f);
     return glm::mix(glm::mix(a, b, u.x), glm::mix(c, d, u.x), u.y);
+}
+
+std::vector<uint8_t> generateTerrainControlPixels(uint32_t size, float worldSize) {
+    std::vector<uint8_t> pixels(static_cast<size_t>(size) * size * 4);
+    auto encodeUNorm = [](float value) {
+        return static_cast<uint8_t>(
+            std::lround(glm::clamp(value, 0.0f, 1.0f) * 255.0f));
+    };
+
+    // Texel centres span the terrain's exact [-worldSize/2, worldSize/2]
+    // range. basic.frag applies the matching half-texel UV inset when it
+    // samples this clamped texture.
+    for (uint32_t y = 0; y < size; ++y) {
+        float worldZ = (static_cast<float>(y) / static_cast<float>(size - 1) - 0.5f) * worldSize;
+        for (uint32_t x = 0; x < size; ++x) {
+            float worldX =
+                (static_cast<float>(x) / static_cast<float>(size - 1) - 0.5f) * worldSize;
+            glm::vec2 worldXZ(worldX, worldZ);
+            float warpX = terrainValueNoise(worldXZ * 0.015f + glm::vec2(5.2f, 88.1f));
+            float warpY = terrainValueNoise(worldXZ * 0.017f + glm::vec2(41.7f, 12.3f));
+            float grassPatch =
+                terrainValueNoise(worldXZ * 0.06f + glm::vec2(19.3f, 4.7f)) * 0.7f +
+                terrainValueNoise(worldXZ * 0.15f + glm::vec2(58.1f, 91.4f)) * 0.3f;
+            float gravelPatch =
+                terrainValueNoise(worldXZ * 0.08f + glm::vec2(71.2f, 33.6f)) * 0.7f +
+                terrainValueNoise(worldXZ * 0.2f + glm::vec2(12.9f, 47.5f)) * 0.3f;
+
+            size_t offset = (static_cast<size_t>(y) * size + x) * 4;
+            pixels[offset] = encodeUNorm(warpX);
+            pixels[offset + 1] = encodeUNorm(warpY);
+            pixels[offset + 2] = encodeUNorm(grassPatch);
+            pixels[offset + 3] = encodeUNorm(gravelPatch);
+        }
+    }
+    return pixels;
 }
 
 float terrainGravelAmount(const Terrain& terrain, float x, float z) {
@@ -264,6 +300,11 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
     std::vector<uint8_t> rockPixelsB = RockTextureGenerator::generate(kTerrainTextureRes, rockVariantB);
     rockTextureB_ = std::make_unique<Texture>(Texture::fromPixels(
         *context_, *commands_, kTerrainTextureRes, kTerrainTextureRes, rockPixelsB, /*repeat=*/true));
+    std::vector<uint8_t> terrainControlPixels =
+        generateTerrainControlPixels(kTerrainTextureRes, /*worldSize=*/180.0f);
+    terrainControlTexture_ = std::make_unique<Texture>(Texture::fromPixels(
+        *context_, *commands_, kTerrainTextureRes, kTerrainTextureRes, terrainControlPixels,
+        /*repeat=*/false));
     std::vector<uint8_t> trackPixels = TrackTextureGenerator::generate(128);
     trackTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 128, 128, trackPixels, /*repeat=*/false));
@@ -297,11 +338,13 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
     boundaryWallTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 128, 128, boundaryWallPixels, /*repeat=*/true));
     // Terrain patch-blends grass A/B and gravel A/B, then blends that by
-    // height (see heightBlend in PushConstants/basic.frag); everything else
-    // just binds a single texture into all four slots since only the first
-    // is ever sampled for them.
+    // height (see heightBlend in PushConstants/basic.frag), using the fifth
+    // control texture for its pre-baked UV warp and patch masks. Everything
+    // else binds a single texture into the albedo slots and lets Pipeline
+    // supply that same texture as the unused control-map fallback.
     terrainMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*grassTextureA_, *grassTextureB_,
-                                                                    *rockTextureA_, *rockTextureB_);
+                                                                    *rockTextureA_, *rockTextureB_,
+                                                                    terrainControlTexture_.get());
     trackMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*trackTexture_, *trackTexture_,
                                                                   *trackTexture_, *trackTexture_);
     cloudMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*cloudTexture_, *cloudTexture_,
@@ -527,6 +570,7 @@ Application::~Application() {
     rockStandaloneTextures_.clear();
     cloudTexture_.reset();
     trackTexture_.reset();
+    terrainControlTexture_.reset();
     rockTextureB_.reset();
     rockTextureA_.reset();
     grassTextureB_.reset();

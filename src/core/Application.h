@@ -115,6 +115,10 @@ private:
     std::unique_ptr<Texture> grassTextureB_;
     std::unique_ptr<Texture> rockTextureA_;
     std::unique_ptr<Texture> rockTextureB_;
+    // Whole-map RGBA lookup for terrain UV warp and material patch masks;
+    // generated once so the fragment shader does not rebuild those six
+    // procedural noise values for every covered pixel.
+    std::unique_ptr<Texture> terrainControlTexture_;
     std::unique_ptr<Texture> trackTexture_;
     std::unique_ptr<Texture> cloudTexture_;
     std::unique_ptr<Texture> crateTexture_;

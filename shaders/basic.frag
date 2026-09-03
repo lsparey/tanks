@@ -38,6 +38,11 @@ layout(set = 1, binding = 0) uniform sampler2D materialTexHighA;
 layout(set = 1, binding = 1) uniform sampler2D materialTexHighB;
 layout(set = 1, binding = 2) uniform sampler2D materialTexLowA;
 layout(set = 1, binding = 3) uniform sampler2D materialTexLowB;
+// Terrain-only lookup generated once at startup. RG stores the two domain-
+// warp noise values; BA stores the grass/gravel patch masks. Other material
+// sets bind their regular texture here because their shader paths never read
+// this binding.
+layout(set = 1, binding = 4) uniform sampler2D terrainControlTex;
 layout(set = 2, binding = 0) uniform accelerationStructureEXT sceneTLAS;
 layout(set = 3, binding = 0) uniform sampler2D historyShadow;
 
@@ -374,10 +379,17 @@ void main() {
     if (pc.materialType > 0.5 && pc.materialType < 1.5) {
         sampleUV = fragWorldPos.xz / 3.0;  // matches Terrain.cpp
     }
+    vec4 terrainControl = vec4(0.0);
     if (pc.heightBlend > 0.5) {
-        vec2 warp = vec2(valueNoise2D(fragWorldPos.xz * 0.015 + vec2(5.2, 88.1)),
-                         valueNoise2D(fragWorldPos.xz * 0.017 + vec2(41.7, 12.3)));
-        sampleUV += (warp - 0.5) * 0.6;
+        // The control map covers the whole 180-unit terrain. Half-texel
+        // inset maps its world-space edges to texel centres, preserving the
+        // CPU-baked noise without sampling beyond the clamped texture edge.
+        const float kTerrainWorldSize = 180.0;
+        const float kControlTexel = 1.0 / 512.0;
+        vec2 controlUV = (fragWorldPos.xz / kTerrainWorldSize + 0.5) * (1.0 - kControlTexel) +
+                         0.5 * kControlTexel;
+        terrainControl = texture(terrainControlTex, controlUV);
+        sampleUV += (terrainControl.rg - 0.5) * 0.6;
     }
 
     vec4 texSample = texture(materialTexHighA, sampleUV);
@@ -403,10 +415,8 @@ void main() {
         // shape; independent noise (different frequency/offset) per zone so
         // grass patches and gravel patches don't line up with each other or
         // with the height-based zone boundary below.
-        float grassPatch = valueNoise2D(fragWorldPos.xz * 0.06 + vec2(19.3, 4.7)) * 0.7 +
-                           valueNoise2D(fragWorldPos.xz * 0.15 + vec2(58.1, 91.4)) * 0.3;
-        float gravelPatch = valueNoise2D(fragWorldPos.xz * 0.08 + vec2(71.2, 33.6)) * 0.7 +
-                            valueNoise2D(fragWorldPos.xz * 0.2 + vec2(12.9, 47.5)) * 0.3;
+        float grassPatch = terrainControl.b;
+        float gravelPatch = terrainControl.a;
         vec3 grassColor =
             mix(texColor, texture(materialTexHighB, sampleUV).rgb, smoothstep(0.4, 0.6, grassPatch));
         vec3 gravelColor = mix(texture(materialTexLowA, sampleUV).rgb, texture(materialTexLowB, sampleUV).rgb,
