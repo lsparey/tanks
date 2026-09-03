@@ -46,18 +46,20 @@ public:
     static Mesh treeBark(VulkanContext& ctx, CommandContext& commands, glm::vec3 tint, uint32_t seed);
     static Mesh treeLeaves(VulkanContext& ctx, CommandContext& commands, glm::vec3 tint, uint32_t seed);
 
-    // A procedural boulder: a twice-subdivided icosahedron (320 faces) with
+    // A procedural boulder: a subdivided icosahedron with
     // broad, ridged, and fine layers of fractal displacement for an
     // irregular silhouette reminiscent of the canopy's nested forms.
-    // Flat per-face normals (same faceted-shading approach as cube()), a
-    // slight per-face color jitter around baseColor, and a spherical UV so
+    // Smooth averaged normals, slight per-face color jitter around
+    // baseColor, and a spherical UV so
     // an actual rock texture (see Application's rockMaterialSet_) wraps
     // around it instead of flat vertex color. Different seeds give visibly
     // different rocks from the same call, so a handful of variants (see
     // Application's rockMeshes_) reads as varied rubble rather than the
     // same shape copy-pasted everywhere.
+    // subdivisions defaults to the full 1280-face version; callers drawing
+    // tiny scree can request a cheaper LOD with the same overall shape.
     static Mesh rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColor,
-                      uint32_t seed);
+                      uint32_t seed, int subdivisions = 3);
 
     // A long, low chain of overlapping sedimentary plates with shallow
     // strata, an uneven top, and fractured ends. Intended to emerge from

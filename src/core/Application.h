@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
@@ -84,6 +85,17 @@ private:
     bool firstFrame_ = true;
     uint32_t frameCounter_ = 0;
 
+    // Four GPU timestamps per frame-in-flight slot: frame start, post-TLAS,
+    // post-3D scene, and frame end. Results are read only after that slot's
+    // fence signals, so profiling never stalls the active GPU submission.
+    VkQueryPool gpuTimestampPool_ = VK_NULL_HANDLE;
+    std::array<bool, CommandContext::kFramesInFlight> gpuTimestampsReady_{};
+    bool gpuTimingInitialized_ = false;
+    float gpuTimestampPeriodNs_ = 1.0f;
+    float gpuTlasMs_ = 0.0f;
+    float gpuSceneMs_ = 0.0f;
+    float gpuTotalMs_ = 0.0f;
+
     std::unique_ptr<VulkanContext> context_;
     std::unique_ptr<Swapchain> swapchain_;
     std::unique_ptr<CommandContext> commands_;
@@ -142,6 +154,9 @@ private:
     // the boundary's wall of light.
     float boundaryHalfExtent_ = 0.0f;
     std::vector<std::unique_ptr<Mesh>> rockMeshes_;  // small pool of distinct rock shapes
+    // 80-face versions for decorative scree that only covers a few pixels;
+    // never used for collision or ray tracing.
+    std::vector<std::unique_ptr<Mesh>> smallRockMeshes_;
     // Small pool of distinct fractal branch structures, one bark + one
     // leaves mesh per variant (see Mesh::treeBark/treeLeaves) -- matching
     // indices in each vector share the same seed, so their branch tips line

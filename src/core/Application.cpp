@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <iomanip>
 #include <iostream>
 #include <random>
 #include <string>
@@ -30,6 +31,7 @@ namespace {
 
 constexpr uint32_t kWindowWidth = 1280;
 constexpr uint32_t kWindowHeight = 720;
+constexpr uint32_t kGpuTimestampsPerFrame = 4;
 
 // Terrain height below which a basin can start filling with water -- tuned
 // against the heightmap's actual range (roughly -2.2..-4 on the low end,
@@ -170,6 +172,18 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
     : screenshotRequest_(std::move(screenshotRequest)) {
     initWindow();
     context_ = std::make_unique<VulkanContext>(window_);
+
+    VkPhysicalDeviceProperties physicalDeviceProperties{};
+    vkGetPhysicalDeviceProperties(context_->physicalDevice(), &physicalDeviceProperties);
+    gpuTimestampPeriodNs_ = physicalDeviceProperties.limits.timestampPeriod;
+    VkQueryPoolCreateInfo timestampPoolInfo{};
+    timestampPoolInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+    timestampPoolInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    timestampPoolInfo.queryCount =
+        kGpuTimestampsPerFrame * CommandContext::kFramesInFlight;
+    VK_CHECK(vkCreateQueryPool(context_->device(), &timestampPoolInfo, nullptr,
+                               &gpuTimestampPool_));
+
     swapchain_ = std::make_unique<Swapchain>(*context_, window_);
     commands_ = std::make_unique<CommandContext>(*context_);
     historyBuffer_ = std::make_unique<HistoryBuffer>(*context_, *commands_, swapchain_->extent());
@@ -341,6 +355,9 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
     for (size_t i = 0; i < sizeof(rockShades) / sizeof(rockShades[0]); ++i) {
         rockMeshes_.push_back(std::make_unique<Mesh>(
             Mesh::rock(*context_, *commands_, rockShades[i], static_cast<uint32_t>(i) + 1)));
+        smallRockMeshes_.push_back(std::make_unique<Mesh>(Mesh::rock(
+            *context_, *commands_, rockShades[i], static_cast<uint32_t>(i) + 1,
+            /*subdivisions=*/1)));
 
         std::vector<uint8_t> rockPixels = RockTextureGenerator::generate(128, static_cast<uint32_t>(i));
         rockStandaloneTextures_.push_back(std::make_unique<Texture>(
@@ -453,6 +470,11 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
 Application::~Application() {
     if (context_) vkDeviceWaitIdle(context_->device());
 
+    if (context_ && gpuTimestampPool_ != VK_NULL_HANDLE) {
+        vkDestroyQueryPool(context_->device(), gpuTimestampPool_, nullptr);
+        gpuTimestampPool_ = VK_NULL_HANDLE;
+    }
+
     // Destroy in dependency order before the GLFW window disappears.
     historyBuffer_.reset();
     sceneAS_.reset();
@@ -484,6 +506,7 @@ Application::~Application() {
     waterMesh_.reset();
     sedimentaryCliffGrassMesh_.reset();
     sedimentaryCliffMesh_.reset();
+    smallRockMeshes_.clear();
     rockMeshes_.clear();
     treeLeafMeshes_.clear();
     treeBarkMeshes_.clear();
@@ -1324,6 +1347,39 @@ void Application::drawFrame() {
     auto& otherFrame = commands_->frame(1 - currentFrame_);
     VK_CHECK(vkWaitForFences(context_->device(), 1, &otherFrame.inFlight, VK_TRUE, UINT64_MAX));
 
+    // This slot's fence guarantees its previous timestamps are complete.
+    // Read them before resetting/reusing the same query range below; no GPU
+    // wait or pipeline bubble is introduced by the profiler.
+    uint32_t timestampBase = static_cast<uint32_t>(currentFrame_) * kGpuTimestampsPerFrame;
+    if (gpuTimestampsReady_[currentFrame_]) {
+        std::array<uint64_t, kGpuTimestampsPerFrame> timestamps{};
+        VkResult timestampResult = vkGetQueryPoolResults(
+            context_->device(), gpuTimestampPool_, timestampBase, kGpuTimestampsPerFrame,
+            sizeof(timestamps), timestamps.data(), sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
+        if (timestampResult == VK_SUCCESS) {
+            auto elapsedMs = [&](uint32_t begin, uint32_t end) {
+                return static_cast<float>(timestamps[end] - timestamps[begin]) *
+                       gpuTimestampPeriodNs_ / 1'000'000.0f;
+            };
+            float tlasMs = elapsedMs(0, 1);
+            float sceneMs = elapsedMs(1, 2);
+            float totalMs = elapsedMs(0, 3);
+            float blend = gpuTimingInitialized_ ? 0.1f : 1.0f;
+            gpuTlasMs_ = glm::mix(gpuTlasMs_, tlasMs, blend);
+            gpuSceneMs_ = glm::mix(gpuSceneMs_, sceneMs, blend);
+            gpuTotalMs_ = glm::mix(gpuTotalMs_, totalMs, blend);
+            gpuTimingInitialized_ = true;
+
+            if (frameCounter_ > 0 && frameCounter_ % 120 == 0) {
+                std::cout << std::fixed << std::setprecision(2)
+                          << "GPU: " << gpuTotalMs_ << " ms total (TLAS " << gpuTlasMs_
+                          << " ms, 3D scene " << gpuSceneMs_ << " ms, remainder "
+                          << std::max(0.0f, gpuTotalMs_ - gpuTlasMs_ - gpuSceneMs_) << " ms)"
+                          << std::defaultfloat << std::endl;
+            }
+        }
+    }
+
     uint32_t imageIndex = 0;
     VkResult acquireResult =
         vkAcquireNextImageKHR(context_->device(), swapchain_->handle(), UINT64_MAX,
@@ -1396,11 +1452,18 @@ void Application::drawFrame() {
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     VK_CHECK(vkBeginCommandBuffer(frame.commandBuffer, &beginInfo));
 
+    vkCmdResetQueryPool(frame.commandBuffer, gpuTimestampPool_, timestampBase,
+                        kGpuTimestampsPerFrame);
+    vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                         gpuTimestampPool_, timestampBase + 0);
+
     // Rebuild this frame-in-flight slot's TLAS from the current scene state
     // (acceleration structure builds can't happen inside a dynamic
     // rendering scope, so this must be before vkCmdBeginRendering). Read by
     // basic.frag via ray query for shadow tracing.
     sceneAS_->rebuild(frame.commandBuffer, currentFrame_, gatherRayTracingInstances());
+    vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                         gpuTimestampPool_, timestampBase + 1);
 
     VkImage colorImage = swapchain_->image(imageIndex);
     VkImage historyWriteImage = historyBuffer_->image(currentFrame_);
@@ -1711,6 +1774,11 @@ void Application::drawFrame() {
     // rocks_ above, just many more, much smaller, and (see
     // gatherRayTracingInstances) not ray-traced.
     for (const auto& rock : smallRocks_) {
+        // Beyond this range these 8-22 cm stones are sub-pixel detail. Skip
+        // their draw entirely rather than processing geometry that cannot
+        // contribute visibly; the gravel material still carries the region.
+        constexpr float kSmallRockDrawDistance = 55.0f;
+        if (glm::distance(camera_.position(), rock.position) > kSmallRockDrawDistance) continue;
         vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(),
                                  1, 1, &rockMaterialSets_[rock.meshVariant], 0, nullptr);
         Pipeline::PushConstants rockPc{};
@@ -1719,7 +1787,7 @@ void Application::drawFrame() {
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(rockPc), &rockPc);
-        rockMeshes_[rock.meshVariant]->bindAndDraw(frame.commandBuffer);
+        smallRockMeshes_[rock.meshVariant]->bindAndDraw(frame.commandBuffer);
     }
 
     // Layered cliff outcrops use a warm gravel variant, but distinct
@@ -1873,6 +1941,8 @@ void Application::drawFrame() {
               fpsColor);
 
     vkCmdEndRendering(frame.commandBuffer);
+    vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                         gpuTimestampPool_, timestampBase + 2);
 
     // HudRenderer's pipeline declares a single color attachment, which is
     // incompatible with the 2-color-attachment scope above -- end that scope
@@ -1967,6 +2037,9 @@ void Application::drawFrame() {
     presentDepInfo.pImageMemoryBarriers = &toPresent;
     vkCmdPipelineBarrier2(frame.commandBuffer, &presentDepInfo);
 
+    vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                         gpuTimestampPool_, timestampBase + 3);
+
     VK_CHECK(vkEndCommandBuffer(frame.commandBuffer));
 
     VkSemaphoreSubmitInfo waitSemaphoreInfo{};
@@ -1995,6 +2068,7 @@ void Application::drawFrame() {
     submitInfo.pSignalSemaphoreInfos = &signalSemaphoreInfo;
 
     VK_CHECK(vkQueueSubmit2(context_->graphicsQueue(), 1, &submitInfo, frame.inFlight));
+    gpuTimestampsReady_[currentFrame_] = true;
 
     if (captureScreenshot) {
         // Screenshots are rare, explicit (CLI- or key-triggered) events, not

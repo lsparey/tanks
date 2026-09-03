@@ -315,7 +315,8 @@ Mesh Mesh::quad(VulkanContext& ctx, CommandContext& commands, glm::vec3 color) {
     return Mesh(ctx, commands, vertices, indices);
 }
 
-Mesh Mesh::rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColor, uint32_t seed) {
+Mesh Mesh::rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColor, uint32_t seed,
+                int subdivisions) {
     const float t = (1.0f + std::sqrt(5.0f)) / 2.0f;
     std::vector<glm::vec3> verts = {
         glm::normalize(glm::vec3(-1, t, 0)), glm::normalize(glm::vec3(1, t, 0)),
@@ -336,9 +337,8 @@ Mesh Mesh::rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColo
     // than existing only in the material normal. The resulting meshes are
     // still tiny compared with the terrain and are reused by every rock
     // instance, so this doesn't multiply geometry by the instance count.
-    subdivideIcosphere(verts, faces);
-    subdivideIcosphere(verts, faces);
-    subdivideIcosphere(verts, faces);
+    subdivisions = std::clamp(subdivisions, 0, 3);
+    for (int level = 0; level < subdivisions; ++level) subdivideIcosphere(verts, faces);
 
     // Multi-octave ("fractal") radius displacement per unique vertex
     // direction -- large dents plus fine surface roughness layered

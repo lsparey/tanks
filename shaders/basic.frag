@@ -249,12 +249,13 @@ const int kShadowSamples = 3;
 const int kShadowEdgeExtraSamples = 5;
 const float kConeAngle = 0.05;
 
-float traceSoftShadow(vec3 origin, vec3 lightDir, float tMax, float noiseSeed) {
+float traceSoftShadow(vec3 origin, vec3 lightDir, float tMax, float noiseSeed,
+                      int sampleCount, int edgeExtraSamples) {
     vec3 t, b;
     buildBasis(lightDir, t, b);
 
     float sum = 0.0;
-    for (int i = 0; i < kShadowSamples; ++i) {
+    for (int i = 0; i < sampleCount; ++i) {
         float u1 = fract(noiseSeed + float(i) * 0.6180339887);   // golden-ratio jitter
         float u2 = fract(noiseSeed * 1.618 + float(i) * 0.3819660113);
         float angle = u1 * 6.2831853;
@@ -263,11 +264,11 @@ float traceSoftShadow(vec3 origin, vec3 lightDir, float tMax, float noiseSeed) {
         sum += traceShadow(origin, jitteredDir, tMax);
     }
 
-    float coarseAvg = sum / float(kShadowSamples);
+    float coarseAvg = sum / float(sampleCount);
     if (coarseAvg < 0.001 || coarseAvg > 0.999) return coarseAvg;
 
-    int totalSamples = kShadowSamples + kShadowEdgeExtraSamples;
-    for (int i = kShadowSamples; i < totalSamples; ++i) {
+    int totalSamples = sampleCount + edgeExtraSamples;
+    for (int i = sampleCount; i < totalSamples; ++i) {
         float u1 = fract(noiseSeed + float(i) * 0.6180339887);
         float u2 = fract(noiseSeed * 1.618 + float(i) * 0.3819660113);
         float angle = u1 * 6.2831853;
@@ -305,9 +306,10 @@ vec3 cosineSampleHemisphere(vec3 n, float u1, float u2) {
     return normalize(x * t + y * b + z * n);
 }
 
-float traceAO(vec3 origin, vec3 normal, float seedBase) {
+float traceAO(vec3 origin, vec3 normal, float seedBase, int sampleCount) {
+    if (sampleCount <= 0) return 1.0;
     float occlusion = 0.0;
-    for (int i = 0; i < kAOSamples; ++i) {
+    for (int i = 0; i < sampleCount; ++i) {
         // Different irrational offsets than the shadow jitter's, so the two
         // don't end up correlated (same seedBase, different sample set).
         float u1 = fract(seedBase + float(i) * 0.7548776662);
@@ -315,7 +317,7 @@ float traceAO(vec3 origin, vec3 normal, float seedBase) {
         vec3 sampleDir = cosineSampleHemisphere(normal, u1, u2);
         occlusion += 1.0 - traceShadow(origin, sampleDir, kAORadius);
     }
-    return 1.0 - kAOStrength * (occlusion / float(kAOSamples));
+    return 1.0 - kAOStrength * (occlusion / float(sampleCount));
 }
 
 // The swapchain's attachment format is sRGB (see Swapchain::imageFormat_),
@@ -354,6 +356,7 @@ const float kFogStartDistance = 60.0;
 const float kFogDensity = 0.004;
 
 void main() {
+    float currentViewDist = length(frame.cameraPos.xyz - fragWorldPos);
     // Domain-warp the terrain's sample UV with a low-frequency (world-space)
     // noise offset so its many texture repeats (60 across the current
     // 180-unit terrain -- see kTextureRepeatsPerUnit in Terrain.cpp) look
@@ -448,24 +451,44 @@ void main() {
         vec3 luminanceWeights = vec3(0.299, 0.587, 0.114);
         // Follow the material visible at this point. Previously every pixel,
         // including exposed gravel, used the first grass texture as height.
-        vec3 bumpCenterColor = mix(grassColor, gravelColor, rockiness);
-        vec3 grassU = mix(texture(materialTexHighA, sampleUV + vec2(kTerrainBumpTexelStep, 0.0)).rgb,
-                          texture(materialTexHighB, sampleUV + vec2(kTerrainBumpTexelStep, 0.0)).rgb,
-                          smoothstep(0.4, 0.6, grassPatch));
-        vec3 grassV = mix(texture(materialTexHighA, sampleUV + vec2(0.0, kTerrainBumpTexelStep)).rgb,
-                          texture(materialTexHighB, sampleUV + vec2(0.0, kTerrainBumpTexelStep)).rgb,
-                          smoothstep(0.4, 0.6, grassPatch));
-        vec3 gravelU = mix(texture(materialTexLowA, sampleUV + vec2(kTerrainBumpTexelStep, 0.0)).rgb,
-                           texture(materialTexLowB, sampleUV + vec2(kTerrainBumpTexelStep, 0.0)).rgb,
-                           smoothstep(0.4, 0.6, gravelPatch));
-        vec3 gravelV = mix(texture(materialTexLowA, sampleUV + vec2(0.0, kTerrainBumpTexelStep)).rgb,
-                           texture(materialTexLowB, sampleUV + vec2(0.0, kTerrainBumpTexelStep)).rgb,
-                           smoothstep(0.4, 0.6, gravelPatch));
-        float heightCenter = dot(bumpCenterColor, luminanceWeights);
-        float heightU = dot(mix(grassU, gravelU, rockiness), luminanceWeights);
-        float heightV = dot(mix(grassV, gravelV, rockiness), luminanceWeights);
-        float materialBumpStrength = mix(2.2, 5.0, rockiness);
-        terrainBump = vec2(heightU - heightCenter, heightV - heightCenter) * materialBumpStrength;
+        // Micro-bump is not resolvable in the distance. Nearby, sample only
+        // the dominant grass/rock pair instead of both pairs at both offset
+        // positions; the blended center color still makes transitions
+        // continuous while halving the extra texture reads from eight to four.
+        if (currentViewDist < 60.0) {
+            vec3 bumpCenterColor = mix(grassColor, gravelColor, rockiness);
+            vec3 bumpU, bumpV;
+            if (rockiness < 0.5) {
+                float patchBlend = smoothstep(0.4, 0.6, grassPatch);
+                bumpU = mix(texture(materialTexHighA,
+                                    sampleUV + vec2(kTerrainBumpTexelStep, 0.0)).rgb,
+                            texture(materialTexHighB,
+                                    sampleUV + vec2(kTerrainBumpTexelStep, 0.0)).rgb,
+                            patchBlend);
+                bumpV = mix(texture(materialTexHighA,
+                                    sampleUV + vec2(0.0, kTerrainBumpTexelStep)).rgb,
+                            texture(materialTexHighB,
+                                    sampleUV + vec2(0.0, kTerrainBumpTexelStep)).rgb,
+                            patchBlend);
+            } else {
+                float patchBlend = smoothstep(0.4, 0.6, gravelPatch);
+                bumpU = mix(texture(materialTexLowA,
+                                    sampleUV + vec2(kTerrainBumpTexelStep, 0.0)).rgb,
+                            texture(materialTexLowB,
+                                    sampleUV + vec2(kTerrainBumpTexelStep, 0.0)).rgb,
+                            patchBlend);
+                bumpV = mix(texture(materialTexLowA,
+                                    sampleUV + vec2(0.0, kTerrainBumpTexelStep)).rgb,
+                            texture(materialTexLowB,
+                                    sampleUV + vec2(0.0, kTerrainBumpTexelStep)).rgb,
+                            patchBlend);
+            }
+            float heightCenter = dot(bumpCenterColor, luminanceWeights);
+            float heightU = dot(bumpU, luminanceWeights);
+            float heightV = dot(bumpV, luminanceWeights);
+            float materialBumpStrength = mix(2.2, 5.0, rockiness);
+            terrainBump = vec2(heightU - heightCenter, heightV - heightCenter) * materialBumpStrength;
+        }
     }
     vec3 albedo = fragColor * texColor;
     // Texture alpha times the per-draw opacity (PushConstants::opacity) --
@@ -499,16 +522,27 @@ void main() {
     float noiseSeed =
         fract(interleavedGradientNoise(gl_FragCoord.xy) + frame.cameraPos.w * 0.6180339887);
     vec3 rayOrigin = fragWorldPos + normal * kShadowBias;
-    float rawShadow = traceSoftShadow(rayOrigin, toLight, kShadowTMax, noiseSeed);
+    // Spend rays where their detail is resolvable. Temporal accumulation
+    // converges the reduced medium/far samples over successive frames, while
+    // the near gameplay area keeps the original quality. AO's 0.35-unit
+    // contact detail is too small to see at long range, so it can disappear
+    // entirely beyond 45 units without changing the readable image.
+    int shadowSamples = currentViewDist < 18.0 ? kShadowSamples
+                       : currentViewDist < 45.0 ? 2 : 1;
+    int shadowEdgeSamples = currentViewDist < 18.0 ? kShadowEdgeExtraSamples
+                           : currentViewDist < 45.0 ? 2 : 0;
+    int aoSamples = currentViewDist < 18.0 ? kAOSamples
+                  : currentViewDist < 45.0 ? 1 : 0;
+    float rawShadow = traceSoftShadow(rayOrigin, toLight, kShadowTMax, noiseSeed,
+                                      shadowSamples, shadowEdgeSamples);
     // A different derived seed so AO's samples aren't identical to shadow's.
     float aoSeed = fract(noiseSeed * 2.718281828 + 0.31415926);
-    float rawAO = traceAO(rayOrigin, normal, aoSeed);
+    float rawAO = traceAO(rayOrigin, normal, aoSeed, aoSamples);
 
     // Temporal accumulation: blend this frame's noisy few-sample estimates
     // with history reprojected from last frame, so both terms converge
     // toward a stable, much-higher-effective-sample-count result over a
     // few frames instead of showing raw per-frame noise.
-    float currentViewDist = length(frame.cameraPos.xyz - fragWorldPos);
     vec4 prevClip = frame.prevViewProj * vec4(fragWorldPos, 1.0);
     float shadowFactor = rawShadow;
     float aoFactor = rawAO;
@@ -806,9 +840,6 @@ void main() {
     // majority of fragments) never pay for a ray they'd multiply by zero
     // anyway. Uses shadingNormal (the rippled one for water) so the
     // reflection direction wobbles with the fake waves too.
-    vec3 reflectDir = reflect(-viewDir, shadingNormal);
-    vec3 envColor = skyColor(reflectDir);
-
     // Water specifically: real water's reflectivity and transparency are
     // both strongly view-angle dependent (Fresnel) -- near-mirror at
     // grazing angles, mostly see-through when looking straight down into
@@ -858,7 +889,14 @@ void main() {
         finalAlpha = max(depthAlphaFloor, mix(pc.opacity * 0.4, 0.6, waterFresnel));
     }
 
+    // Matte surfaces do not need an environment color at all. Keeping the
+    // analytic cloud sky and reflection direction inside this uniform branch
+    // avoids a sizeable block of procedural noise work on terrain, foliage,
+    // rocks, crates, and other non-reflective draws without changing output.
+    vec3 envColor = vec3(0.0);
     if (effectiveReflectivity > 0.01) {
+        vec3 reflectDir = reflect(-viewDir, shadingNormal);
+        envColor = skyColor(reflectDir);
         vec3 reflectionHit;
         vec3 reflOrigin = fragWorldPos + normal * kShadowBias;
         if (traceReflection(reflOrigin, reflectDir, kShadowTMax, reflectionHit)) {
