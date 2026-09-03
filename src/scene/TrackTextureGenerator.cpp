@@ -62,27 +62,15 @@ std::vector<uint8_t> TrackTextureGenerator::generate(uint32_t size) {
             float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(size) * 2.0f - 1.0f;
             float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(size) * 2.0f - 1.0f;
 
-            // The ALPHA itself (not just the color) traces out two separate
-            // rails with a gap of undisturbed ground between them -- a
-            // solid band across the whole width reads as a road/railway bed,
-            // not two tank tracks. Each rail is a soft-edged strip centered
-            // at u = +-railCenter; fading at the front/back (v) edges lets
-            // consecutive overlapping stamps merge into a continuous strip
-            // along the direction of travel.
-            // Rails sit near the outer edges of the quad now that the quad's
-            // own width is set to the tank's actual hull width (see
-            // Application::updateTrackMarks) -- the rails should line up
-            // with the outer edges of the tank, not be inset toward center.
+            // Alpha traces one soft-edged track centered on the quad. Fading
+            // at the front/back lets consecutive independent stamps overlap
+            // into a continuous curved trail without rectangular seams.
             float edgeV = glm::smoothstep(0.85f, 1.0f, std::abs(v));
-            float railCenter = 0.78f;
-            float railHalfWidth = 0.20f;
-            float railDist = std::abs(std::abs(u) - railCenter);
-            float railShape = 1.0f - glm::smoothstep(railHalfWidth * 0.7f, railHalfWidth, railDist);
-            float shapeAlpha = railShape * (1.0f - edgeV);
+            float treadShape = 1.0f - glm::smoothstep(0.72f, 0.96f, std::abs(u));
+            float shapeAlpha = treadShape * (1.0f - edgeV);
 
-            // Periodic ridge segments along the direction of travel within
-            // each rail, so it reads as tread links rather than one smooth
-            // stripe.
+            // Periodic ridge segments make the strip read as linked tread
+            // plates rather than a smooth tyre stripe.
             float grit = fbm(static_cast<float>(x) * 0.12f, static_cast<float>(y) * 0.12f, 3);
             float ridge = glm::step(0.5f, glm::fract(v * 6.0f + 0.5f));
             float darkness = glm::clamp(0.55f + 0.35f * ridge + grit * 0.15f, 0.0f, 1.0f);

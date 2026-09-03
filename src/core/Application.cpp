@@ -442,6 +442,10 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
     // loop) -- muzzle blast and shell-trail wisps, see SmokePuff.h.
     smokePuffMesh_ =
         std::make_unique<Mesh>(Mesh::blobCluster(*context_, *commands_, glm::vec3(0.5f, 0.5f, 0.5f)));
+    // Track dust shares SmokePuff's update/draw path, but needs an earthy
+    // vertex tint rather than muzzle smoke's neutral grey.
+    dustPuffMesh_ = std::make_unique<Mesh>(
+        Mesh::blobCluster(*context_, *commands_, glm::vec3(0.32f, 0.23f, 0.13f)));
     // White so the track texture's own baked-in brown color shows through
     // unmodified (same reasoning as terrain's kTerrainColor).
     trackMarkMesh_ = std::make_unique<Mesh>(Mesh::quad(*context_, *commands_, glm::vec3(1.0f)));
@@ -642,6 +646,7 @@ Application::~Application() {
     trackMarkMesh_.reset();
     debrisEmberMesh_.reset();
     debrisChunkMesh_.reset();
+    dustPuffMesh_.reset();
     smokePuffMesh_.reset();
     flashMesh_.reset();
     shellMesh_.reset();
@@ -1086,13 +1091,14 @@ void Application::spawnDynamicLight(glm::vec3 position, glm::vec3 color, float r
 }
 
 void Application::spawnSmokePuff(glm::vec3 position, glm::vec3 velocity, float initialScale,
-                                  float finalScale, float lifetime) {
+                                  float finalScale, float lifetime, bool dust) {
     SmokePuff puff;
     puff.position = position;
     puff.velocity = velocity;
     puff.initialScale = initialScale;
     puff.finalScale = finalScale;
     puff.initialLifetime = puff.lifetimeRemaining = lifetime;
+    puff.dust = dust;
     smokePuffs_.push_back(puff);
 }
 
@@ -1160,38 +1166,110 @@ void Application::destroyBox(Box& box) {
 }
 
 void Application::updateTrackMarks(float deltaTime) {
-    // Drop a new mark roughly every kTrackMarkSpacing units of travel --
-    // well under TrackMark's own length (1.8) so consecutive marks overlap
-    // generously and merge into one continuous strip instead of a chain of
-    // separate blobs with visible gaps between them. The anchor is the
-    // position of the last mark dropped, not the tank's own start position,
-    // so this also naturally stops spawning while the tank is stationary.
-    constexpr float kTrackMarkSpacing = 0.55f;
-    glm::vec3 pos = tank_->position();
-    if (!hasTrackMarkAnchor_ || glm::length(pos - lastTrackMarkPosition_) >= kTrackMarkSpacing) {
-        // Tilt to the local terrain normal (instead of assuming flat ground)
-        // so the decal hugs sloped terrain rather than poking through it;
-        // project the tank's forward onto that normal's tangent plane the
-        // same way Tank itself derives forward_ from flatForward and up_.
-        glm::vec3 normal = terrain_->normalAt(pos.x, pos.z);
-        glm::vec3 rawForward = tank_->forward();
-        glm::vec3 projectedForward =
-            glm::normalize(rawForward - normal * glm::dot(rawForward, normal));
+    constexpr float kTrackMarkSpacing = 0.34f;
+    constexpr float kDustSpacing = 0.72f;
+    constexpr size_t kMaxTrackMarks = 256;
+    const glm::vec3 contactPositions[] = {
+        tank_->leftTrackGroundPosition(),
+        tank_->rightTrackGroundPosition(),
+    };
+    const float contactSpeeds[] = {
+        tank_->leftTrackGroundSpeed(),
+        tank_->rightTrackGroundSpeed(),
+    };
+    const float contactAmounts[] = {
+        tank_->leftTrackContactAmount(),
+        tank_->rightTrackContactAmount(),
+    };
 
-        TrackMark mark;
-        mark.position = glm::vec3(pos.x, terrain_->heightAt(pos.x, pos.z) + 0.05f, pos.z);
-        mark.up = normal;
-        mark.forward = projectedForward;
-        mark.width = tank_->hullWidth();
-        trackMarks_.push_back(mark);
-        lastTrackMarkPosition_ = pos;
-        hasTrackMarkAnchor_ = true;
+    for (size_t trackIndex = 0; trackIndex < trackTrails_.size(); ++trackIndex) {
+        TrackTrailState& trail = trackTrails_[trackIndex];
+        glm::vec3 current = contactPositions[trackIndex];
+        current.y = terrain_->heightAt(current.x, current.z);
+        if (!trail.initialized) {
+            trail.previousPosition = current;
+            trail.initialized = true;
+            continue;
+        }
+
+        glm::vec3 segment = current - trail.previousPosition;
+        float segmentLength = glm::length(segment);
+        if (segmentLength < 1e-5f) continue;
+        glm::vec3 travelDirection = segment / segmentLength;
+        float trackSpeed = contactSpeeds[trackIndex];
+        float contactAmount = contactAmounts[trackIndex];
+        float speedAmount = glm::smoothstep(0.25f, 6.0f, trackSpeed);
+        float accelerationAmount =
+            glm::clamp(std::abs(tank_->longitudinalAcceleration()) / 8.0f, 0.0f, 1.0f);
+        float slipAmount = glm::clamp(tank_->lateralSlipSpeed() / 1.25f, 0.0f, 1.0f);
+        float turnAmount = glm::clamp(tank_->angularSpeed() / 1.0f, 0.0f, 1.0f);
+        float markIntensity = glm::clamp(0.55f + speedAmount * 0.12f +
+                                             accelerationAmount * 0.18f + slipAmount * 0.12f +
+                                             turnAmount * 0.12f,
+                                         0.55f, 1.0f);
+        float dustIntensity =
+            speedAmount * (0.18f + accelerationAmount * 0.30f + slipAmount * 0.28f +
+                           turnAmount * 0.28f);
+
+        auto emitAtSpacing = [&](float& carriedDistance, float spacing, auto&& emit) {
+            float traversed = 0.0f;
+            float distanceToEmission = spacing - carriedDistance;
+            while (traversed + distanceToEmission <= segmentLength) {
+                traversed += distanceToEmission;
+                emit(traversed / segmentLength);
+                carriedDistance = 0.0f;
+                distanceToEmission = spacing;
+            }
+            carriedDistance += segmentLength - traversed;
+        };
+
+        emitAtSpacing(trail.distanceSinceMark, kTrackMarkSpacing, [&](float t) {
+            if (contactAmount < 0.2f) return;
+            glm::vec3 point = glm::mix(trail.previousPosition, current, t);
+            glm::vec3 normal = terrain_->normalAt(point.x, point.z);
+            glm::vec3 tangent = travelDirection - normal * glm::dot(travelDirection, normal);
+            if (glm::length(tangent) < 1e-5f) tangent = tank_->forward();
+
+            TrackMark mark;
+            mark.position = point + normal * 0.05f;
+            mark.up = normal;
+            mark.forward = glm::normalize(tangent);
+            mark.width = tank_->trackWidth();
+            mark.length = 0.9f;
+            mark.intensity = markIntensity * contactAmount;
+            trackMarks_.push_back(mark);
+        });
+
+        emitAtSpacing(trail.distanceSinceDust, kDustSpacing, [&](float t) {
+            if (dustIntensity * contactAmount < 0.06f) return;
+            glm::vec3 point = glm::mix(trail.previousPosition, current, t);
+            glm::vec3 normal = terrain_->normalAt(point.x, point.z);
+            glm::vec3 tangent = travelDirection - normal * glm::dot(travelDirection, normal);
+            if (glm::length(tangent) < 1e-5f) tangent = tank_->forward();
+            tangent = glm::normalize(tangent);
+            glm::vec3 sideways = glm::normalize(glm::cross(normal, tangent));
+            float noise = terrainHash(glm::vec2(point.x, point.z) * 2.7f +
+                                      glm::vec2(static_cast<float>(trackIndex) * 17.0f));
+            glm::vec3 velocity = normal * glm::mix(0.35f, 0.75f, noise) - tangent * 0.25f +
+                                 sideways * ((noise - 0.5f) * 0.45f);
+            float intensity = glm::clamp(dustIntensity * contactAmount, 0.0f, 1.0f);
+            spawnSmokePuff(point + normal * 0.12f, velocity,
+                           glm::mix(0.09f, 0.17f, intensity),
+                           glm::mix(0.32f, 0.68f, intensity),
+                           glm::mix(0.42f, 0.68f, intensity), /*dust=*/true);
+        });
+
+        trail.previousPosition = current;
     }
 
     for (auto& mark : trackMarks_) mark.update(deltaTime);
     trackMarks_.erase(std::remove_if(trackMarks_.begin(), trackMarks_.end(),
                                       [](const TrackMark& m) { return !m.alive; }),
                        trackMarks_.end());
+    if (trackMarks_.size() > kMaxTrackMarks) {
+        trackMarks_.erase(trackMarks_.begin(),
+                          trackMarks_.begin() + (trackMarks_.size() - kMaxTrackMarks));
+    }
 }
 
 void Application::buildAccelerationStructures() {
@@ -2124,7 +2202,8 @@ void Application::drawFrame() {
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(puffPc), &puffPc);
-        smokePuffMesh_->bindAndDraw(frame.commandBuffer);
+        const Mesh& puffMesh = puff.dust ? *dustPuffMesh_ : *smokePuffMesh_;
+        puffMesh.bindAndDraw(frame.commandBuffer);
     }
 
     for (const auto& effect : impactEffects_) {

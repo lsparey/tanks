@@ -39,6 +39,8 @@ constexpr float kAccelerationPitchScale = 0.006f;
 constexpr float kAccelerationRollScale = 0.006f;
 constexpr float kMaximumDynamicPitch = 0.0610865f;  // 3.5 degrees
 constexpr float kMaximumDynamicRoll = 0.0523599f;   // 3 degrees
+constexpr float kTrackCenterOffsetScale = 0.39f;
+constexpr float kGroundFeedbackResponse = 10.0f;
 
 float moveTowards(float value, float target, float maxDelta) {
     if (value < target) return std::min(value + maxDelta, target);
@@ -327,7 +329,13 @@ void Tank::simulateMovement(
     glm::vec2 acceleration = (velocity_ - velocityBeforeStep) / deltaTime;
     glm::vec2 currentForward(std::sin(yaw_), std::cos(yaw_));
     glm::vec2 currentRight(currentForward.y, -currentForward.x);
-    updateSuspensionPose(terrain, deltaTime, glm::dot(acceleration, currentForward),
+    float longitudinalAcceleration = glm::dot(acceleration, currentForward);
+    float feedbackBlend = 1.0f - std::exp(-kGroundFeedbackResponse * deltaTime);
+    longitudinalAcceleration_ =
+        glm::mix(longitudinalAcceleration_, longitudinalAcceleration, feedbackBlend);
+    lateralSlipSpeed_ = glm::mix(lateralSlipSpeed_, std::abs(glm::dot(velocity_, currentRight)),
+                                 feedbackBlend);
+    updateSuspensionPose(terrain, deltaTime, longitudinalAcceleration,
                          glm::dot(acceleration, currentRight));
 }
 
@@ -402,6 +410,44 @@ void Tank::updateSuspensionPose(const Terrain& terrain, float deltaTime,
         glm::normalize(horizontalRight + glm::vec3(0.0f, std::tan(suspensionRoll_), 0.0f));
     visualUp_ = glm::normalize(glm::cross(visualForward_, rolledRight));
     visualRight_ = glm::normalize(glm::cross(visualUp_, visualForward_));
+
+    auto contactAmount = [&](float side) {
+        glm::vec3 visualContact =
+            visualPosition_ + visualRight_ * (side * hullWidth_ * kTrackCenterOffsetScale);
+        float groundHeight = terrain.heightAt(visualContact.x, visualContact.z);
+        float gap = visualContact.y - groundHeight;
+        return 1.0f - glm::smoothstep(0.08f, 0.28f, gap);
+    };
+    leftTrackContactAmount_ = contactAmount(-1.0f);
+    rightTrackContactAmount_ = contactAmount(1.0f);
+}
+
+glm::vec3 Tank::leftTrackGroundPosition() const {
+    glm::vec2 flatRight(std::cos(yaw_), -std::sin(yaw_));
+    glm::vec2 xz(position_.x, position_.z);
+    xz -= flatRight * (hullWidth_ * kTrackCenterOffsetScale);
+    return glm::vec3(xz.x, position_.y, xz.y);
+}
+
+glm::vec3 Tank::rightTrackGroundPosition() const {
+    glm::vec2 flatRight(std::cos(yaw_), -std::sin(yaw_));
+    glm::vec2 xz(position_.x, position_.z);
+    xz += flatRight * (hullWidth_ * kTrackCenterOffsetScale);
+    return glm::vec3(xz.x, position_.y, xz.y);
+}
+
+float Tank::leftTrackGroundSpeed() const {
+    glm::vec2 flatForward(std::sin(yaw_), std::cos(yaw_));
+    glm::vec2 contactVelocity =
+        velocity_ + flatForward * (angularVelocity_ * hullWidth_ * kTrackCenterOffsetScale);
+    return glm::length(contactVelocity);
+}
+
+float Tank::rightTrackGroundSpeed() const {
+    glm::vec2 flatForward(std::sin(yaw_), std::cos(yaw_));
+    glm::vec2 contactVelocity =
+        velocity_ - flatForward * (angularVelocity_ * hullWidth_ * kTrackCenterOffsetScale);
+    return glm::length(contactVelocity);
 }
 
 glm::mat4 Tank::hullWorldMatrix() const {

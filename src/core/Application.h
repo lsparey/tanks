@@ -152,6 +152,7 @@ private:
     std::unique_ptr<Mesh> debrisChunkMesh_;
     std::unique_ptr<Mesh> debrisEmberMesh_;
     std::unique_ptr<Mesh> smokePuffMesh_;
+    std::unique_ptr<Mesh> dustPuffMesh_;
     std::unique_ptr<Mesh> trackMarkMesh_;
     std::unique_ptr<Mesh> waterMesh_;  // null if no qualifying low-lying basin exists this run
     std::unique_ptr<Mesh> boundaryLineMesh_;
@@ -195,8 +196,13 @@ private:
     std::vector<DynamicLight> dynamicLights_;
     std::vector<SmokePuff> smokePuffs_;
     std::vector<TrackMark> trackMarks_;
-    glm::vec3 lastTrackMarkPosition_{0.0f};
-    bool hasTrackMarkAnchor_ = false;
+    struct TrackTrailState {
+        glm::vec3 previousPosition{0.0f};
+        float distanceSinceMark = 0.0f;
+        float distanceSinceDust = 0.0f;
+        bool initialized = false;
+    };
+    std::array<TrackTrailState, 2> trackTrails_;
     std::vector<TreeInstance> trees_;
     std::vector<RockInstance> rocks_;
     std::vector<RockInstance> sedimentaryCliffs_;
@@ -234,7 +240,7 @@ private:
     void spawnDynamicLight(glm::vec3 position, glm::vec3 color, float radius, float intensity,
                             float lifetime);
     void spawnSmokePuff(glm::vec3 position, glm::vec3 velocity, float initialScale, float finalScale,
-                         float lifetime);
+                        float lifetime, bool dust = false);
     void destroyBox(Box& box);
     void updateTrackMarks(float deltaTime);
     void fireProjectile();

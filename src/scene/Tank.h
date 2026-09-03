@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <memory>
 #include <string>
 #include <vector>
@@ -60,6 +61,19 @@ public:
     glm::vec3 forward() const { return forward_; }
     // Hull's local-space X extent (outer edge to outer edge) -- see load().
     float hullWidth() const { return hullWidth_; }
+    // Physical ground-contact locations used by independent tread trails.
+    // They follow the stable gameplay pose rather than the oscillating
+    // suspension render pose.
+    glm::vec3 leftTrackGroundPosition() const;
+    glm::vec3 rightTrackGroundPosition() const;
+    float leftTrackGroundSpeed() const;
+    float rightTrackGroundSpeed() const;
+    float leftTrackContactAmount() const { return leftTrackContactAmount_; }
+    float rightTrackContactAmount() const { return rightTrackContactAmount_; }
+    float trackWidth() const { return hullWidth_ * 0.18f; }
+    float longitudinalAcceleration() const { return longitudinalAcceleration_; }
+    float lateralSlipSpeed() const { return lateralSlipSpeed_; }
+    float angularSpeed() const { return std::abs(angularVelocity_); }
     // Firing/aim direction: hull forward rotated by the turret's yaw.
     // Equal to forward() if the model had no separate turret to rotate.
     glm::vec3 aimDirection() const;
@@ -124,6 +138,8 @@ private:
     float suspensionRoll_ = 0.0f;
     float suspensionRollVelocity_ = 0.0f;
     bool suspensionInitialized_ = false;
+    float leftTrackContactAmount_ = 1.0f;
+    float rightTrackContactAmount_ = 1.0f;
 
     // Planar rigid-body state. The tank remains constrained to the terrain
     // surface, while its XZ velocity and yaw velocity carry momentum between
@@ -132,6 +148,8 @@ private:
     glm::vec2 velocity_{0.0f};
     float angularVelocity_ = 0.0f;
     float movementAccumulator_ = 0.0f;
+    float longitudinalAcceleration_ = 0.0f;
+    float lateralSlipSpeed_ = 0.0f;
 
     float turretYaw_ = 0.0f;  // radians, relative to the hull, about local +Y
 

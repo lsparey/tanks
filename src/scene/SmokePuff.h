@@ -3,10 +3,9 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
-// A soft, expanding, fading puff of smoke -- the muzzle blast at the barrel
-// and the wisps a flying shell leaves behind it (see Application::
-// fireProjectile and the periodic trail spawn in
-// Application::updateProjectilesAndCollisions). Unlike ImpactEffect/
+// A soft, expanding, fading puff of smoke or track dust. Dust uses the same
+// motion/lifetime behavior with a brown mesh selected by `dust`, avoiding a
+// duplicate particle system. Unlike ImpactEffect/
 // DebrisParticle (which shrink to zero as they die), a puff GROWS as it
 // dissipates -- real smoke expands and thins rather than shrinking -- so
 // the "fading away" cue here is opacity dropping to 0, not scale.
@@ -17,6 +16,7 @@ struct SmokePuff {
     float finalScale = 1.0f;
     float lifetimeRemaining = 0.45f;
     float initialLifetime = 0.45f;
+    bool dust = false;
     bool alive = true;
 
     void update(float deltaTime) {
