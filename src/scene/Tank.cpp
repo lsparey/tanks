@@ -31,10 +31,28 @@ constexpr float kSlopeGravityScale = 0.72f;
 constexpr float kGravity = 9.81f;
 constexpr float kMaximumGroundSpeed = 11.0f;
 constexpr float kMinimumClimbNormalY = 0.7880108f;  // cos(38 degrees)
+constexpr float kSuspensionContactInset = 0.42f;
+constexpr float kSuspensionHeightFrequency = 5.0f;
+constexpr float kSuspensionAngleFrequency = 4.0f;
+constexpr float kSuspensionDampingRatio = 0.82f;
+constexpr float kAccelerationPitchScale = 0.006f;
+constexpr float kAccelerationRollScale = 0.006f;
+constexpr float kMaximumDynamicPitch = 0.0610865f;  // 3.5 degrees
+constexpr float kMaximumDynamicRoll = 0.0523599f;   // 3 degrees
 
 float moveTowards(float value, float target, float maxDelta) {
     if (value < target) return std::min(value + maxDelta, target);
     return std::max(value - maxDelta, target);
+}
+
+void springTowards(float& value, float& velocity, float target, float frequency,
+                   float dampingRatio, float deltaTime) {
+    constexpr float kTwoPi = 6.2831853f;
+    float angularFrequency = kTwoPi * frequency;
+    float acceleration = angularFrequency * angularFrequency * (target - value) -
+                         2.0f * dampingRatio * angularFrequency * velocity;
+    velocity += acceleration * deltaTime;
+    value += velocity * deltaTime;
 }
 
 bool containsCaseInsensitive(const std::string& haystack, const char* needle) {
@@ -121,11 +139,16 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
     // above relies on for the barrel's local Z axis.
     float minX = hullVertices.empty() ? 0.0f : hullVertices[0].position.x;
     float maxX = minX;
+    float minZ = hullVertices.empty() ? 0.0f : hullVertices[0].position.z;
+    float maxZ = minZ;
     for (const auto& v : hullVertices) {
         minX = std::min(minX, v.position.x);
         maxX = std::max(maxX, v.position.x);
+        minZ = std::min(minZ, v.position.z);
+        maxZ = std::max(maxZ, v.position.z);
     }
     hullWidth_ = maxX - minX;
+    hullLength_ = maxZ - minZ;
 
     hullMesh_ = std::make_unique<Mesh>(ctx, commands, hullVertices, hullIndices);
     hullBLAS_ = std::make_unique<AccelerationStructure>(AccelerationStructure::buildBLAS(ctx, commands, *hullMesh_));
@@ -190,11 +213,13 @@ void Tank::update(const InputManager& input, float deltaTime, const Terrain& ter
     // Ensure the initial pose is grounded even on a render frame too short
     // to produce its first fixed simulation step.
     updateGroundPose(terrain);
+    if (!suspensionInitialized_) updateSuspensionPose(terrain, 0.0f, 0.0f, 0.0f);
 }
 
 void Tank::simulateMovement(
     float throttle, float turn, float deltaTime, const Terrain& terrain,
     const std::vector<CollisionSystem::CircleObstacle>& obstacles, float boundaryHalfExtent) {
+    glm::vec2 velocityBeforeStep = velocity_;
     glm::vec2 flatForward(std::sin(yaw_), std::cos(yaw_));
     glm::vec2 flatRight(flatForward.y, -flatForward.x);
 
@@ -298,6 +323,12 @@ void Tank::simulateMovement(
     }
 
     updateGroundPose(terrain);
+
+    glm::vec2 acceleration = (velocity_ - velocityBeforeStep) / deltaTime;
+    glm::vec2 currentForward(std::sin(yaw_), std::cos(yaw_));
+    glm::vec2 currentRight(currentForward.y, -currentForward.x);
+    updateSuspensionPose(terrain, deltaTime, glm::dot(acceleration, currentForward),
+                         glm::dot(acceleration, currentRight));
 }
 
 void Tank::updateGroundPose(const Terrain& terrain) {
@@ -315,9 +346,67 @@ void Tank::updateGroundPose(const Terrain& terrain) {
     right_ = glm::normalize(glm::cross(up_, forward_));
 }
 
+void Tank::updateSuspensionPose(const Terrain& terrain, float deltaTime,
+                                float longitudinalAcceleration, float lateralAcceleration) {
+    glm::vec2 flatForward(std::sin(yaw_), std::cos(yaw_));
+    glm::vec2 flatRight(flatForward.y, -flatForward.x);
+    float halfLength = std::max(hullLength_ * kSuspensionContactInset, 0.5f);
+    float halfWidth = std::max(hullWidth_ * kSuspensionContactInset, 0.35f);
+
+    auto contactHeight = [&](float forwardOffset, float rightOffset) {
+        glm::vec2 xz(position_.x, position_.z);
+        xz += flatForward * forwardOffset + flatRight * rightOffset;
+        return terrain.heightAt(xz.x, xz.y);
+    };
+
+    float frontLeft = contactHeight(halfLength, -halfWidth);
+    float frontRight = contactHeight(halfLength, halfWidth);
+    float rearLeft = contactHeight(-halfLength, -halfWidth);
+    float rearRight = contactHeight(-halfLength, halfWidth);
+
+    float frontHeight = 0.5f * (frontLeft + frontRight);
+    float rearHeight = 0.5f * (rearLeft + rearRight);
+    float leftHeight = 0.5f * (frontLeft + rearLeft);
+    float rightHeight = 0.5f * (frontRight + rearRight);
+    float targetHeight = 0.25f * (frontLeft + frontRight + rearLeft + rearRight);
+
+    float terrainPitch = std::atan2(frontHeight - rearHeight, 2.0f * halfLength);
+    float terrainRoll = std::atan2(rightHeight - leftHeight, 2.0f * halfWidth);
+    float dynamicPitch = glm::clamp(longitudinalAcceleration * kAccelerationPitchScale,
+                                    -kMaximumDynamicPitch, kMaximumDynamicPitch);
+    float dynamicRoll = glm::clamp(lateralAcceleration * kAccelerationRollScale,
+                                   -kMaximumDynamicRoll, kMaximumDynamicRoll);
+    float targetPitch = terrainPitch + dynamicPitch;
+    float targetRoll = terrainRoll + dynamicRoll;
+
+    if (!suspensionInitialized_) {
+        suspensionHeight_ = targetHeight;
+        suspensionPitch_ = targetPitch;
+        suspensionRoll_ = targetRoll;
+        suspensionInitialized_ = true;
+    } else {
+        springTowards(suspensionHeight_, suspensionHeightVelocity_, targetHeight,
+                      kSuspensionHeightFrequency, kSuspensionDampingRatio, deltaTime);
+        springTowards(suspensionPitch_, suspensionPitchVelocity_, targetPitch,
+                      kSuspensionAngleFrequency, kSuspensionDampingRatio, deltaTime);
+        springTowards(suspensionRoll_, suspensionRollVelocity_, targetRoll,
+                      kSuspensionAngleFrequency, kSuspensionDampingRatio, deltaTime);
+    }
+
+    visualPosition_ = glm::vec3(position_.x, suspensionHeight_, position_.z);
+    glm::vec3 horizontalForward(flatForward.x, 0.0f, flatForward.y);
+    glm::vec3 horizontalRight(flatRight.x, 0.0f, flatRight.y);
+    visualForward_ =
+        glm::normalize(horizontalForward + glm::vec3(0.0f, std::tan(suspensionPitch_), 0.0f));
+    glm::vec3 rolledRight =
+        glm::normalize(horizontalRight + glm::vec3(0.0f, std::tan(suspensionRoll_), 0.0f));
+    visualUp_ = glm::normalize(glm::cross(visualForward_, rolledRight));
+    visualRight_ = glm::normalize(glm::cross(visualUp_, visualForward_));
+}
+
 glm::mat4 Tank::hullWorldMatrix() const {
-    glm::mat4 basis(glm::vec4(right_, 0.0f), glm::vec4(up_, 0.0f), glm::vec4(forward_, 0.0f),
-                     glm::vec4(position_, 1.0f));
+    glm::mat4 basis(glm::vec4(visualRight_, 0.0f), glm::vec4(visualUp_, 0.0f),
+                    glm::vec4(visualForward_, 0.0f), glm::vec4(visualPosition_, 1.0f));
     return basis * modelCorrection_;
 }
 
@@ -357,14 +446,14 @@ std::vector<Tank::DrawPart> Tank::drawParts() const {
 }
 
 glm::vec3 Tank::aimDirection() const {
-    if (!turretMesh_ && !barrelMesh_) return forward_;
-    // Rotating the world-space forward_ around the world-space up_ by
+    if (!turretMesh_ && !barrelMesh_) return visualForward_;
+    // Rotating the world-space visualForward_ around visualUp_ by
     // turretYaw_ is equivalent to rotating the local forward direction
     // around local Y and then applying the hull's (rigid, orthonormal)
     // transform -- same result as turretWorldMatrix(), without needing to
     // go through local space for a plain direction vector.
-    glm::mat4 rot = glm::rotate(glm::mat4(1.0f), turretYaw_, up_);
-    return glm::normalize(glm::vec3(rot * glm::vec4(forward_, 0.0f)));
+    glm::mat4 rot = glm::rotate(glm::mat4(1.0f), turretYaw_, visualUp_);
+    return glm::normalize(glm::vec3(rot * glm::vec4(visualForward_, 0.0f)));
 }
 
 glm::vec3 Tank::muzzleWorldPosition() const {
@@ -372,5 +461,5 @@ glm::vec3 Tank::muzzleWorldPosition() const {
         return glm::vec3(turretWorldMatrix() * glm::vec4(muzzleLocal_, 1.0f));
     }
     // No separate barrel material in the source model -- approximate.
-    return position_ + aimDirection() * 3.3f + glm::vec3(0.0f, 1.3f, 0.0f);
+    return visualPosition_ + aimDirection() * 3.3f + visualUp_ * 1.3f;
 }

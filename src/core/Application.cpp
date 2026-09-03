@@ -2161,8 +2161,7 @@ void Application::drawFrame() {
     // screen space, rather than a fixed screen-center crosshair -- with a
     // third-person chase camera that looks at the tank rather than down the
     // barrel, screen center doesn't correspond to where a shot will go.
-    glm::vec3 aimWorldPoint = tank_->position() + tank_->aimDirection() * 25.0f +
-                               glm::vec3(0.0f, 1.3f, 0.0f);
+    glm::vec3 aimWorldPoint = tank_->muzzleWorldPosition() + tank_->aimDirection() * 25.0f;
     glm::vec4 aimClip = ubo.proj * ubo.view * glm::vec4(aimWorldPoint, 1.0f);
     if (aimClip.w > 0.01f) {
         glm::vec2 aimNDC = glm::vec2(aimClip.x, aimClip.y) / aimClip.w;

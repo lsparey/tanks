@@ -79,6 +79,8 @@ private:
                           const std::vector<CollisionSystem::CircleObstacle>& obstacles,
                           float boundaryHalfExtent);
     void updateGroundPose(const Terrain& terrain);
+    void updateSuspensionPose(const Terrain& terrain, float deltaTime,
+                              float longitudinalAcceleration, float lateralAcceleration);
     glm::mat4 hullWorldMatrix() const;
     glm::mat4 turretWorldMatrix() const;
 
@@ -98,12 +100,30 @@ private:
     // pivot, which sits near the barrel's mount/breech end, not its tip).
     glm::vec3 muzzleLocal_{0.0f};
     float hullWidth_ = 0.0f;
+    float hullLength_ = 0.0f;
 
+    // Ground-constrained gameplay pose, used for movement, collision, the
+    // follow camera, and track-mark placement.
     glm::vec3 position_{0.0f};
     float yaw_ = 0.0f;  // radians; yaw=0 means local forward (+Z) points world +Z
     glm::vec3 forward_{0.0f, 0.0f, 1.0f};
     glm::vec3 up_{0.0f, 1.0f, 0.0f};
     glm::vec3 right_{1.0f, 0.0f, 0.0f};
+
+    // Spring-damped render pose derived from four terrain contact samples.
+    // It can pitch, roll, and heave without feeding visual oscillation back
+    // into the stable planar movement simulation above.
+    glm::vec3 visualPosition_{0.0f};
+    glm::vec3 visualForward_{0.0f, 0.0f, 1.0f};
+    glm::vec3 visualUp_{0.0f, 1.0f, 0.0f};
+    glm::vec3 visualRight_{1.0f, 0.0f, 0.0f};
+    float suspensionHeight_ = 0.0f;
+    float suspensionHeightVelocity_ = 0.0f;
+    float suspensionPitch_ = 0.0f;
+    float suspensionPitchVelocity_ = 0.0f;
+    float suspensionRoll_ = 0.0f;
+    float suspensionRollVelocity_ = 0.0f;
+    bool suspensionInitialized_ = false;
 
     // Planar rigid-body state. The tank remains constrained to the terrain
     // surface, while its XZ velocity and yaw velocity carry momentum between
