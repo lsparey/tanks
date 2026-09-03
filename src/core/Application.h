@@ -85,15 +85,20 @@ private:
     bool firstFrame_ = true;
     uint32_t frameCounter_ = 0;
 
-    // Four GPU timestamps per frame-in-flight slot: frame start, post-TLAS,
-    // post-3D scene, and frame end. Results are read only after that slot's
-    // fence signals, so profiling never stalls the active GPU submission.
+    // GPU timestamps divide each frame into TLAS, terrain, foreground,
+    // repeated scenery, effects, and HUD regions. Results are read only
+    // after that slot's fence signals, so profiling never stalls the active
+    // GPU submission.
     VkQueryPool gpuTimestampPool_ = VK_NULL_HANDLE;
     std::array<bool, CommandContext::kFramesInFlight> gpuTimestampsReady_{};
     bool gpuTimingInitialized_ = false;
     float gpuTimestampPeriodNs_ = 1.0f;
     float gpuTlasMs_ = 0.0f;
-    float gpuSceneMs_ = 0.0f;
+    float gpuTerrainMs_ = 0.0f;
+    float gpuForegroundMs_ = 0.0f;
+    float gpuSceneryMs_ = 0.0f;
+    float gpuEffectsMs_ = 0.0f;
+    float gpuHudMs_ = 0.0f;
     float gpuTotalMs_ = 0.0f;
 
     std::unique_ptr<VulkanContext> context_;

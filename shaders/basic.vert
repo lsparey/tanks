@@ -12,10 +12,22 @@ layout(set = 0, binding = 0) uniform FrameUBO {
     vec4 cameraPos;  // xyz, w unused
 } frame;
 
+layout(std430, set = 0, binding = 1) readonly buffer InstanceTransforms {
+    mat4 transforms[];
+} instanceData;
+
 layout(push_constant) uniform PushConstants {
     mat4 model;
     float unlit;
     float specularStrength;
+    float heightBlend;
+    float opacity;
+    float reflectivity;
+    float waveStrength;
+    float bumpStrength;
+    float isDynamicObject;
+    float materialType;
+    float isInstanced;
 } pc;
 
 layout(location = 0) out vec3 fragNormal;
@@ -30,15 +42,16 @@ layout(location = 3) out vec3 fragWorldPos;
 layout(location = 4) out vec3 fragTangent;
 
 void main() {
-    vec4 worldPos = pc.model * vec4(inPosition, 1.0);
+    mat4 model = pc.isInstanced > 0.5 ? instanceData.transforms[gl_InstanceIndex] : pc.model;
+    vec4 worldPos = model * vec4(inPosition, 1.0);
     gl_Position = frame.proj * frame.view * worldPos;
 
     // Assumes uniform scale (no non-uniform scaling applied to any mesh in
     // this prototype), so the model matrix itself is fine for normals --
     // no inverse-transpose needed.
-    fragNormal = mat3(pc.model) * inNormal;
+    fragNormal = mat3(model) * inNormal;
     fragColor = inColor;
     fragUV = inUV;
     fragWorldPos = worldPos.xyz;
-    fragTangent = mat3(pc.model) * vec3(1.0, 0.0, 0.0);
+    fragTangent = mat3(model) * vec3(1.0, 0.0, 0.0);
 }

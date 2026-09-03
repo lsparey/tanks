@@ -16,6 +16,8 @@ public:
          const std::vector<uint32_t>& indices);
 
     void bindAndDraw(VkCommandBuffer cmd) const;
+    void bindAndDrawInstanced(VkCommandBuffer cmd, uint32_t instanceCount,
+                              uint32_t firstInstance) const;
 
     // Exposed so a BLAS can be built directly from this mesh's existing GPU
     // buffers (see AccelerationStructure::buildBLAS) without a second copy.

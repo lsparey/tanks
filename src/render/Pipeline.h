@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <vector>
 
 #include <glm/glm.hpp>
 
@@ -13,9 +14,10 @@
 // Owns the single graphics pipeline used for everything in the scene
 // (terrain, boxes, shells, tank), plus the per-frame uniform buffer/
 // descriptor set (set 0) it's bound to. Per-object data goes through a push
-// constant (the model matrix + an unlit flag); per-frame data (view/proj/
-// light) goes through the set-0 UBO, updated once per frame via
-// updateFrameUBO. Set 1 is four combined-image-sampler bindings for
+// constant (including the model matrix/material flags); repeated static
+// geometry instead indexes a transform SSBO in set 0. Per-frame data
+// (view/proj/light) shares set 0 and is updated once per frame. Set 1 is
+// four combined-image-sampler bindings for
 // whatever textures a given draw call wants: for terrain, a "high" pair
 // (two grass variants, patch-blended by a noise mask) and a "low" pair (two
 // gravel variants, likewise), with the high/low pair itself then blended by
@@ -35,6 +37,8 @@
 // frame's history) alongside the usual color output -- see historyFormat.
 class Pipeline {
 public:
+    static constexpr uint32_t kMaxRasterInstances = 8192;
+
     struct FrameUBO {
         glm::mat4 view;
         glm::mat4 proj;
@@ -99,6 +103,9 @@ public:
         // Material-specific shading without another descriptor set. Values
         // must match basic.frag: 0 generic, 1 terrain, 2 foliage, 3 rock.
         float materialType = 0.0f;
+        // Nonzero selects instanceTransforms[gl_InstanceIndex] in basic.vert
+        // instead of model, allowing repeated static meshes to batch.
+        float isInstanced = 0.0f;
     };
 
     Pipeline(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthFormat, VkFormat historyFormat);
@@ -108,6 +115,7 @@ public:
     Pipeline& operator=(const Pipeline&) = delete;
 
     void updateFrameUBO(const FrameUBO& ubo);
+    void updateInstanceTransforms(const std::vector<glm::mat4>& transforms);
     // highA/highB and lowA/lowB are only sampled/blended when a draw's
     // PushConstants::heightBlend is nonzero (terrain); everything else can
     // pass the same texture for all four and ignore the rest.
@@ -144,6 +152,7 @@ private:
     VkPipeline pipeline_ = VK_NULL_HANDLE;
 
     Buffer uniformBuffer_;
+    Buffer instanceBuffer_;
     VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
     VkDescriptorSet descriptorSet_ = VK_NULL_HANDLE;
     std::array<VkDescriptorSet, CommandContext::kFramesInFlight> tlasDescriptorSets_{};

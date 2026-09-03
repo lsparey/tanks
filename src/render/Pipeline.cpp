@@ -27,7 +27,10 @@ Pipeline::Pipeline(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthForma
                    VkFormat historyFormat)
     : ctx_(ctx),
       uniformBuffer_(ctx, sizeof(FrameUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) {
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+      instanceBuffer_(ctx, sizeof(glm::mat4) * kMaxRasterInstances,
+                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) {
     createDescriptorSetLayout();
     createMaterialSetLayout();
     createTLASSetLayout();
@@ -55,17 +58,30 @@ Pipeline::~Pipeline() {
 
 void Pipeline::updateFrameUBO(const FrameUBO& ubo) { uniformBuffer_.copyData(&ubo, sizeof(ubo)); }
 
+void Pipeline::updateInstanceTransforms(const std::vector<glm::mat4>& transforms) {
+    if (transforms.size() > kMaxRasterInstances) {
+        throw std::runtime_error("raster instance transform capacity exceeded");
+    }
+    if (!transforms.empty()) {
+        instanceBuffer_.copyData(transforms.data(), sizeof(glm::mat4) * transforms.size());
+    }
+}
+
 void Pipeline::createDescriptorSetLayout() {
-    VkDescriptorSetLayoutBinding binding{};
-    binding.binding = 0;
-    binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutBinding bindings[2]{};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 1;
-    layoutInfo.pBindings = &binding;
+    layoutInfo.bindingCount = 2;
+    layoutInfo.pBindings = bindings;
 
     VK_CHECK(
         vkCreateDescriptorSetLayout(ctx_.device(), &layoutInfo, nullptr, &descriptorSetLayout_));
@@ -133,7 +149,7 @@ void Pipeline::createDescriptorPoolAndSet() {
     constexpr uint32_t kTLASSets = CommandContext::kFramesInFlight;
     constexpr uint32_t kHistorySets = CommandContext::kFramesInFlight;
 
-    VkDescriptorPoolSize poolSizes[3]{};
+    VkDescriptorPoolSize poolSizes[4]{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[0].descriptorCount = 1;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -142,10 +158,12 @@ void Pipeline::createDescriptorPoolAndSet() {
     poolSizes[1].descriptorCount = kMaxMaterialSets * 4 + kHistorySets;
     poolSizes[2].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     poolSizes[2].descriptorCount = kTLASSets;
+    poolSizes[3].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSizes[3].descriptorCount = 1;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = 3;
+    poolInfo.poolSizeCount = 4;
     poolInfo.pPoolSizes = poolSizes;
     poolInfo.maxSets = 1 + kMaxMaterialSets + kTLASSets + kHistorySets;
 
@@ -159,21 +177,29 @@ void Pipeline::createDescriptorPoolAndSet() {
 
     VK_CHECK(vkAllocateDescriptorSets(ctx_.device(), &allocInfo, &descriptorSet_));
 
-    VkDescriptorBufferInfo bufferInfo{};
-    bufferInfo.buffer = uniformBuffer_.handle();
-    bufferInfo.offset = 0;
-    bufferInfo.range = sizeof(FrameUBO);
+    VkDescriptorBufferInfo bufferInfos[2]{};
+    bufferInfos[0].buffer = uniformBuffer_.handle();
+    bufferInfos[0].offset = 0;
+    bufferInfos[0].range = sizeof(FrameUBO);
+    bufferInfos[1].buffer = instanceBuffer_.handle();
+    bufferInfos[1].offset = 0;
+    bufferInfos[1].range = instanceBuffer_.size();
 
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = descriptorSet_;
-    write.dstBinding = 0;
-    write.dstArrayElement = 0;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    write.descriptorCount = 1;
-    write.pBufferInfo = &bufferInfo;
+    VkWriteDescriptorSet writes[2]{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = descriptorSet_;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[0].descriptorCount = 1;
+    writes[0].pBufferInfo = &bufferInfos[0];
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = descriptorSet_;
+    writes[1].dstBinding = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[1].descriptorCount = 1;
+    writes[1].pBufferInfo = &bufferInfos[1];
 
-    vkUpdateDescriptorSets(ctx_.device(), 1, &write, 0, nullptr);
+    vkUpdateDescriptorSets(ctx_.device(), 2, writes, 0, nullptr);
 
     // TLAS sets are allocated now but not written -- the TLAS doesn't exist
     // yet at Pipeline construction time. Application writes the current

@@ -61,6 +61,7 @@ layout(push_constant) uniform PushConstants {
     // comment for why this can't just be inferred from specularStrength.
     float isDynamicObject;
     float materialType;
+    float isInstanced;
 } pc;
 
 layout(location = 0) out vec4 outColor;
@@ -375,7 +376,7 @@ void main() {
     }
     if (pc.heightBlend > 0.5) {
         vec2 warp = vec2(valueNoise2D(fragWorldPos.xz * 0.015 + vec2(5.2, 88.1)),
-                          valueNoise2D(fragWorldPos.xz * 0.017 + vec2(41.7, 12.3)));
+                         valueNoise2D(fragWorldPos.xz * 0.017 + vec2(41.7, 12.3)));
         sampleUV += (warp - 0.5) * 0.6;
     }
 
@@ -403,9 +404,9 @@ void main() {
         // grass patches and gravel patches don't line up with each other or
         // with the height-based zone boundary below.
         float grassPatch = valueNoise2D(fragWorldPos.xz * 0.06 + vec2(19.3, 4.7)) * 0.7 +
-                            valueNoise2D(fragWorldPos.xz * 0.15 + vec2(58.1, 91.4)) * 0.3;
+                           valueNoise2D(fragWorldPos.xz * 0.15 + vec2(58.1, 91.4)) * 0.3;
         float gravelPatch = valueNoise2D(fragWorldPos.xz * 0.08 + vec2(71.2, 33.6)) * 0.7 +
-                             valueNoise2D(fragWorldPos.xz * 0.2 + vec2(12.9, 47.5)) * 0.3;
+                            valueNoise2D(fragWorldPos.xz * 0.2 + vec2(12.9, 47.5)) * 0.3;
         vec3 grassColor =
             mix(texColor, texture(materialTexHighB, sampleUV).rgb, smoothstep(0.4, 0.6, grassPatch));
         vec3 gravelColor = mix(texture(materialTexLowA, sampleUV).rgb, texture(materialTexLowB, sampleUV).rgb,
@@ -417,17 +418,27 @@ void main() {
         // plateau and a steepest-descent-traced river valley on top of the
         // base rolling hills, versus the plain +-2.2 of a hills-only
         // version -- see HeightmapGenerator.cpp). The
-        // threshold itself is jittered by a low-frequency noise
-        // (independent of grassPatch/gravelPatch above, different
-        // frequency/offset so it doesn't line up with either) rather than
+        // threshold itself is jittered by a low-frequency noise rather than
         // being a pure function of height -- a plain height threshold draws
-        // a smooth iso-height contour line around every hill, which reads
-        // as an artificial gradient band running exactly level around the
-        // terrain; jittering it makes the boundary wander like an actual
-        // patchy transition instead.
+        // an artificial contour around every hill. Reuse the two finer patch
+        // masks to break up the edge locally. Size the transition from the
+        // terrain slope so it covers a short, roughly consistent distance
+        // across the ground. Within that transition, use fine world-space
+        // noise as a coverage threshold: small grass and gravel patches
+        // interlock instead of forming a solid intermediate-colour ring.
         float rockyThreshold =
             -1.7 + (valueNoise2D(fragWorldPos.xz * 0.05 + vec2(153.2, 88.7)) - 0.5) * 1.05;
-        float rockiness = 1.0 - smoothstep(rockyThreshold - 0.3, rockyThreshold + 0.3, fragWorldPos.y);
+        float boundaryBreakup = (grassPatch - gravelPatch) * 0.28;
+        float rockyBoundary = rockyThreshold - (fragWorldPos.y + boundaryBreakup);
+        vec3 terrainNormal = normalize(fragNormal);
+        float terrainSlope = length(terrainNormal.xz) / max(abs(terrainNormal.y), 0.15);
+        float physicalBlendWidth = clamp(terrainSlope * 0.9, 0.035, 0.14);
+        float blendCoverage = smoothstep(-physicalBlendWidth, physicalBlendWidth, rockyBoundary);
+        float materialPattern =
+            0.1 + valueNoise2D(fragWorldPos.xz * 0.9 + vec2(37.1, 214.6)) * 0.8;
+        float patternEdgeWidth = max(fwidth(materialPattern) * 1.5, 0.025);
+        float rockiness = smoothstep(materialPattern - patternEdgeWidth,
+                                     materialPattern + patternEdgeWidth, blendCoverage);
 
         // Steep ground reads as rocky regardless of height -- the plateau's
         // raised edges and the river/valley's banks (see HeightmapGenerator)
@@ -440,54 +451,64 @@ void main() {
         // normalized/bump-mapped shading normal. smoothstep range chosen so
         // gentle hillsides (most of the map) stay grass and only genuinely
         // steep faces pick this up.
-        float steepness = 1.0 - normalize(fragNormal).y;
+        float steepness = 1.0 - terrainNormal.y;
         float slopeRockiness = smoothstep(0.32, 0.62, steepness);
         rockiness = max(rockiness, slopeRockiness);
         terrainRockiness = rockiness;
         texColor = mix(grassColor, gravelColor, rockiness);
 
         const float kTerrainBumpTexelStep = 1.0 / 512.0;  // matches kTerrainTextureRes in Application.cpp
-        const float kTerrainBumpStrength = 3.0;
         vec3 luminanceWeights = vec3(0.299, 0.587, 0.114);
         // Follow the material visible at this point. Previously every pixel,
         // including exposed gravel, used the first grass texture as height.
         // Micro-bump is not resolvable in the distance. Nearby, sample only
-        // the dominant grass/rock pair instead of both pairs at both offset
-        // positions; the blended center color still makes transitions
-        // continuous while halving the extra texture reads from eight to four.
+        // the dominant grass/rock pair away from the material boundary. In
+        // the narrow transition, calculate each material's gradient against
+        // its own centre colour before blending the gradients. Comparing a
+        // pure-material offset sample with the already mixed centre colour
+        // creates a large false height delta -- the visible ring that used
+        // to follow the grass/gravel boundary.
         if (currentViewDist < 60.0) {
-            vec3 bumpCenterColor = mix(grassColor, gravelColor, rockiness);
-            vec3 bumpU, bumpV;
-            if (rockiness < 0.5) {
+            const float kBumpBlendStart = 0.35;
+            const float kBumpBlendEnd = 0.65;
+            vec2 grassBump = vec2(0.0);
+            vec2 gravelBump = vec2(0.0);
+
+            if (rockiness < kBumpBlendEnd) {
                 float patchBlend = smoothstep(0.4, 0.6, grassPatch);
-                bumpU = mix(texture(materialTexHighA,
-                                    sampleUV + vec2(kTerrainBumpTexelStep, 0.0)).rgb,
-                            texture(materialTexHighB,
-                                    sampleUV + vec2(kTerrainBumpTexelStep, 0.0)).rgb,
-                            patchBlend);
-                bumpV = mix(texture(materialTexHighA,
-                                    sampleUV + vec2(0.0, kTerrainBumpTexelStep)).rgb,
-                            texture(materialTexHighB,
-                                    sampleUV + vec2(0.0, kTerrainBumpTexelStep)).rgb,
-                            patchBlend);
-            } else {
-                float patchBlend = smoothstep(0.4, 0.6, gravelPatch);
-                bumpU = mix(texture(materialTexLowA,
-                                    sampleUV + vec2(kTerrainBumpTexelStep, 0.0)).rgb,
-                            texture(materialTexLowB,
-                                    sampleUV + vec2(kTerrainBumpTexelStep, 0.0)).rgb,
-                            patchBlend);
-                bumpV = mix(texture(materialTexLowA,
-                                    sampleUV + vec2(0.0, kTerrainBumpTexelStep)).rgb,
-                            texture(materialTexLowB,
-                                    sampleUV + vec2(0.0, kTerrainBumpTexelStep)).rgb,
-                            patchBlend);
+                vec3 bumpU = mix(texture(materialTexHighA,
+                                         sampleUV + vec2(kTerrainBumpTexelStep, 0.0)).rgb,
+                                 texture(materialTexHighB,
+                                         sampleUV + vec2(kTerrainBumpTexelStep, 0.0)).rgb,
+                                 patchBlend);
+                vec3 bumpV = mix(texture(materialTexHighA,
+                                         sampleUV + vec2(0.0, kTerrainBumpTexelStep)).rgb,
+                                 texture(materialTexHighB,
+                                         sampleUV + vec2(0.0, kTerrainBumpTexelStep)).rgb,
+                                 patchBlend);
+                float heightCenter = dot(grassColor, luminanceWeights);
+                grassBump = vec2(dot(bumpU, luminanceWeights) - heightCenter,
+                                 dot(bumpV, luminanceWeights) - heightCenter) * 2.2;
             }
-            float heightCenter = dot(bumpCenterColor, luminanceWeights);
-            float heightU = dot(bumpU, luminanceWeights);
-            float heightV = dot(bumpV, luminanceWeights);
-            float materialBumpStrength = mix(2.2, 5.0, rockiness);
-            terrainBump = vec2(heightU - heightCenter, heightV - heightCenter) * materialBumpStrength;
+            if (rockiness > kBumpBlendStart) {
+                float patchBlend = smoothstep(0.4, 0.6, gravelPatch);
+                vec3 bumpU = mix(texture(materialTexLowA,
+                                         sampleUV + vec2(kTerrainBumpTexelStep, 0.0)).rgb,
+                                 texture(materialTexLowB,
+                                         sampleUV + vec2(kTerrainBumpTexelStep, 0.0)).rgb,
+                                 patchBlend);
+                vec3 bumpV = mix(texture(materialTexLowA,
+                                         sampleUV + vec2(0.0, kTerrainBumpTexelStep)).rgb,
+                                 texture(materialTexLowB,
+                                         sampleUV + vec2(0.0, kTerrainBumpTexelStep)).rgb,
+                                 patchBlend);
+                float heightCenter = dot(gravelColor, luminanceWeights);
+                gravelBump = vec2(dot(bumpU, luminanceWeights) - heightCenter,
+                                  dot(bumpV, luminanceWeights) - heightCenter) * 5.0;
+            }
+
+            float bumpBlend = smoothstep(kBumpBlendStart, kBumpBlendEnd, rockiness);
+            terrainBump = mix(grassBump, gravelBump, bumpBlend);
         }
     }
     vec3 albedo = fragColor * texColor;

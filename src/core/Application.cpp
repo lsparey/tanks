@@ -31,7 +31,25 @@ namespace {
 
 constexpr uint32_t kWindowWidth = 1280;
 constexpr uint32_t kWindowHeight = 720;
-constexpr uint32_t kGpuTimestampsPerFrame = 4;
+constexpr uint32_t kGpuTimestampsPerFrame = 8;
+
+bool sphereIntersectsFrustum(const glm::mat4& viewProjection, glm::vec3 center, float radius) {
+    auto row = [&](int r) {
+        return glm::vec4(viewProjection[0][r], viewProjection[1][r],
+                         viewProjection[2][r], viewProjection[3][r]);
+    };
+    glm::vec4 r0 = row(0), r1 = row(1), r2 = row(2), r3 = row(3);
+    // GLM is configured for Vulkan's [0,w] clip-depth range. The other four
+    // planes retain the conventional [-w,w] X/Y clip bounds.
+    const glm::vec4 planes[] = {
+        r3 + r0, r3 - r0, r3 + r1, r3 - r1, r2, r3 - r2,
+    };
+    for (const glm::vec4& plane : planes) {
+        float normalLength = glm::length(glm::vec3(plane));
+        if (glm::dot(glm::vec3(plane), center) + plane.w < -radius * normalLength) return false;
+    }
+    return true;
+}
 
 // Terrain height below which a basin can start filling with water -- tuned
 // against the heightmap's actual range (roughly -2.2..-4 on the low end,
@@ -101,13 +119,27 @@ float terrainValueNoise(glm::vec2 p) {
 
 float terrainGravelAmount(const Terrain& terrain, float x, float z) {
     constexpr float kRockyBaseHeight = -1.7f;  // matches basic.frag
+    glm::vec2 worldXZ(x, z);
     float threshold = kRockyBaseHeight +
-                      (terrainValueNoise(glm::vec2(x, z) * 0.05f + glm::vec2(153.2f, 88.7f)) -
+                      (terrainValueNoise(worldXZ * 0.05f + glm::vec2(153.2f, 88.7f)) -
                        0.5f) *
                           1.05f;
+    float grassPatch = terrainValueNoise(worldXZ * 0.06f + glm::vec2(19.3f, 4.7f)) * 0.7f +
+                       terrainValueNoise(worldXZ * 0.15f + glm::vec2(58.1f, 91.4f)) * 0.3f;
+    float gravelPatch = terrainValueNoise(worldXZ * 0.08f + glm::vec2(71.2f, 33.6f)) * 0.7f +
+                        terrainValueNoise(worldXZ * 0.2f + glm::vec2(12.9f, 47.5f)) * 0.3f;
+    float boundaryBreakup = (grassPatch - gravelPatch) * 0.28f;
+    float rockyBoundary = threshold - (terrain.heightAt(x, z) + boundaryBreakup);
+    glm::vec3 terrainNormal = terrain.normalAt(x, z);
+    float terrainSlope = glm::length(glm::vec2(terrainNormal.x, terrainNormal.z)) /
+                         std::max(std::abs(terrainNormal.y), 0.15f);
+    float physicalBlendWidth = glm::clamp(terrainSlope * 0.9f, 0.035f, 0.14f);
+    float blendCoverage = glm::smoothstep(-physicalBlendWidth, physicalBlendWidth, rockyBoundary);
+    float materialPattern =
+        0.1f + terrainValueNoise(worldXZ * 0.9f + glm::vec2(37.1f, 214.6f)) * 0.8f;
     float heightRockiness =
-        1.0f - glm::smoothstep(threshold - 0.3f, threshold + 0.3f, terrain.heightAt(x, z));
-    float steepness = 1.0f - terrain.normalAt(x, z).y;
+        glm::smoothstep(materialPattern - 0.025f, materialPattern + 0.025f, blendCoverage);
+    float steepness = 1.0f - terrainNormal.y;
     float slopeRockiness = glm::smoothstep(0.32f, 0.62f, steepness);
     return std::max(heightRockiness, slopeRockiness);
 }
@@ -1362,19 +1394,28 @@ void Application::drawFrame() {
                        gpuTimestampPeriodNs_ / 1'000'000.0f;
             };
             float tlasMs = elapsedMs(0, 1);
-            float sceneMs = elapsedMs(1, 2);
-            float totalMs = elapsedMs(0, 3);
+            float terrainMs = elapsedMs(1, 2);
+            float foregroundMs = elapsedMs(2, 3);
+            float sceneryMs = elapsedMs(3, 4);
+            float effectsMs = elapsedMs(4, 6);
+            float hudMs = elapsedMs(6, 7);
+            float totalMs = elapsedMs(0, 7);
             float blend = gpuTimingInitialized_ ? 0.1f : 1.0f;
             gpuTlasMs_ = glm::mix(gpuTlasMs_, tlasMs, blend);
-            gpuSceneMs_ = glm::mix(gpuSceneMs_, sceneMs, blend);
+            gpuTerrainMs_ = glm::mix(gpuTerrainMs_, terrainMs, blend);
+            gpuForegroundMs_ = glm::mix(gpuForegroundMs_, foregroundMs, blend);
+            gpuSceneryMs_ = glm::mix(gpuSceneryMs_, sceneryMs, blend);
+            gpuEffectsMs_ = glm::mix(gpuEffectsMs_, effectsMs, blend);
+            gpuHudMs_ = glm::mix(gpuHudMs_, hudMs, blend);
             gpuTotalMs_ = glm::mix(gpuTotalMs_, totalMs, blend);
             gpuTimingInitialized_ = true;
 
             if (frameCounter_ > 0 && frameCounter_ % 120 == 0) {
                 std::cout << std::fixed << std::setprecision(2)
                           << "GPU: " << gpuTotalMs_ << " ms total (TLAS " << gpuTlasMs_
-                          << " ms, 3D scene " << gpuSceneMs_ << " ms, remainder "
-                          << std::max(0.0f, gpuTotalMs_ - gpuTlasMs_ - gpuSceneMs_) << " ms)"
+                          << ", terrain " << gpuTerrainMs_ << ", foreground " << gpuForegroundMs_
+                          << ", scenery " << gpuSceneryMs_ << ", effects " << gpuEffectsMs_
+                          << ", HUD " << gpuHudMs_ << " ms)"
                           << std::defaultfloat << std::endl;
             }
         }
@@ -1437,6 +1478,68 @@ void Application::drawFrame() {
         ubo.dynamicLightColorIntensity[i] = glm::vec4(light.color, light.currentIntensity());
     }
     pipeline_->updateFrameUBO(ubo);
+
+    // Cull repeated static props and group their transforms by the shared
+    // mesh/material variant. The resulting ranges are consumed by one
+    // instanced draw per non-empty variant later in this frame.
+    glm::mat4 viewProjection = ubo.proj * ubo.view;
+    std::vector<std::vector<glm::mat4>> treeGroups(treeBarkMeshes_.size());
+    std::vector<std::vector<glm::mat4>> rockGroups(rockMeshes_.size());
+    std::vector<std::vector<glm::mat4>> smallRockGroups(smallRockMeshes_.size());
+    std::vector<std::vector<glm::mat4>> shrubGroups(shrubMeshes_.size());
+    std::vector<std::vector<glm::mat4>> cliffGroups(1);
+
+    for (const TreeInstance& tree : trees_) {
+        glm::vec3 center = tree.position + glm::vec3(0.0f, 2.4f * tree.scale, 0.0f);
+        if (sphereIntersectsFrustum(viewProjection, center, 3.5f * tree.scale))
+            treeGroups[tree.meshVariant].push_back(tree.worldMatrix());
+    }
+    for (const RockInstance& rock : rocks_) {
+        glm::vec3 center = rock.position + glm::vec3(0.0f, 0.4f * rock.scale, 0.0f);
+        if (sphereIntersectsFrustum(viewProjection, center, 1.3f * rock.scale))
+            rockGroups[rock.meshVariant].push_back(rock.worldMatrix());
+    }
+    for (const RockInstance& rock : smallRocks_) {
+        constexpr float kSmallRockDrawDistance = 55.0f;
+        if (glm::distance(camera_.position(), rock.position) > kSmallRockDrawDistance) continue;
+        glm::vec3 center = rock.position + glm::vec3(0.0f, 0.15f * rock.scale, 0.0f);
+        if (sphereIntersectsFrustum(viewProjection, center, 0.4f * rock.scale))
+            smallRockGroups[rock.meshVariant].push_back(rock.worldMatrix());
+    }
+    for (const ShrubInstance& shrub : shrubs_) {
+        glm::vec3 center = shrub.position + glm::vec3(0.0f, 0.3f * shrub.scale, 0.0f);
+        if (sphereIntersectsFrustum(viewProjection, center, 0.8f * shrub.scale))
+            shrubGroups[shrub.meshVariant].push_back(shrub.worldMatrix());
+    }
+    for (const RockInstance& cliff : sedimentaryCliffs_) {
+        glm::vec3 center = cliff.position + glm::vec3(0.0f, 0.25f * cliff.scale, 0.0f);
+        if (sphereIntersectsFrustum(viewProjection, center, 5.0f * cliff.scale))
+            cliffGroups[0].push_back(cliff.worldMatrix());
+    }
+
+    struct InstanceBatch {
+        uint32_t first = 0;
+        uint32_t count = 0;
+    };
+    std::vector<glm::mat4> rasterInstanceTransforms;
+    rasterInstanceTransforms.reserve(trees_.size() + rocks_.size() + smallRocks_.size() +
+                                     shrubs_.size() + sedimentaryCliffs_.size());
+    auto appendGroups = [&](const std::vector<std::vector<glm::mat4>>& groups) {
+        std::vector<InstanceBatch> batches(groups.size());
+        for (size_t variant = 0; variant < groups.size(); ++variant) {
+            batches[variant].first = static_cast<uint32_t>(rasterInstanceTransforms.size());
+            batches[variant].count = static_cast<uint32_t>(groups[variant].size());
+            rasterInstanceTransforms.insert(rasterInstanceTransforms.end(), groups[variant].begin(),
+                                            groups[variant].end());
+        }
+        return batches;
+    };
+    std::vector<InstanceBatch> treeBatches = appendGroups(treeGroups);
+    std::vector<InstanceBatch> rockBatches = appendGroups(rockGroups);
+    std::vector<InstanceBatch> smallRockBatches = appendGroups(smallRockGroups);
+    std::vector<InstanceBatch> shrubBatches = appendGroups(shrubGroups);
+    std::vector<InstanceBatch> cliffBatches = appendGroups(cliffGroups);
+    pipeline_->updateInstanceTransforms(rasterInstanceTransforms);
     prevViewProj_ = ubo.proj * ubo.view;
     prevCameraPos_ = camera_.position();
     ++frameCounter_;
@@ -1628,6 +1731,8 @@ void Application::drawFrame() {
                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                         sizeof(terrainPc), &terrainPc);
     terrain_->bindAndDraw(frame.commandBuffer);
+    vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                         gpuTimestampPool_, timestampBase + 2);
 
     // Play-area boundary line: a red decal ring painted onto the ground,
     // drawn right after terrain like track marks below. Lit (not unlit) --
@@ -1726,82 +1831,85 @@ void Application::drawFrame() {
                             sizeof(boxPc), &boxPc);
         boxMesh_->bindAndDraw(frame.commandBuffer);
     }
+    vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                         gpuTimestampPool_, timestampBase + 3);
 
     // Trees: bark and leaves are separate meshes/materials (see
     // Mesh::treeBark/treeLeaves), so each gets its own pass over all tree
-    // instances. Each mesh variant now has its own bark/leaf texture (see
-    // barkMaterialSets_/leafMaterialSets_) rather than sharing one, so the
-    // material set is rebound per-instance by meshVariant instead of once
-    // before the loop.
-    for (const auto& tree : trees_) {
+    // instances. Visible transforms are grouped by mesh/material variant,
+    // reducing each bark or leaf variant to one instanced draw.
+    for (size_t variant = 0; variant < treeBatches.size(); ++variant) {
+        const InstanceBatch& batch = treeBatches[variant];
+        if (batch.count == 0) continue;
         vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(),
-                                 1, 1, &barkMaterialSets_[tree.meshVariant], 0, nullptr);
+                                 1, 1, &barkMaterialSets_[variant], 0, nullptr);
         Pipeline::PushConstants treePc{};
-        treePc.model = tree.worldMatrix();
+        treePc.isInstanced = 1.0f;
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(treePc), &treePc);
-        treeBarkMeshes_[tree.meshVariant]->bindAndDraw(frame.commandBuffer);
+        treeBarkMeshes_[variant]->bindAndDrawInstanced(frame.commandBuffer, batch.count, batch.first);
     }
 
-    for (const auto& tree : trees_) {
+    for (size_t variant = 0; variant < treeBatches.size(); ++variant) {
+        const InstanceBatch& batch = treeBatches[variant];
+        if (batch.count == 0) continue;
         vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(),
-                                 1, 1, &leafMaterialSets_[tree.meshVariant], 0, nullptr);
+                                 1, 1, &leafMaterialSets_[variant], 0, nullptr);
         Pipeline::PushConstants leafPc{};
-        leafPc.model = tree.worldMatrix();
         leafPc.materialType = 2.0f;
+        leafPc.isInstanced = 1.0f;
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(leafPc), &leafPc);
-        treeLeafMeshes_[tree.meshVariant]->bindAndDraw(frame.commandBuffer);
+        treeLeafMeshes_[variant]->bindAndDrawInstanced(frame.commandBuffer, batch.count, batch.first);
     }
 
-    // Rocks: same idea -- each mesh variant has its own gravel texture (see
-    // rockMaterialSets_) instead of sharing one.
-    for (const auto& rock : rocks_) {
+    // Rocks: one culled, instanced draw per geometry/material variant.
+    for (size_t variant = 0; variant < rockBatches.size(); ++variant) {
+        const InstanceBatch& batch = rockBatches[variant];
+        if (batch.count == 0) continue;
         vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(),
-                                 1, 1, &rockMaterialSets_[rock.meshVariant], 0, nullptr);
+                                 1, 1, &rockMaterialSets_[variant], 0, nullptr);
         Pipeline::PushConstants rockPc{};
-        rockPc.model = rock.worldMatrix();
         rockPc.materialType = 3.0f;
+        rockPc.isInstanced = 1.0f;
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(rockPc), &rockPc);
-        rockMeshes_[rock.meshVariant]->bindAndDraw(frame.commandBuffer);
+        rockMeshes_[variant]->bindAndDrawInstanced(frame.commandBuffer, batch.count, batch.first);
     }
 
-    // Small scree/pebbles -- same rockMeshes_/rockMaterialSets_ pool as
-    // rocks_ above, just many more, much smaller, and (see
-    // gatherRayTracingInstances) not ray-traced.
-    for (const auto& rock : smallRocks_) {
-        // Beyond this range these 8-22 cm stones are sub-pixel detail. Skip
-        // their draw entirely rather than processing geometry that cannot
-        // contribute visibly; the gravel material still carries the region.
-        constexpr float kSmallRockDrawDistance = 55.0f;
-        if (glm::distance(camera_.position(), rock.position) > kSmallRockDrawDistance) continue;
+    // Small scree/pebbles use their dedicated low-detail geometry and one
+    // culled, instanced draw per material variant. They are not ray-traced.
+    for (size_t variant = 0; variant < smallRockBatches.size(); ++variant) {
+        const InstanceBatch& batch = smallRockBatches[variant];
+        if (batch.count == 0) continue;
         vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(),
-                                 1, 1, &rockMaterialSets_[rock.meshVariant], 0, nullptr);
+                                 1, 1, &rockMaterialSets_[variant], 0, nullptr);
         Pipeline::PushConstants rockPc{};
-        rockPc.model = rock.worldMatrix();
         rockPc.materialType = 3.0f;
+        rockPc.isInstanced = 1.0f;
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(rockPc), &rockPc);
-        smallRockMeshes_[rock.meshVariant]->bindAndDraw(frame.commandBuffer);
+        smallRockMeshes_[variant]->bindAndDrawInstanced(frame.commandBuffer, batch.count, batch.first);
     }
 
     // Layered cliff outcrops use a warm gravel variant, but distinct
     // geometry and placement from the ordinary boulder pool.
     vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                              pipeline_->layout(), 1, 1, &rockMaterialSets_[1], 0, nullptr);
-    for (const auto& cliff : sedimentaryCliffs_) {
+    const InstanceBatch& cliffBatch = cliffBatches[0];
+    if (cliffBatch.count > 0) {
         Pipeline::PushConstants cliffPc{};
-        cliffPc.model = cliff.worldMatrix();
         cliffPc.materialType = 3.0f;
+        cliffPc.isInstanced = 1.0f;
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(cliffPc), &cliffPc);
-        sedimentaryCliffMesh_->bindAndDraw(frame.commandBuffer);
+        sedimentaryCliffMesh_->bindAndDrawInstanced(frame.commandBuffer, cliffBatch.count,
+                                                     cliffBatch.first);
     }
 
     // A matching cap covers the stone tops and extends down around their
@@ -1809,29 +1917,34 @@ void Application::drawFrame() {
     // remain exposed rock.
     vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                              pipeline_->layout(), 1, 1, &terrainMaterialSet_, 0, nullptr);
-    for (const auto& cliff : sedimentaryCliffs_) {
+    if (cliffBatch.count > 0) {
         Pipeline::PushConstants grassPc{};
-        grassPc.model = cliff.worldMatrix();
         grassPc.materialType = 1.0f;
         grassPc.heightBlend = 1.0f;
+        grassPc.isInstanced = 1.0f;
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(grassPc), &grassPc);
-        sedimentaryCliffGrassMesh_->bindAndDraw(frame.commandBuffer);
+        sedimentaryCliffGrassMesh_->bindAndDrawInstanced(frame.commandBuffer, cliffBatch.count,
+                                                          cliffBatch.first);
     }
 
     // Shrubs -- reuse leafMaterialSets_ (see their mesh creation comment).
-    for (const auto& shrub : shrubs_) {
+    for (size_t variant = 0; variant < shrubBatches.size(); ++variant) {
+        const InstanceBatch& batch = shrubBatches[variant];
+        if (batch.count == 0) continue;
         vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(),
-                                 1, 1, &leafMaterialSets_[shrub.meshVariant], 0, nullptr);
+                                 1, 1, &leafMaterialSets_[variant], 0, nullptr);
         Pipeline::PushConstants shrubPc{};
-        shrubPc.model = shrub.worldMatrix();
         shrubPc.materialType = 2.0f;
+        shrubPc.isInstanced = 1.0f;
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(shrubPc), &shrubPc);
-        shrubMeshes_[shrub.meshVariant]->bindAndDraw(frame.commandBuffer);
+        shrubMeshes_[variant]->bindAndDrawInstanced(frame.commandBuffer, batch.count, batch.first);
     }
+    vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                         gpuTimestampPool_, timestampBase + 4);
 
     // Play-area boundary wall: a translucent "wall of light" rising from
     // the boundary line, drawn late so it composites on top of the terrain/
@@ -1900,6 +2013,8 @@ void Application::drawFrame() {
         const Mesh& mesh = particle.ember ? *debrisEmberMesh_ : *debrisChunkMesh_;
         mesh.bindAndDraw(frame.commandBuffer);
     }
+    vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                         gpuTimestampPool_, timestampBase + 5);
 
     uint32_t aliveBoxCount = 0;
     for (const auto& box : boxes_) {
@@ -1942,7 +2057,7 @@ void Application::drawFrame() {
 
     vkCmdEndRendering(frame.commandBuffer);
     vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                         gpuTimestampPool_, timestampBase + 2);
+                         gpuTimestampPool_, timestampBase + 6);
 
     // HudRenderer's pipeline declares a single color attachment, which is
     // incompatible with the 2-color-attachment scope above -- end that scope
@@ -2038,7 +2153,7 @@ void Application::drawFrame() {
     vkCmdPipelineBarrier2(frame.commandBuffer, &presentDepInfo);
 
     vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                         gpuTimestampPool_, timestampBase + 3);
+                         gpuTimestampPool_, timestampBase + 7);
 
     VK_CHECK(vkEndCommandBuffer(frame.commandBuffer));
 
