@@ -34,6 +34,7 @@ namespace {
 constexpr uint32_t kWindowWidth = 1280;
 constexpr uint32_t kWindowHeight = 720;
 constexpr uint32_t kGpuTimestampsPerFrame = 8;
+constexpr float kAimProjectionDistance = 25.0f;
 
 bool sphereIntersectsFrustum(const glm::mat4& viewProjection, glm::vec3 center, float radius) {
     auto row = [&](int r) {
@@ -697,9 +698,15 @@ void Application::mainLoop() {
 
         input_->update();
 
-        bool fDown = glfwGetKey(window_, GLFW_KEY_F) == GLFW_PRESS;
-        if (fDown && !prevFKeyDown_) followTank_ = !followTank_;
-        prevFKeyDown_ = fDown;
+        bool cameraToggleDown = glfwGetKey(window_, GLFW_KEY_C) == GLFW_PRESS;
+        if (cameraToggleDown && !prevCameraToggleKeyDown_) {
+            switch (cameraMode_) {
+                case CameraMode::HullFollow: cameraMode_ = CameraMode::TurretAim; break;
+                case CameraMode::TurretAim: cameraMode_ = CameraMode::Free; break;
+                case CameraMode::Free: cameraMode_ = CameraMode::HullFollow; break;
+            }
+        }
+        prevCameraToggleKeyDown_ = cameraToggleDown;
 
         // Manual screenshot capture, saved via the same GPU-readback path
         // as the --screenshot CLI flag (see drawFrame) rather than any
@@ -722,10 +729,19 @@ void Application::mainLoop() {
 
         updateProjectilesAndCollisions(deltaTime);
 
-        if (followTank_) {
-            camera_.followTarget(tank_->position(), tank_->forward());
-        } else {
-            camera_.update(*input_, deltaTime);
+        switch (cameraMode_) {
+            case CameraMode::HullFollow:
+                camera_.followTarget(tank_->position(), tank_->forward());
+                break;
+            case CameraMode::TurretAim: {
+                glm::vec3 aimPoint = tank_->muzzleWorldPosition() +
+                                     tank_->aimDirection() * kAimProjectionDistance;
+                camera_.followAimTarget(tank_->position(), aimPoint);
+                break;
+            }
+            case CameraMode::Free:
+                camera_.update(*input_, deltaTime);
+                break;
         }
 
         drawFrame();
@@ -1400,6 +1416,11 @@ void Application::fireProjectile() {
         spawnSmokePuff(shell.position, puffVelocity, blastScale(blastRng), blastScale(blastRng) * 2.2f,
                        /*lifetime=*/0.5f);
     }
+
+    // Spawn the shell and blast at the barrel's pre-recoil muzzle first,
+    // then kick the weapon/body for this rendered frame. The camera remains
+    // stable; moving it backward read as a zoom rather than firing impact.
+    tank_->applyGunRecoil();
 }
 
 void Application::updateProjectilesAndCollisions(float deltaTime) {
@@ -2240,7 +2261,8 @@ void Application::drawFrame() {
     // screen space, rather than a fixed screen-center crosshair -- with a
     // third-person chase camera that looks at the tank rather than down the
     // barrel, screen center doesn't correspond to where a shot will go.
-    glm::vec3 aimWorldPoint = tank_->muzzleWorldPosition() + tank_->aimDirection() * 25.0f;
+    glm::vec3 aimWorldPoint =
+        tank_->muzzleWorldPosition() + tank_->aimDirection() * kAimProjectionDistance;
     glm::vec4 aimClip = ubo.proj * ubo.view * glm::vec4(aimWorldPoint, 1.0f);
     if (aimClip.w > 0.01f) {
         glm::vec2 aimNDC = glm::vec2(aimClip.x, aimClip.y) / aimClip.w;

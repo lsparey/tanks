@@ -4,8 +4,9 @@
 
 class InputManager;
 
-// Free-fly camera for M3 (WASD + mouse look). Gains a follow mode in M5 once
-// there's a Tank to follow.
+// Shared free-fly and tank-follow camera. Application selects whether it
+// follows the hull, frames a point along the turret's aim line, or accepts
+// direct free-camera input.
 class Camera {
 public:
     explicit Camera(glm::vec3 position = glm::vec3(0.0f, 8.0f, 15.0f), float yawDegrees = -90.0f,
@@ -19,6 +20,12 @@ public:
     // from wherever followTarget last left the camera.
     void followTarget(glm::vec3 targetPosition, glm::vec3 targetForward, float distance = 8.0f,
                        float height = 3.5f);
+
+    // Closer aiming view: orbit behind the horizontal turret direction and
+    // look directly at aimPoint. Passing the same aim point used by the HUD
+    // keeps its projected crosshair centered in this mode.
+    void followAimTarget(glm::vec3 targetPosition, glm::vec3 aimPoint, float distance = 5.8f,
+                         float height = 2.8f);
 
     glm::mat4 viewMatrix() const;
     glm::mat4 projMatrix(float aspect) const;

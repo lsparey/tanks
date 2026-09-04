@@ -12,6 +12,8 @@ Unchecked items are options rather than a committed roadmap.
 - [x] [Core Vulkan renderer](#core-renderer)
 - [x] [Procedural world and environment](#procedural-world-and-environment)
 - [x] [Tank, weapons, and interaction](#tank-weapons-and-interaction)
+- [x] [Main-gun elevation](#main-gun-elevation)
+- [x] [Turret-locked aiming camera](#turret-locked-aiming-camera)
 - [x] [Lighting, materials, and effects](#lighting-materials-and-effects)
 - [x] [English temperate grass palette](#english-temperate-grass-palette)
 - [x] [Tank movement and suspension physics](#tank-physics-checkpoint)
@@ -20,7 +22,7 @@ Unchecked items are options rather than a committed roadmap.
 
 ### Tank and physics candidates
 
-- [ ] [Gun recoil](#gun-recoil)
+- [x] [Gun recoil](#gun-recoil)
 - [ ] [Hull-shaped collision](#hull-shaped-collision)
 - [ ] [Surface-dependent traction](#surface-dependent-traction)
 - [ ] [Animated tracks](#animated-tracks)
@@ -81,7 +83,9 @@ Unchecked items are options rather than a committed roadmap.
 
 - Imported multipart tank model with separately rendered hull, tracks,
   turret, and barrel materials.
-- Player driving, independent turret traverse, follow camera, and free camera.
+- Player driving, independent turret traverse, main-gun elevation, hull-follow
+  camera, turret-locked aiming camera, and free camera.
+- Gun recoil with a damped barrel return and chassis impulse.
 - Muzzle-accurate projectile spawning with swept collision tests against
   boxes, trees, and rocks, plus terrain impact detection.
 - Destructible target boxes, impact flashes, dynamic explosion lights, debris,
@@ -109,6 +113,23 @@ Unchecked items are options rather than a committed roadmap.
 - Random per-run pairing retains natural variation without selecting dry or
   straw-dominated terrain.
 
+### Main-gun elevation
+
+- `R` raises and `F` lowers the barrel around a geometry-derived trunnion.
+- Depression is limited to −10° and elevation to +20°, matching the published
+  Challenger 2 main-armament envelope.
+- The barrel mesh, muzzle position, projectile direction, crosshair, recoil,
+  and ray-tracing instance all share the elevated transform.
+- The camera-mode toggle moved from `F` to `C` to avoid an input conflict.
+
+### Turret-locked aiming camera
+
+- `C` cycles through hull-follow, turret-aiming, and free-camera modes.
+- The aiming view orbits with turret traverse and looks along the elevated
+  main-gun aim line, keeping the projected crosshair centered.
+- Its closer offset retains a view of the tank while prioritizing accurate
+  target alignment over driving visibility.
+
 ## Tank physics checkpoint
 
 The current tank movement is a solid foundation and is a reasonable place to
@@ -132,13 +153,14 @@ playtesting rather than added for completeness.
 
 ### Gun recoil
 
-Animate the barrel backward when firing and return it with a damped spring.
-Add a small chassis impulse and, if it feels appropriate, subtle camera
-feedback.
+The barrel now snaps backward when firing and returns to rest with a damped
+spring. Each shot also gives the terrain-constrained chassis a small opposite
+velocity impulse. The follow camera deliberately remains stable because a
+camera displacement made the shot feel like a zoom rather than physical recoil.
 
 - Value: high visual and tactile payoff.
 - Complexity: low to medium.
-- Suggested priority: best next self-contained improvement.
+- Status: completed.
 
 ### Hull-shaped collision
 

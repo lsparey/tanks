@@ -41,6 +41,21 @@ void Camera::followTarget(glm::vec3 targetPosition, glm::vec3 targetForward, flo
     up_ = glm::normalize(glm::cross(right_, front_));
 }
 
+void Camera::followAimTarget(glm::vec3 targetPosition, glm::vec3 aimPoint, float distance,
+                             float height) {
+    glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
+    glm::vec3 targetToAim = aimPoint - targetPosition;
+    glm::vec3 horizontalAim(targetToAim.x, 0.0f, targetToAim.z);
+    float horizontalLength = glm::length(horizontalAim);
+    if (horizontalLength < 1e-5f) horizontalAim = front_;
+    else horizontalAim /= horizontalLength;
+
+    position_ = targetPosition - horizontalAim * distance + worldUp * height;
+    front_ = glm::normalize(aimPoint - position_);
+    right_ = glm::normalize(glm::cross(front_, worldUp));
+    up_ = glm::normalize(glm::cross(right_, front_));
+}
+
 glm::mat4 Camera::viewMatrix() const {
     return glm::lookAt(position_, position_ + front_, up_);
 }

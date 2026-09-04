@@ -23,10 +23,9 @@ class Terrain;
 // (the only two without their own DrawPart) are merged into one rigid hull
 // mesh; the turret (and the barrel riding on it) get their own yaw, driven
 // by Q/E, applied as a rotation about the model's local Y axis before the
-// hull's own placement -- the same scheme (and the same hardcoded
-// pivot-at-origin assumption) used by the original DirectX9 project this
-// asset came from. The tracks share the hull's own placement (they don't
-// move independently in this prototype).
+// hull's own placement. The barrel additionally pitches around a trunnion
+// derived from its breech geometry. The tracks share the hull's own
+// placement (they don't move independently in this prototype).
 class Tank {
 public:
     struct DrawPart {
@@ -74,13 +73,20 @@ public:
     float longitudinalAcceleration() const { return longitudinalAcceleration_; }
     float lateralSlipSpeed() const { return lateralSlipSpeed_; }
     float angularSpeed() const { return std::abs(angularVelocity_); }
-    // Firing/aim direction: hull forward rotated by the turret's yaw.
-    // Equal to forward() if the model had no separate turret to rotate.
+    // Firing/aim direction: hull forward rotated by the turret's yaw and
+    // the main gun's elevation. Equal to forward() if the model had no
+    // separate turret or barrel to rotate.
     glm::vec3 aimDirection() const;
     // World-space position of the barrel's muzzle tip, tracking the
     // turret's current yaw. Falls back to an approximate point along
     // aimDirection() if the model had no separate barrel material.
     glm::vec3 muzzleWorldPosition() const;
+
+    // Start a firing response: snap the barrel rearward into its return
+    // spring and add a small opposite impulse to the planar hull velocity.
+    // Projectile/muzzle effects should be spawned before calling this so
+    // they originate at the muzzle's pre-recoil position.
+    void applyGunRecoil();
 
     // Baked-in correction for the source model's own axes/scale/pivot,
     // applied before the computed world orientation. Tuned once by
@@ -95,8 +101,10 @@ private:
     void updateGroundPose(const Terrain& terrain);
     void updateSuspensionPose(const Terrain& terrain, float deltaTime,
                               float longitudinalAcceleration, float lateralAcceleration);
+    void updateGunRecoil(float deltaTime);
     glm::mat4 hullWorldMatrix() const;
     glm::mat4 turretWorldMatrix() const;
+    glm::mat4 barrelWorldMatrix() const;
 
     std::unique_ptr<Mesh> hullMesh_;
     std::unique_ptr<Mesh> turretMesh_;  // null if the model had no separate turret material
@@ -113,6 +121,10 @@ private:
     // barrel part's vertex farthest from the local origin (the turret's
     // pivot, which sits near the barrel's mount/breech end, not its tip).
     glm::vec3 muzzleLocal_{0.0f};
+    // Local trunnion at the center of the barrel's breech-end cross-section.
+    // Elevation rotates the barrel around this point rather than orbiting it
+    // around the model origin.
+    glm::vec3 barrelPivotLocal_{0.0f};
     float hullWidth_ = 0.0f;
     float hullLength_ = 0.0f;
 
@@ -152,6 +164,12 @@ private:
     float lateralSlipSpeed_ = 0.0f;
 
     float turretYaw_ = 0.0f;  // radians, relative to the hull, about local +Y
+    float gunElevation_ = 0.0f;  // radians; positive raises the muzzle
+
+    // Positive distance moves the barrel backward along its local -Z axis.
+    // Firing changes this immediately; a damped spring returns it to rest.
+    float barrelRecoilDistance_ = 0.0f;
+    float barrelRecoilVelocity_ = 0.0f;
 
     float turretTurnSpeedRadians_ = 0.6f;    // rad/s, turret -- slower than hull for finer aiming
 

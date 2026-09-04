@@ -63,6 +63,12 @@ public:
     void run();
 
 private:
+    enum class CameraMode {
+        HullFollow,
+        TurretAim,
+        Free,
+    };
+
     void initWindow();
     void mainLoop();
     void drawFrame();
@@ -74,8 +80,8 @@ private:
     size_t currentFrame_ = 0;
     double lastFrameTime_ = 0.0;
     float fpsSmoothed_ = 60.0f;
-    bool followTank_ = true;
-    bool prevFKeyDown_ = false;
+    CameraMode cameraMode_ = CameraMode::HullFollow;
+    bool prevCameraToggleKeyDown_ = false;
     bool prevFireDown_ = false;
     bool prevScreenshotKeyDown_ = false;
     std::optional<ScreenshotRequest> screenshotRequest_;

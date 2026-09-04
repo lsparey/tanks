@@ -143,8 +143,9 @@ the swapchain and dependent render targets are recreated automatically.
 | `W` / `S` | Drive forward / reverse |
 | `A` / `D` | Steer left / right; pivot at low speed |
 | `Q` / `E` | Traverse turret left / right |
+| `R` / `F` | Raise / lower the main gun (+20° / −10° limits) |
 | Left mouse button or `Space` | Fire |
-| `F` | Toggle follow and free-camera modes |
+| `C` | Cycle hull-follow, turret-aiming, and free-camera modes |
 | Mouse | Look around in free-camera mode |
 | Arrow keys | Move horizontally in free-camera mode |
 | `Space` / Left `Ctrl` | Move up / down in free-camera mode |

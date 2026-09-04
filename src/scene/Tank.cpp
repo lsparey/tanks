@@ -41,6 +41,14 @@ constexpr float kMaximumDynamicPitch = 0.0610865f;  // 3.5 degrees
 constexpr float kMaximumDynamicRoll = 0.0523599f;   // 3 degrees
 constexpr float kTrackCenterOffsetScale = 0.39f;
 constexpr float kGroundFeedbackResponse = 10.0f;
+constexpr float kBarrelRecoilKickDistance = 0.28f;
+constexpr float kMaximumBarrelRecoilDistance = 0.42f;
+constexpr float kBarrelRecoilFrequency = 3.2f;
+constexpr float kBarrelRecoilDampingRatio = 0.72f;
+constexpr float kHullRecoilImpulseSpeed = 0.24f;
+constexpr float kGunElevationSpeedRadians = 0.1745329f;  // 10 degrees/s
+constexpr float kMinimumGunElevation = -0.1745329f;      // -10 degrees
+constexpr float kMaximumGunElevation = 0.3490659f;       // +20 degrees
 
 float moveTowards(float value, float target, float maxDelta) {
     if (value < target) return std::min(value + maxDelta, target);
@@ -173,13 +181,25 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
         // the point farthest from the origin is reliably the far (muzzle)
         // end instead.
         float maxDistSq = -1.0f;
+        glm::vec3 barrelMinimum = barrelPart->vertices.front().position;
+        glm::vec3 barrelMaximum = barrelMinimum;
         for (const auto& v : barrelPart->vertices) {
             float distSq = glm::dot(v.position, v.position);
             if (distSq > maxDistSq) {
                 maxDistSq = distSq;
                 muzzleLocal_ = v.position;
             }
+            barrelMinimum = glm::min(barrelMinimum, v.position);
+            barrelMaximum = glm::max(barrelMaximum, v.position);
         }
+
+        // This model's barrel is authored along local +Z and begins at a
+        // flat breech cross-section inside the turret. Its AABB center in
+        // X/Y plus the minimum Z therefore gives a robust trunnion without
+        // hardcoding a coordinate from this particular asset export.
+        barrelPivotLocal_ = glm::vec3(0.5f * (barrelMinimum.x + barrelMaximum.x),
+                                      0.5f * (barrelMinimum.y + barrelMaximum.y),
+                                      barrelMinimum.z);
     }
     if (trackPart) {
         trackMesh_ = std::make_unique<Mesh>(ctx, commands, trackPart->vertices, trackPart->indices);
@@ -201,6 +221,12 @@ void Tank::update(const InputManager& input, float deltaTime, const Terrain& ter
 
     if (input.isKeyDown(GLFW_KEY_Q)) turretYaw_ += turretTurnSpeedRadians_ * deltaTime;
     if (input.isKeyDown(GLFW_KEY_E)) turretYaw_ -= turretTurnSpeedRadians_ * deltaTime;
+    if (input.isKeyDown(GLFW_KEY_R)) gunElevation_ += kGunElevationSpeedRadians * deltaTime;
+    if (input.isKeyDown(GLFW_KEY_F)) gunElevation_ -= kGunElevationSpeedRadians * deltaTime;
+    gunElevation_ =
+        glm::clamp(gunElevation_, kMinimumGunElevation, kMaximumGunElevation);
+
+    updateGunRecoil(deltaTime);
 
     // Fixed simulation steps make force integration and collision response
     // independent of render cadence. Discard excessive time after a stall or
@@ -216,6 +242,45 @@ void Tank::update(const InputManager& input, float deltaTime, const Terrain& ter
     // to produce its first fixed simulation step.
     updateGroundPose(terrain);
     if (!suspensionInitialized_) updateSuspensionPose(terrain, 0.0f, 0.0f, 0.0f);
+}
+
+void Tank::applyGunRecoil() {
+    // Displace immediately so even a single rendered frame communicates
+    // the shot, while repeated shots can accumulate a little without ever
+    // pulling the barrel implausibly far into the turret.
+    barrelRecoilDistance_ =
+        std::min(barrelRecoilDistance_ + kBarrelRecoilKickDistance,
+                 kMaximumBarrelRecoilDistance);
+    barrelRecoilVelocity_ = std::max(barrelRecoilVelocity_, 0.0f);
+
+    // Apply the equal-and-opposite response in the turret's firing direction,
+    // projected onto the ground plane because the gameplay body is terrain
+    // constrained. The existing traction and drag then settle the impulse.
+    glm::vec3 shotDirection = aimDirection();
+    glm::vec2 planarShotDirection(shotDirection.x, shotDirection.z);
+    float planarLength = glm::length(planarShotDirection);
+    if (planarLength > 1e-5f) {
+        velocity_ -= (planarShotDirection / planarLength) * kHullRecoilImpulseSpeed;
+    }
+}
+
+void Tank::updateGunRecoil(float deltaTime) {
+    // Integrate in small steps so a window drag or debugger pause cannot
+    // destabilize the relatively quick return spring.
+    float remaining = glm::clamp(deltaTime, 0.0f, kMaxFrameDelta);
+    while (remaining > 0.0f) {
+        float step = std::min(remaining, kFixedMovementStep);
+        springTowards(barrelRecoilDistance_, barrelRecoilVelocity_, 0.0f,
+                      kBarrelRecoilFrequency, kBarrelRecoilDampingRatio, step);
+        remaining -= step;
+    }
+
+    // The barrel should settle at its authored rest position rather than
+    // visibly oscillating forward through it.
+    if (barrelRecoilDistance_ <= 0.0f) {
+        barrelRecoilDistance_ = 0.0f;
+        barrelRecoilVelocity_ = 0.0f;
+    }
 }
 
 void Tank::simulateMovement(
@@ -466,6 +531,20 @@ glm::mat4 Tank::turretWorldMatrix() const {
     return hullWorldMatrix() * localSpin;
 }
 
+glm::mat4 Tank::barrelWorldMatrix() const {
+    // GLM's positive rotation around local +X pitches +Z downward, hence
+    // the negative elevation angle here. Translate to/from the derived
+    // trunnion so the breech stays seated in the mantlet. Recoil is applied
+    // in barrel-local space before that pitch, keeping it on the bore axis.
+    glm::mat4 toPivot = glm::translate(glm::mat4(1.0f), barrelPivotLocal_);
+    glm::mat4 elevation =
+        glm::rotate(glm::mat4(1.0f), -gunElevation_, glm::vec3(1.0f, 0.0f, 0.0f));
+    glm::mat4 fromPivot = glm::translate(glm::mat4(1.0f), -barrelPivotLocal_);
+    glm::mat4 recoil = glm::translate(glm::mat4(1.0f),
+                                      glm::vec3(0.0f, 0.0f, -barrelRecoilDistance_));
+    return turretWorldMatrix() * toPivot * elevation * fromPivot * recoil;
+}
+
 std::vector<Tank::DrawPart> Tank::drawParts() const {
     std::vector<DrawPart> parts;
     parts.push_back({hullMesh_.get(), hullWorldMatrix(), hullBLAS_->deviceAddress()});
@@ -481,11 +560,12 @@ std::vector<Tank::DrawPart> Tank::drawParts() const {
             parts.push_back({turretMesh_.get(), turretWorld, turretBLAS_->deviceAddress()});
         }
         // The barrel isn't independently elevated yet -- it just rides
-        // along with the turret's yaw, so it shares the same matrix. Bare
-        // metal, like the tracks.
+        // along with the turret's yaw, with a local translation added for
+        // firing recoil. Bare metal, like the tracks.
         if (barrelMesh_) {
             parts.push_back(
-                {barrelMesh_.get(), turretWorld, barrelBLAS_->deviceAddress(), /*metallic=*/true});
+                {barrelMesh_.get(), barrelWorldMatrix(), barrelBLAS_->deviceAddress(),
+                 /*metallic=*/true});
         }
     }
     return parts;
@@ -493,18 +573,23 @@ std::vector<Tank::DrawPart> Tank::drawParts() const {
 
 glm::vec3 Tank::aimDirection() const {
     if (!turretMesh_ && !barrelMesh_) return visualForward_;
-    // Rotating the world-space visualForward_ around visualUp_ by
-    // turretYaw_ is equivalent to rotating the local forward direction
-    // around local Y and then applying the hull's (rigid, orthonormal)
-    // transform -- same result as turretWorldMatrix(), without needing to
-    // go through local space for a plain direction vector.
+
+    if (barrelMesh_) {
+        // Translation components (pivot and recoil) disappear for a vector
+        // with w=0, leaving exactly the yawed/elevated bore direction used
+        // by the rendered barrel.
+        return glm::normalize(
+            glm::vec3(barrelWorldMatrix() * glm::vec4(0.0f, 0.0f, 1.0f, 0.0f)));
+    }
+
+    // A turret-only fallback has yaw but no independently pitched geometry.
     glm::mat4 rot = glm::rotate(glm::mat4(1.0f), turretYaw_, visualUp_);
     return glm::normalize(glm::vec3(rot * glm::vec4(visualForward_, 0.0f)));
 }
 
 glm::vec3 Tank::muzzleWorldPosition() const {
     if (barrelMesh_) {
-        return glm::vec3(turretWorldMatrix() * glm::vec4(muzzleLocal_, 1.0f));
+        return glm::vec3(barrelWorldMatrix() * glm::vec4(muzzleLocal_, 1.0f));
     }
     // No separate barrel material in the source model -- approximate.
     return visualPosition_ + aimDirection() * 3.3f + visualUp_ * 1.3f;
