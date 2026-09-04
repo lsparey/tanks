@@ -20,7 +20,7 @@ constexpr float kForwardTopSpeed = 7.5f;
 constexpr float kReverseTopSpeed = 4.5f;
 constexpr float kEngineAcceleration = 7.5f;
 constexpr float kBrakingAcceleration = 11.0f;
-constexpr float kRollingResistance = 0.7f;
+constexpr float kRollingResistance = 0.9f;
 constexpr float kLongitudinalDrag = 0.055f;
 constexpr float kLateralGrip = 9.0f;
 constexpr float kAngularAcceleration = 5.5f;
@@ -29,6 +29,8 @@ constexpr float kPivotYawRate = 1.35f;
 constexpr float kMovingYawRate = 0.82f;
 constexpr float kSlopeGravityScale = 0.72f;
 constexpr float kGravity = 9.81f;
+constexpr float kStaticHoldSpeed = 0.22f;
+constexpr float kStaticHoldMinimumNormalY = 0.9659258f;  // cos(15 degrees)
 constexpr float kMaximumGroundSpeed = 11.0f;
 constexpr float kMinimumClimbNormalY = 0.7880108f;  // cos(38 degrees)
 constexpr float kSuspensionContactInset = 0.42f;
@@ -325,8 +327,19 @@ void Tank::simulateMovement(
     glm::vec3 groundNormal = terrain.normalAt(position_.x, position_.z);
     glm::vec3 gravity(0.0f, -kGravity, 0.0f);
     glm::vec3 slopeGravity = gravity - groundNormal * glm::dot(gravity, groundNormal);
-    velocity_ += glm::vec2(slopeGravity.x, slopeGravity.z) *
-                 (kSlopeGravityScale * deltaTime);
+    bool noLongitudinalDrive = std::abs(driveDemand) <= 1e-4f;
+    bool onShallowSlope = groundNormal.y >= kStaticHoldMinimumNormalY;
+    bool nearlyStationary = glm::length(velocity_) <= kStaticHoldSpeed;
+    if (noLongitudinalDrive && onShallowSlope && nearlyStationary) {
+        // Static track friction/parking brake: once the tank has settled,
+        // cancel the small downhill gravity component rather than letting
+        // every fixed step restart an endless creep. Steeper slopes still
+        // overcome this hold and retain the existing downhill slide.
+        velocity_ = glm::vec2(0.0f);
+    } else {
+        velocity_ += glm::vec2(slopeGravity.x, slopeGravity.z) *
+                     (kSlopeGravityScale * deltaTime);
+    }
 
     float speedRatio = glm::clamp(std::abs(forwardSpeed) / kForwardTopSpeed, 0.0f, 1.0f);
     float yawLimit = glm::mix(kPivotYawRate, kMovingYawRate, speedRatio);

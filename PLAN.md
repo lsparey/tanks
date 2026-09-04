@@ -140,6 +140,8 @@ stop pending wider playtesting. It currently includes:
 - Differential-track steering and stationary pivot turns.
 - Forward/reverse speed differences and speed-dependent steering.
 - Terrain slope forces, lateral traction, and a maximum climbing angle.
+- Increased rolling resistance and a low-speed static-friction hold that
+  prevents stationary creep on slopes up to 15 degrees.
 - Velocity-aware obstacle sliding and stable boundary collisions.
 - Four-contact visual suspension with pitch, roll, and heave damping.
 - Acceleration squat, braking dive, and restrained cornering lean.
