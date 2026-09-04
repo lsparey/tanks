@@ -1,42 +1,188 @@
-# tanks
+# Tanks
 
-A from-scratch 3D tank prototype: drive a tank over procedural terrain and
-shoot procedural boxes. Built directly on Vulkan (no engine) with GLFW, GLM,
-and Assimp as the only dependencies. Targets Linux with an Intel GPU (Mesa
-ANV driver).
+Tanks is a from-scratch 3D tank prototype built directly on Vulkan, without a
+game engine. Drive a multipart tank across a procedurally generated landscape,
+traverse the turret, and fire at destructible targets while hardware ray
+queries provide shadows, ambient occlusion, and selected reflections.
 
-See `.claude`-adjacent plan notes for the full milestone breakdown. Current
-status: **M1 — window + swapchain + clear-color loop.**
+The project currently targets Linux and is developed against the Mesa Vulkan
+drivers. The renderer, simulation, terrain, materials, effects, and lightweight
+HUD are implemented in C++20; GLFW, GLM, Assimp, and stb are the only third-party
+runtime/build libraries.
 
-## Prerequisites (Ubuntu/Debian-style apt)
+## Highlights
+
+- Momentum-based tank movement with differential steering, slope response,
+  obstacle sliding, and four-point visual suspension.
+- Independent tread marks and contact-, speed-, and slip-driven track dust.
+- Procedural terrain, river water, English temperate grass, trees, shrubs,
+  rocks, cliffs, scree, clouds, and play-area boundary.
+- Multipart tank model with independent turret and barrel transforms.
+- Projectiles, destructible crates, impacts, debris, smoke, shell trails, and
+  short-lived explosion lighting.
+- Vulkan dynamic rendering, MSAA, instanced scenery, mesh LODs, GPU timings,
+  and temporally stabilized ray-query effects.
+- In-engine PNG screenshot capture for interactive and automated use.
+
+See [PLAN.md](PLAN.md) for the completed-feature index and possible future
+improvements.
+
+## Requirements
+
+### Hardware
+
+A Vulkan-capable GPU and driver with all of the following are required. There
+is currently no raster-only fallback:
+
+- Vulkan 1.3, including dynamic rendering and synchronization2.
+- Graphics and presentation queues with swapchain support.
+- Buffer device address.
+- `VK_KHR_acceleration_structure`.
+- `VK_KHR_deferred_host_operations`.
+- `VK_KHR_ray_query`.
+- `VK_KHR_ray_tracing_position_fetch`.
+- Sampler anisotropy and independent blending.
+
+The renderer automatically prefers a discrete GPU, then an integrated GPU,
+when more than one compatible device is available. It uses 4x MSAA where
+supported, falls back to 2x or 1x, and opens at 1280x720. The project has been
+developed on Intel Raptor Lake integrated graphics with the Mesa ANV driver;
+other sufficiently capable Vulkan drivers should work but are not yet a
+regularly tested target.
+
+Use `vulkaninfo` to inspect the installed driver before building:
 
 ```bash
-sudo apt install -y cmake ninja-build libvulkan-dev vulkan-validationlayers \
-    vulkan-tools spirv-tools glslc git pkg-config \
-    libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
-    libwayland-dev libxkbcommon-dev extra-cmake-modules
+vulkaninfo --summary
+vulkaninfo | grep -E 'VK_KHR_(acceleration_structure|deferred_host_operations|ray_query|ray_tracing_position_fetch)'
 ```
 
-vcpkg is vendored as a plain (gitignored) clone at `./vcpkg`, not a
-submodule. If it's missing:
+The application performs the authoritative feature check at startup and
+reports the selected GPU in the terminal.
+
+### Software
+
+- 64-bit Linux with an X11 or Wayland desktop session.
+- A C++20 compiler (GCC or Clang).
+- CMake 3.21 or newer and Ninja.
+- Git and a local vcpkg checkout.
+- Vulkan 1.3 headers and loader.
+- `glslc` for compiling GLSL shaders to SPIR-V.
+- Khronos validation layers when using the default Debug build.
+
+GLFW, GLM, Assimp, and stb are installed by vcpkg from [`vcpkg.json`](vcpkg.json).
+
+## Installing prerequisites
+
+On Ubuntu or Debian-based distributions:
 
 ```bash
-git clone https://github.com/microsoft/vcpkg.git
+sudo apt update
+sudo apt install -y \
+    build-essential cmake ninja-build git curl zip unzip pkg-config \
+    libvulkan-dev vulkan-tools vulkan-validationlayers glslc spirv-tools \
+    libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+    libwayland-dev wayland-protocols libxkbcommon-dev extra-cmake-modules
+```
+
+Install a current Vulkan driver for the GPU separately. On other Linux
+distributions, install the equivalent compiler, Vulkan SDK/validation-layer,
+shader-compiler, and GLFW platform-development packages.
+
+## Dependency setup
+
+vcpkg is expected at `./vcpkg`. It is intentionally gitignored rather than
+stored as a submodule. From the repository root, create it if necessary:
+
+```bash
+git clone https://github.com/microsoft/vcpkg.git vcpkg
 ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
 ```
 
-## Assets
+No separate asset download is needed. The tank model is included at
+`assets/models/tank.x`; the remaining textures and environment geometry are
+generated by the application.
 
-Place your tank model at `assets/models/tank.x` (needed starting at
-milestone M5; not required to build/run M1-M4).
+## Build
 
-## Build & run
+Configure and build the default Debug preset from the repository root:
 
 ```bash
 cmake --preset default
 cmake --build --preset default
+```
+
+The first configure can take several minutes while vcpkg downloads and builds
+the dependencies. Later builds are incremental. Shader changes are compiled
+automatically by the build.
+
+For an optimized build, configure the same preset with a Release override:
+
+```bash
+cmake --preset default -DCMAKE_BUILD_TYPE=Release
+cmake --build --preset default
+```
+
+## Run
+
+Start the interactive prototype with:
+
+```bash
 ./build/tanks
 ```
 
-The first configure will take a while: vcpkg builds GLFW, GLM, and Assimp
-from source.
+Runtime assets are resolved from the source tree, so the executable may also
+be launched from another working directory. Startup prints the selected GPU,
+ray-query support, and chosen MSAA sample count. Resize the window normally;
+the swapchain and dependent render targets are recreated automatically.
+
+### Controls
+
+| Input | Action |
+| --- | --- |
+| `W` / `S` | Drive forward / reverse |
+| `A` / `D` | Steer left / right; pivot at low speed |
+| `Q` / `E` | Traverse turret left / right |
+| Left mouse button or `Space` | Fire |
+| `F` | Toggle follow and free-camera modes |
+| Mouse | Look around in free-camera mode |
+| Arrow keys | Move horizontally in free-camera mode |
+| `Space` / Left `Ctrl` | Move up / down in free-camera mode |
+| `F12` | Save a PNG under `screenshots/` |
+| `Esc` | Quit |
+
+The mouse cursor is captured while the application is running. In free-camera
+mode, `Space` both raises the camera and fires because firing remains active.
+
+## Automated screenshot capture
+
+To render a frame to a PNG and exit:
+
+```bash
+./build/tanks --screenshot screenshots/example.png
+```
+
+By default the application captures frame 60, allowing temporal effects to
+settle. Select another frame by placing `--screenshot-frame` after the output
+option:
+
+```bash
+./build/tanks --screenshot screenshots/example.png --screenshot-frame 120
+```
+
+The destination directory is created automatically. Capture uses direct GPU
+readback, so it does not depend on desktop screenshot support.
+
+## Troubleshooting
+
+- **No suitable device found:** update the GPU driver and confirm every Vulkan
+  feature and extension listed under Hardware. Ray-query support alone is not
+  enough; ray-tracing position fetch is also mandatory.
+- **Validation layer unavailable:** install `vulkan-validationlayers`, or use a
+  Release build, which disables validation layers.
+- **CMake cannot find `glslc`:** install the distribution's `glslc` package or
+  Vulkan SDK and ensure the executable is on `PATH`.
+- **CMake cannot find the vcpkg toolchain:** clone and bootstrap vcpkg at the
+  exact `./vcpkg` path used above, then configure again.
+- **Window creation or presentation fails:** confirm a working X11/Wayland
+  session and that the installed Vulkan driver supports presentation to it.
