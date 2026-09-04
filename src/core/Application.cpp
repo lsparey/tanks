@@ -482,7 +482,8 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
             *rockStandaloneTextures_.back(), *rockStandaloneTextures_.back()));
     }
     sedimentaryCliffMesh_ = std::make_unique<Mesh>(Mesh::sedimentaryCliff(
-        *context_, *commands_, glm::vec3(1.0f, 1.0f, 1.0f), 7331));
+        *context_, *commands_, glm::vec3(1.0f, 1.0f, 1.0f), 7331, /*topOnly=*/false,
+        &sedimentaryCliffCollisionFootprint_));
     sedimentaryCliffGrassMesh_ = std::make_unique<Mesh>(Mesh::sedimentaryCliff(
         *context_, *commands_, glm::vec3(1.0f), 7331, /*topOnly=*/true));
     // A small pool of distinct fractal branch structures (see
@@ -546,43 +547,46 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
 
     // Static collision circles for the tank's own movement (see
     // Tank::update) -- trees/rocks never move, so this is built once
-    // rather than every frame. Radii are rough stand-ins for a trunk
-    // (trees) or the rock's own jittered-icosahedron footprint (rocks),
-    // scaled by each instance's own scale.
+    // rather than every frame. Each proxy is deliberately kept within the
+    // visible ground-level shape so the hull cannot catch on empty space.
     for (const auto& tree : trees_) {
+        // Only the trunk is solid at hull height. Branches and foliage must
+        // not widen the collision shape beyond the visible base.
+        constexpr float kTreeTrunkRadius = 0.17f;
         obstacles_.push_back(
-            {glm::vec2(tree.position.x, tree.position.z), 0.4f * tree.scale});
+            {glm::vec2(tree.position.x, tree.position.z), kTreeTrunkRadius * tree.scale});
     }
     for (const auto& rock : rocks_) {
-        obstacles_.push_back(
-            {glm::vec2(rock.position.x, rock.position.z), 0.8f * rock.scale});
+        const Mesh& mesh = *rockMeshes_.at(static_cast<size_t>(rock.meshVariant));
+        // Pull inward from the projected convex outline to account for
+        // authored chips and the portion sunk into the terrain.
+        constexpr float kRockCollisionInset = 0.82f;
+        obstacles_.push_back({glm::vec2(rock.position.x, rock.position.z),
+                              mesh.horizontalInscribedRadius() * kRockCollisionInset * rock.scale});
     }
     for (const auto& cliff : sedimentaryCliffs_) {
-        // Each independently terrain-fitted section is approximated by a
-        // short capsule-like chain rather than the old formation-wide one.
-        // CollisionSystem is 2D, so explicitly test how much stone is above
-        // the terrain at each circle: a buried/flush plate should not become
-        // an invisible wall merely because its mesh extends underground.
-        constexpr int kCliffCollisionPieces = 5;
-        constexpr float kCliffHalfLength = 4.4f;
-        constexpr float kCliffTopLocalHeight = 0.5f;  // includes the turf cap
-        constexpr float kMinimumBlockingExposure = 0.24f;
-        constexpr float kFullBlockingExposure = 0.65f;
-        constexpr float kMinPieceRadius = 0.55f;
-        constexpr float kMaxPieceRadius = 1.2f;
+        // The procedural mesh reports the actual center, radius, and height
+        // of each visible base plate. Transform those same authored pieces
+        // into world space instead of laying an unrelated broad chain over
+        // the section (the source of the old invisible end caps and gaps).
+        constexpr float kMinimumBlockingExposure = 0.18f;
+        constexpr float kFullBlockingExposure = 0.48f;
         glm::vec2 localXAxis(std::cos(cliff.yaw), -std::sin(cliff.yaw));
+        glm::vec2 localZAxis(std::sin(cliff.yaw), std::cos(cliff.yaw));
         glm::vec2 cliffCenter(cliff.position.x, cliff.position.z);
-        for (int piece = 0; piece < kCliffCollisionPieces; ++piece) {
-            float t = static_cast<float>(piece) / (kCliffCollisionPieces - 1);
-            float localX = glm::mix(-kCliffHalfLength, kCliffHalfLength, t);
-            glm::vec2 center = cliffCenter + localXAxis * (localX * cliff.scale);
-            float visibleTop = cliff.position.y + kCliffTopLocalHeight * cliff.scale;
+        for (const Mesh::FootprintCircle& piece : sedimentaryCliffCollisionFootprint_) {
+            glm::vec2 localOffset = localXAxis * piece.center.x + localZAxis * piece.center.y;
+            glm::vec2 center = cliffCenter + localOffset * cliff.scale;
+            float visibleTop = cliff.position.y + piece.topHeight * cliff.scale;
             float exposedHeight = visibleTop - terrain_->heightAt(center.x, center.y);
             if (exposedHeight <= kMinimumBlockingExposure) continue;
 
             float exposure = glm::smoothstep(kMinimumBlockingExposure,
                                              kFullBlockingExposure, exposedHeight);
-            float radius = glm::mix(kMinPieceRadius, kMaxPieceRadius, exposure) * cliff.scale;
+            // A barely exposed ledge gets only a partial footprint; a fully
+            // visible plate uses the conservative circle generated from its
+            // exact polygon.
+            float radius = piece.radius * cliff.scale * glm::mix(0.45f, 1.0f, exposure);
             obstacles_.push_back({center, radius});
         }
     }

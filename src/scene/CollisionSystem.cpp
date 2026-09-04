@@ -82,3 +82,48 @@ CollisionSystem::CircleCollisionResult CollisionSystem::resolveCircleCollisions(
     }
     return {position, velocity};
 }
+
+CollisionSystem::CapsuleCollisionResult CollisionSystem::resolveCapsuleCircleCollisions(
+    glm::vec2 position, glm::vec2 velocity, glm::vec2 forward,
+    float halfSegmentLength, float radius, const std::vector<CircleObstacle>& obstacles,
+    int solverIterations) {
+    float forwardLength = glm::length(forward);
+    glm::vec2 axis = forwardLength > 1e-5f ? forward / forwardLength : glm::vec2(0.0f, 1.0f);
+    halfSegmentLength = std::max(halfSegmentLength, 0.0f);
+    radius = std::max(radius, 0.0f);
+
+    bool collided = false;
+    for (int iteration = 0; iteration < solverIterations; ++iteration) {
+        bool corrected = false;
+        for (const auto& obstacle : obstacles) {
+            float alongSpine = glm::clamp(glm::dot(obstacle.center - position, axis),
+                                          -halfSegmentLength, halfSegmentLength);
+            glm::vec2 closestPoint = position + axis * alongSpine;
+            glm::vec2 delta = closestPoint - obstacle.center;
+            float distance = glm::length(delta);
+            float minimumDistance = radius + obstacle.radius;
+            if (distance >= minimumDistance) continue;
+
+            // If the obstacle center lies exactly on the capsule spine, use
+            // incoming motion when available; otherwise choose one stable
+            // spine normal. Normal always points from obstacle to capsule.
+            glm::vec2 normal;
+            if (distance > 1e-5f) {
+                normal = delta / distance;
+            } else if (glm::length(velocity) > 1e-5f) {
+                normal = -glm::normalize(velocity);
+            } else {
+                normal = glm::vec2(-axis.y, axis.x);
+            }
+
+            position += normal * (minimumDistance - distance);
+            float inwardSpeed = glm::dot(velocity, normal);
+            if (inwardSpeed < 0.0f) velocity -= normal * inwardSpeed;
+            corrected = true;
+            collided = true;
+        }
+        if (!corrected) break;
+    }
+
+    return {position, velocity, collided};
+}

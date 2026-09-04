@@ -46,4 +46,20 @@ public:
     static CircleCollisionResult resolveCircleCollisions(
         glm::vec2 position, glm::vec2 velocity, float selfRadius,
         const std::vector<CircleObstacle>& obstacles, int solverIterations = 4);
+
+    struct CapsuleCollisionResult {
+        glm::vec2 position;
+        glm::vec2 velocity;
+        bool collided = false;
+    };
+
+    // Pushes an oriented capsule out of static circle obstacles in the XZ
+    // plane. `forward` is the capsule spine direction and
+    // `halfSegmentLength` is the distance from its center to either spine
+    // endpoint; `radius` rounds both ends and thickens the segment. Contact
+    // response removes only inward velocity, preserving obstacle sliding.
+    static CapsuleCollisionResult resolveCapsuleCircleCollisions(
+        glm::vec2 position, glm::vec2 velocity, glm::vec2 forward,
+        float halfSegmentLength, float radius,
+        const std::vector<CircleObstacle>& obstacles, int solverIterations = 4);
 };

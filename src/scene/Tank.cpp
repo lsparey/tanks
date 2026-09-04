@@ -33,6 +33,8 @@ constexpr float kStaticHoldSpeed = 0.22f;
 constexpr float kStaticHoldMinimumNormalY = 0.9659258f;  // cos(15 degrees)
 constexpr float kMaximumGroundSpeed = 11.0f;
 constexpr float kMinimumClimbNormalY = 0.7880108f;  // cos(38 degrees)
+constexpr float kHullCollisionRadiusScale = 0.5f;
+constexpr float kHullCollisionMargin = 0.06f;
 constexpr float kSuspensionContactInset = 0.42f;
 constexpr float kSuspensionHeightFrequency = 5.0f;
 constexpr float kSuspensionAngleFrequency = 4.0f;
@@ -352,37 +354,41 @@ void Tank::simulateMovement(
     position_.x += velocity_.x * deltaTime;
     position_.z += velocity_.y * deltaTime;
 
-    // Hull-width-derived collision radius (a circle is a rough stand-in for
-    // the hull's actual rectangular footprint, but is enough to stop the
-    // tank driving through a tree/rock without needing real hull-vs-hull
-    // shape collision).
-    float collisionRadius = hullWidth_ * 0.6f;
-    CollisionSystem::CircleCollisionResult collision =
-        CollisionSystem::resolveCircleCollisions(glm::vec2(position_.x, position_.z), velocity_,
-                                                  collisionRadius, obstacles);
+    // An oriented capsule follows the long hull much more closely than the
+    // old width-derived circle. Its radius spans half the hull width plus a
+    // small clearance margin; shortening the center segment by that radius
+    // keeps the rounded nose/tail at the model's actual longitudinal ends.
+    float collisionRadius = hullWidth_ * kHullCollisionRadiusScale + kHullCollisionMargin;
+    float collisionHalfSegment = std::max(hullLength_ * 0.5f - collisionRadius, 0.0f);
+    glm::vec2 collisionForward(std::sin(yaw_), std::cos(yaw_));
+    CollisionSystem::CapsuleCollisionResult collision =
+        CollisionSystem::resolveCapsuleCircleCollisions(
+            glm::vec2(position_.x, position_.z), velocity_, collisionForward,
+            collisionHalfSegment, collisionRadius, obstacles);
     position_.x = collision.position.x;
     position_.z = collision.position.y;
     velocity_ = collision.velocity;
 
     // Keep the hull fully inside the play-area boundary (see
-    // BoundaryGenerator) rather than letting it drive out through the wall
-    // of light -- clamped by the hull's own collision radius so the wall
-    // reads as a solid surface the tank's front stops flush against,
-    // rather than the hull's center (and therefore half its body) crossing
-    // through before the clamp takes effect.
-    float clampExtent = boundaryHalfExtent - collisionRadius;
-    if (position_.x < -clampExtent) {
-        position_.x = -clampExtent;
+    // BoundaryGenerator). A capsule's axis-aligned extent changes with hull
+    // yaw, so compute it from the oriented center segment plus its radius;
+    // this keeps nose, tail, and track sides behind the wall in every pose.
+    float collisionExtentX = std::abs(collisionForward.x) * collisionHalfSegment + collisionRadius;
+    float collisionExtentZ = std::abs(collisionForward.y) * collisionHalfSegment + collisionRadius;
+    float clampExtentX = boundaryHalfExtent - collisionExtentX;
+    float clampExtentZ = boundaryHalfExtent - collisionExtentZ;
+    if (position_.x < -clampExtentX) {
+        position_.x = -clampExtentX;
         if (velocity_.x < 0.0f) velocity_.x = 0.0f;
-    } else if (position_.x > clampExtent) {
-        position_.x = clampExtent;
+    } else if (position_.x > clampExtentX) {
+        position_.x = clampExtentX;
         if (velocity_.x > 0.0f) velocity_.x = 0.0f;
     }
-    if (position_.z < -clampExtent) {
-        position_.z = -clampExtent;
+    if (position_.z < -clampExtentZ) {
+        position_.z = -clampExtentZ;
         if (velocity_.y < 0.0f) velocity_.y = 0.0f;
-    } else if (position_.z > clampExtent) {
-        position_.z = clampExtent;
+    } else if (position_.z > clampExtentZ) {
+        position_.z = clampExtentZ;
         if (velocity_.y > 0.0f) velocity_.y = 0.0f;
     }
 

@@ -23,7 +23,7 @@ Unchecked items are options rather than a committed roadmap.
 ### Tank and physics candidates
 
 - [x] [Gun recoil](#gun-recoil)
-- [ ] [Hull-shaped collision](#hull-shaped-collision)
+- [x] [Hull-shaped collision](#hull-shaped-collision)
 - [ ] [Surface-dependent traction](#surface-dependent-traction)
 - [ ] [Animated tracks](#animated-tracks)
 - [ ] [Physics tuning tools](#physics-tuning-tools)
@@ -86,6 +86,8 @@ Unchecked items are options rather than a committed roadmap.
 - Player driving, independent turret traverse, main-gun elevation, hull-follow
   camera, turret-locked aiming camera, and free camera.
 - Gun recoil with a damped barrel return and chassis impulse.
+- Hull-aligned capsule collision with stable obstacle sliding and
+  orientation-aware play-area boundaries.
 - Muzzle-accurate projectile spawning with swept collision tests against
   boxes, trees, and rocks, plus terrain impact detection.
 - Destructible target boxes, impact flashes, dynamic explosion lights, debris,
@@ -166,13 +168,17 @@ camera displacement made the shot feel like a zoom rather than physical recoil.
 
 ### Hull-shaped collision
 
-Replace the circular tank footprint with a capsule or oriented rectangle. This
-would better represent the long hull when scraping rocks, approaching corners,
-or passing through narrow spaces.
+The tank now uses a rounded, hull-aligned capsule instead of a single circular
+footprint. It resolves against existing tree and rock proxies while preserving
+tangential velocity for smooth scraping and sliding. Boundary clearance also
+accounts for the capsule's changing X/Z extent as the tank rotates. Static
+obstacle proxies now stay inside visible geometry: trees use their trunk base,
+rocks use each procedural variant's silhouette, and cliffs use the actual
+terrain-exposed footprint of each broken stone plate.
 
 - Value: high if current obstacle contacts feel awkward; otherwise modest.
 - Complexity: medium.
-- Suggested priority: address in response to collision-related playtest issues.
+- Status: completed.
 
 ### Surface-dependent traction
 

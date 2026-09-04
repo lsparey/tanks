@@ -165,6 +165,7 @@ private:
     std::unique_ptr<Mesh> boundaryWallMesh_;
     std::unique_ptr<Mesh> sedimentaryCliffMesh_;
     std::unique_ptr<Mesh> sedimentaryCliffGrassMesh_;
+    std::vector<Mesh::FootprintCircle> sedimentaryCliffCollisionFootprint_;
     // Half-extent of the square play-area boundary (see BoundaryGenerator)
     // -- also used by Tank::update to keep the hull from driving through
     // the boundary's wall of light.

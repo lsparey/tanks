@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <random>
 #include <utility>
@@ -236,10 +237,29 @@ void appendLeafBlob(std::vector<Vertex>& vertices, std::vector<uint32_t>& indice
     }
 }
 
+float calculateHorizontalInscribedRadius(const std::vector<glm::vec3>& positions) {
+    // Find the smallest support distance of the XZ projection from the
+    // local origin. For the convex, roughly round rock meshes this produces
+    // a centered circle that stays within their projected silhouette.
+    constexpr int kFootprintDirections = 64;
+    float radius = std::numeric_limits<float>::max();
+    for (int i = 0; i < kFootprintDirections; ++i) {
+        float angle = static_cast<float>(i) / kFootprintDirections * 2.0f * kPi;
+        glm::vec2 direction(std::cos(angle), std::sin(angle));
+        float support = -std::numeric_limits<float>::max();
+        for (const glm::vec3& position : positions) {
+            support = std::max(support,
+                               glm::dot(glm::vec2(position.x, position.z), direction));
+        }
+        radius = std::min(radius, support);
+    }
+    return positions.empty() ? 0.0f : std::max(radius, 0.0f);
+}
+
 }  // namespace
 
 Mesh::Mesh(VulkanContext& ctx, CommandContext& commands, const std::vector<Vertex>& vertices,
-           const std::vector<uint32_t>& indices)
+           const std::vector<uint32_t>& indices, float horizontalInscribedRadius)
     : vertexBuffer_(Buffer::uploadDeviceLocal(ctx, commands, vertices.data(),
                                                sizeof(Vertex) * vertices.size(),
                                                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)),
@@ -247,7 +267,8 @@ Mesh::Mesh(VulkanContext& ctx, CommandContext& commands, const std::vector<Verte
                                               sizeof(uint32_t) * indices.size(),
                                               VK_BUFFER_USAGE_INDEX_BUFFER_BIT)),
       vertexCount_(static_cast<uint32_t>(vertices.size())),
-      indexCount_(static_cast<uint32_t>(indices.size())) {}
+      indexCount_(static_cast<uint32_t>(indices.size())),
+      horizontalInscribedRadius_(horizontalInscribedRadius) {}
 
 void Mesh::bindAndDraw(VkCommandBuffer cmd) const {
     VkBuffer buffers[] = {vertexBuffer_.handle()};
@@ -451,11 +472,12 @@ Mesh Mesh::rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColo
         indices.insert(indices.end(), {base_ + 0, base_ + 1, base_ + 2});
     }
 
-    return Mesh(ctx, commands, vertices, indices);
+    return Mesh(ctx, commands, vertices, indices, calculateHorizontalInscribedRadius(deformed));
 }
 
 Mesh Mesh::sedimentaryCliff(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColor,
-                            uint32_t seed, bool topOnly) {
+                            uint32_t seed, bool topOnly,
+                            std::vector<FootprintCircle>* collisionFootprint) {
     std::mt19937 rng(seed);
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
@@ -467,7 +489,7 @@ Mesh Mesh::sedimentaryCliff(VulkanContext& ctx, CommandContext& commands, glm::v
     // plates. That discontinuity is essential: a single extruded outline
     // reads as a manufactured platform even when its surface is noisy.
     auto appendPlate = [&](glm::vec3 center, float width, float depth, float thickness,
-                           float angle, int corners) {
+                           float angle, int corners, bool addCollisionFootprint) {
         std::vector<glm::vec3> bottom(corners), top(corners);
         float ca = std::cos(angle), sa = std::sin(angle);
         for (int i = 0; i < corners; ++i) {
@@ -484,6 +506,22 @@ Mesh Mesh::sedimentaryCliff(VulkanContext& ctx, CommandContext& commands, glm::v
             bottom[i] = center + offset - glm::vec3(0.0f, kBuriedSkirtDepth, 0.0f);
             top[i] = center + offset +
                      glm::vec3(signedUnit(rng) * 0.025f, thickness, signedUnit(rng) * 0.025f);
+        }
+
+        if (collisionFootprint && addCollisionFootprint) {
+            float radius = std::numeric_limits<float>::max();
+            float topHeight = -std::numeric_limits<float>::max();
+            for (const glm::vec3& point : top) {
+                radius = std::min(radius, glm::length(glm::vec2(point.x - center.x,
+                                                                point.z - center.z)));
+                topHeight = std::max(topHeight, point.y);
+            }
+            // Polygon edges lie inside their corner radii. Keeping another
+            // small margin makes the proxy reliably visible at fractured
+            // edges and leaves the authored gaps between adjacent plates.
+            constexpr float kPolygonInset = 0.82f;
+            collisionFootprint->push_back(
+                {{center.x, center.z}, radius * kPolygonInset, topHeight});
         }
 
         glm::vec3 color = glm::clamp(baseColor + glm::vec3(colorDist(rng)), glm::vec3(0.0f),
@@ -541,7 +579,8 @@ Mesh Mesh::sedimentaryCliff(VulkanContext& ctx, CommandContext& commands, glm::v
         float thickness = 0.11f + unit(rng) * 0.09f;
         float angle = signedUnit(rng) * 0.24f;
         float baseY = unit(rng) * 0.07f;
-        appendPlate({x, baseY, z}, width, depth, thickness, angle, 7 + static_cast<int>(unit(rng) * 3.0f));
+        appendPlate({x, baseY, z}, width, depth, thickness, angle,
+                    7 + static_cast<int>(unit(rng) * 3.0f), true);
 
         // Intermittent second courses suggest sedimentary bedding without
         // producing the uniform layer-cake silhouette of the old mesh.
@@ -550,7 +589,7 @@ Mesh Mesh::sedimentaryCliff(VulkanContext& ctx, CommandContext& commands, glm::v
                          z + signedUnit(rng) * 0.1f},
                         width * (0.62f + unit(rng) * 0.18f), depth * 0.82f,
                         thickness * (0.65f + unit(rng) * 0.2f), angle + signedUnit(rng) * 0.12f,
-                        7 + static_cast<int>(unit(rng) * 3.0f));
+                        7 + static_cast<int>(unit(rng) * 3.0f), false);
         }
     }
 

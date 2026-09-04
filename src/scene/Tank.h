@@ -43,10 +43,10 @@ public:
     // Track-driven movement (W/S throttle, A/D differential steering) plus
     // turret traverse (Q/E, independent of hull yaw). Movement is simulated
     // in fixed-size substeps with acceleration, braking, traction, slope
-    // gravity, and velocity-aware collision response. `obstacles`
-    // (trees/rocks, see Application::obstacles_) approximates irregular
-    // silhouettes as circles in the XZ plane. `boundaryHalfExtent` likewise
-    // keeps the hull behind the play-area boundary's wall of light.
+    // gravity, and velocity-aware collision response. The hull uses an
+    // oriented capsule against the circular tree/rock proxies in `obstacles`
+    // (see Application::obstacles_). `boundaryHalfExtent` likewise keeps the
+    // complete oriented hull behind the play-area boundary's wall of light.
     void update(const InputManager& input, float deltaTime, const Terrain& terrain,
                 const std::vector<CollisionSystem::CircleObstacle>& obstacles,
                 float boundaryHalfExtent);
