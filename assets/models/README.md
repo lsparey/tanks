@@ -100,3 +100,27 @@ Small sprocket teeth, bolts and flexible skirts are omitted at this detail
 level. Launchers, lamps and optics are static details, not new gameplay systems.
 The current camouflage is retained; desert paint, markings and photographic
 weathering from the new references are intentionally not copied.
+
+## Realism roadmap and future asset work
+
+The [rendering roadmap](../../docs/RENDERING_ROADMAP.md) prioritises shared PBR
+materials and temporal stability before blanket mesh subdivision. The current
+material finishes are approximations; a future migration should map painted
+armour to dielectric coating, expose metal only where appropriate, and keep
+rubber distinct. Preserve authored scale, rig names, pivots, camouflage masks
+and static/animated comparisons during that migration. Filter fine normal and
+roughness detail so highlights do not sparkle at driving distance.
+
+Visual per-wheel contact and limited track adaptation are P2 work after eroded
+ground sampling is correct, separate from full suspension/airborne physics.
+Update raster and ray transforms together and review wheel/track intersections.
+Limited visual track sag is part of that P2 investigation; powered wheelspin,
+flexible-skirt physics and full contact dynamics remain P3 gameplay work.
+Additional fittings or improved authored normals/UVs should address visible
+silhouette or shading defects at actual screen size. Existing rig/material
+names describe today's compatibility contract; a future intentional change
+must update the loader, generator and regression tests together.
+
+Use normal animated gameplay for runtime budgets and `--static-tracks` only
+for controlled comparisons. The terrain overhaul does not require a new tank
+model, cinematic camera effects or per-shoe physics.

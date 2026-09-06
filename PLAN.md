@@ -6,6 +6,34 @@ tick an item only after its implementation has been completed and verified.
 The current goal defines the selected work. Other unchecked candidates are
 options rather than a committed roadmap.
 
+## Overall direction and priorities
+
+Build a more realistic-looking game with modern, cost-effective techniques on
+Intel Arc A370M, Linux/Mesa Vulkan at 1280×720. The
+[rendering roadmap](docs/RENDERING_ROADMAP.md) defines technique choices,
+dependencies, hardware checks and evidence required before enabling them.
+Hydraulic erosion is the immediate goal; it is part of a broader move toward
+coherent materials, lighting, geometry and motion rather than isolated polish.
+
+- **P0 — active:** terrain generation, hydrology, ground sampling and rebuilding
+  the non-tree environment around shared physical fields.
+- **P1 — foundations:** consistent physically based materials; linear HDR and
+  native temporal AA; measured ray budgets; resource ownership and selected
+  batching; grounded, surface-aware effects. Material foundations join the
+  terrain material stage; the erosion prototype does not wait for all of them.
+- **P2 — measured follow-ups:** temporal upscaling, terrain LOD, near grass,
+  GPU visibility, selective indirect lighting/reflection filtering, modest
+  atmosphere upgrades and visual suspension articulation.
+- **P3 — deferred:** simulation-heavy gameplay, general rigid bodies, new HUD
+  features and expensive rendering research without a demonstrated use case.
+
+New rendering work is planned, not delivered. The existing tree system remains
+protected. Establish a representative Release baseline before setting default
+quality; 60 Hz is a working aspiration, not a result inferred from the old
+Debug timings. Keep the roughly 5.3-second startup target and budget memory,
+CPU work, GPU work and temporal quality together. Completed entries describe
+initial delivered passes, not a ceiling on future visual fidelity.
+
 ## Current goal
 
 **Hydraulic erosion terrain overhaul — planned, not yet implemented.** Replace
@@ -61,6 +89,7 @@ as history, including terrain components this goal may replace.
 - [x] [Animated tracks](#animated-tracks)
 - [ ] [Physics tuning tools](#physics-tuning-tools)
 - [ ] [Dynamic props](#dynamic-props)
+- [ ] [Visual suspension articulation](#visual-suspension-articulation)
 - [ ] [Full suspension and airborne simulation](#full-suspension-and-airborne-simulation)
 
 ### Performance candidates
@@ -73,6 +102,7 @@ as history, including terrain components this goal may replace.
 - [ ] [Reuse per-frame CPU scratch storage](#reuse-per-frame-cpu-scratch-storage)
 - [ ] [Add scalable ray-tracing quality presets](#add-scalable-ray-tracing-quality-presets)
 - [ ] [Dynamic resolution or upscaling](#dynamic-resolution-or-upscaling)
+- [ ] [Terrain chunk culling and LOD](#terrain-chunk-culling-and-lod)
 - [ ] [GPU-driven visibility and indirect drawing](#gpu-driven-visibility-and-indirect-drawing)
 
 ### Visual candidates
@@ -83,6 +113,10 @@ as history, including terrain components this goal may replace.
 - [x] [Tank model silhouette and running gear](#tank-model-silhouette-and-running-gear)
 - [x] [Foliage and environmental motion](#foliage-and-environmental-motion)
 - [x] [Unified sky, sun, and atmosphere](#unified-sky-sun-and-atmosphere)
+- [ ] [Physically based material foundation](#physically-based-material-foundation)
+- [ ] [Linear HDR and temporal image stability](#linear-hdr-and-temporal-image-stability)
+- [ ] [Selective advanced lighting and atmosphere](#selective-advanced-lighting-and-atmosphere)
+- [ ] [Near-field ground vegetation](#near-field-ground-vegetation)
 - [ ] [Shorelines and terrain transitions](#shorelines-and-terrain-transitions)
 - [ ] [Particle and smoke presentation](#particle-and-smoke-presentation)
 - [ ] [Camera presentation](#camera-presentation)
@@ -250,13 +284,14 @@ terrain-exposed footprint of each broken stone plate.
 
 ### Surface-dependent traction
 
-Expose the terrain's visible surface classification to gameplay so grass,
-gravel, rock, mud, or wet ground can affect acceleration, braking, lateral
-grip, tread darkness, and dust production.
+Use final terrain surface/moisture fields for dust, tread marks and ground
+contact presentation during the environment rebuild. Grip, acceleration and
+braking changes are a separate handling follow-up after the new landscape is
+playtested; retain the settled handling while evaluating visual realism.
 
-- Value: adds handling variety and connects physics to the environment.
-- Complexity: medium.
-- Suggested priority: useful when the terrain types become meaningful to play.
+- Priority: P1 for surface-driven presentation; P2 for measured handling needs.
+- Dependency: authoritative terrain/material classifications and viable routes.
+- Acceptance: visible surface and effects agree; no accidental handling changes.
 
 ### Animated tracks
 
@@ -276,39 +311,50 @@ restores the static refined model for matched visual/performance comparisons.
 
 ### Physics tuning tools
 
-Move handling and suspension constants into a configuration structure or a
-small development UI. Useful parameters include engine acceleration, braking,
-drag, grip, yaw response, suspension frequency/damping, and dust intensity.
+Keep terrain diagnostics and generation controls in the active terrain work.
+A broader handling/suspension tuning UI remains optional. Add it when repeated
+playtesting exposes a specific need, rather than reopening physics for realism.
 
-- Value: speeds up repeated feel-tuning and comparison of handling presets.
-- Complexity: low to medium.
-- Suggested priority: worthwhile if movement tuning continues frequently.
+- Priority: P3; minimal diagnostic controls may accompany a concrete fix.
+- Acceptance: tuning is reproducible and does not alter the default preset.
 
 ### Dynamic props
 
-Allow the tank to push crates, debris, or other lightweight objects. This would
-require object mass, velocity, collision response, sleep behavior, and likely a
-broader rigid-body architecture or a physics library.
+Pushable crates and general rigid-body objects remain gameplay work. Prefer
+bounded, terrain-colliding cosmetic debris for the effects pass before adding
+mass, sleep, stacking and broad-phase physics to every prop.
 
-- Value: stronger environmental interaction.
-- Complexity: high.
-- Suggested priority: only when dynamic-object gameplay is planned.
+- Priority: P3; promote only for an interaction requirement.
+- Cost gate: simulation, collision and TLAS update load during sustained play.
+
+### Visual suspension articulation
+
+Evaluate per-wheel visual contact and limited track-path adaptation on the new
+terrain while preserving the existing hull simulation and named rig. Bound
+wheel travel, avoid belt/shoe intersections and keep raster/ray transforms
+consistent. Do not simulate individual tread shoes as rigid bodies.
+
+- Priority: P2 after terrain contact is correct and a visible gap is documented.
+- Dependency: terrain triangle sampling and the current running-gear contract.
+- Acceptance: side views and driving over banks improve without altering handling.
 
 ### Full suspension and airborne simulation
 
-Add vertical velocity, force-based individual track contacts, jumping, landing
-impulses, loss of traction while airborne, and possible rollover behavior.
+Vertical dynamics, force-based track contacts, jumping, landing and rollover
+remain deferred. They are not required to show plausible wheel contact on the
+eroded ground; visual articulation is a separate, smaller candidate.
 
-- Value: supports more extreme terrain and simulation-heavy handling.
-- Complexity: very high, with significant stability and tuning risk.
-- Suggested priority: defer unless jumping or rollover becomes a gameplay goal.
+- Priority: P3; promote for gameplay, not as a graphics prerequisite.
+- Acceptance: established driving stability, slope behaviour and collisions
+  survive a dedicated physics test programme.
 
 ## Tank physics recommendation
 
-Pause further tank movement work and evaluate it during normal gameplay. If no
-specific handling or collision problem emerges, gun recoil is the strongest
-next improvement because it adds impact without reopening the movement
-architecture.
+Keep established tank handling while integrating the eroded surface and viable
+spawn/routes. Recoil and animated tracks are already delivered. Prioritise
+correct contact and surface-driven dust/marks, then consider visual wheel
+articulation if the new terrain exposes a visible weakness. Broader handling
+and rigid-body work remains secondary to environment and rendering realism.
 
 ## Performance improvements
 
@@ -373,109 +419,110 @@ scripted gameplay replay remains future work.
 
 ### Instance decals and short-lived effects
 
-Track marks currently issue as many as 256 individual draw calls. Boxes,
-shells, smoke/dust puffs, debris, and flashes also contain groups sharing the
-same mesh and material. Extend instance data beyond transforms to include
-opacity and effect-specific parameters, then draw each compatible group in a
-small number of calls.
+Batch shared meshes with per-instance opacity and effect parameters where
+recording/draw overhead is measurable. Track marks can currently contribute up
+to 256 draws. Preserve depth/history rules and transparent ordering; a single
+unsorted batch is not a valid replacement for sorted smoke.
 
-- Value: potentially large reduction in CPU command-recording and driver
-  overhead, especially after sustained driving or explosions.
-- Complexity: medium.
-- Suggested priority: strongest general-purpose next optimization if CPU or
-  effects timing becomes significant.
+- Priority: P1 when sustained driving/effects profiles identify the cost.
+- Acceptance: appearance and ordering match, with lower CPU time at realistic
+  effect counts. Measure GPU overdraw independently of API draw counts.
 
 ### Remove the cross-frame CPU history wait
 
-The temporal-history ping-pong currently waits for both frame fences before
-recording the next frame. Investigate expressing the history dependency with
-correct GPU-side ordering and image barriers, or redesigning the history ring
-so the CPU can remain ahead without racing a previous read.
+Move temporal dependencies onto correctly ordered GPU work only after giving
+all mutable UBO, instance and indirect buffers explicit per-frame ownership.
+The current shared buffers make deleting a fence wait unsafe. Define history
+read/write lifetimes and barriers together with the HDR/temporal pass design.
 
-- Value: may restore meaningful CPU/GPU overlap and make the existing two
-  frames-in-flight effective.
-- Complexity: medium to high; synchronization errors can cause subtle temporal
-  noise or validation failures.
-- Suggested priority: profile fence-wait time first, then change only with
-  validation layers enabled and stable-image comparisons.
+- Priority: P1 if profiling shows recoverable CPU overlap; also a design constraint
+  for new frame resources.
+- Acceptance: clean validation, stable history through resize/cuts and improved
+  measured overlap. Dependent GPU temporal frames still require ordering.
 
 ### Refit the ray-tracing TLAS
 
-The scene TLAS is fully rebuilt every frame even though most instances and
-their transforms are static. Use a stable fixed-slot instance layout for
-terrain, scenery, tank parts, boxes, and shells, marking inactive dynamic slots
-with masks. Build with update support and use TLAS refit/update when only
-transforms or masks change.
+Benchmark legal fixed-slot TLAS update against rebuild, including subsequent
+ray traversal, inactive/masked instance semantics, scratch and allocation cost.
+Use update-capable initial builds only where they improve total frame cost.
+Preserve static terrain/tree BLAS unless their geometry actually changes.
 
-- Value: reduces acceleration-structure cost when TLAS timing is material.
-- Complexity: medium to high; requires stable instance counts and careful
-  capacity management.
-- Suggested priority: pursue only if the existing TLAS timestamp is a notable
-  part of the frame budget.
+- Priority: P2 if acceleration-structure work is significant after the terrain rebuild.
+- Acceptance: correct dynamic visibility and lower combined build/traversal cost;
+  a shorter update timestamp alone does not establish a win.
 
 ### Reuse per-frame CPU scratch storage
 
-Visibility grouping and ray-tracing instance gathering currently construct
-several vectors each frame. Store these as reusable frame scratch buffers,
-reserve known capacities once, and clear without releasing their allocations.
-Cache the static portion of the TLAS instance list and update only dynamic
-entries.
+Reuse visibility, bough-grouping and ray-instance storage with bounded capacity.
+Cache genuinely static data and keep per-frame ownership explicit. This can
+recover CPU cost for richer scenery without changing its appearance.
 
-- Value: reduces allocation churn and improves CPU frame-time consistency.
-- Complexity: low to medium.
-- Suggested priority: a safe cleanup after CPU profiling confirms measurable
-  command-preparation cost.
+- Priority: P1 when the Release profile confirms allocation/grouping cost.
+- Acceptance: fewer allocations and better frame-time tails without stale entries
+  or races; do not change culling/placement to make the timing look better.
 
 ### Add scalable ray-tracing quality presets
 
-Expose shadow, AO, and reflection distance/sample budgets as quality settings.
-Possible extensions include reducing rays during fast camera movement,
-disabling distant AO earlier, limiting water reflections by projected area,
-or tracing expensive terms at a reduced resolution before temporal recovery.
+Give shadows, AO and reflections explicit distance, sample, projected-area and
+roughness budgets on Arc A370M, with lower-cost compatibility settings for the
+integrated GPU. Tune stable budgets first. Preserve close solid contact and
+soft foliage shadows; avoid quality changes that visibly pump with camera speed.
 
-- Value: provides a direct GPU performance/quality tradeoff across different
-  hardware, especially the target integrated GPU.
-- Complexity: low for presets; high for reduced-resolution ray-query passes.
-- Suggested priority: use when fragment/ray-query time dominates the GPU
-  measurements.
+- Priority: P1 alongside the new material/lighting foundation.
+- P2 extension: reduced-resolution ray terms with depth/normal-aware temporal
+  reconstruction after the required buffers and histories exist.
+- Acceptance: measured GPU savings, stable moving edges and an explicit visual
+  cost for each setting. Do not assume more rays are necessary for realism.
 
 ### Dynamic resolution or upscaling
 
-Render the 3D scene below native resolution when GPU time exceeds a target,
-then upscale before the HUD. Temporal upscaling would require motion vectors
-and more robust history rejection; simple spatial upscaling is easier but
-produces a softer image.
+Evaluate temporal reconstruction after linear HDR, correct motion/depth,
+disocclusion and responsive masks are available. Begin with native temporal AA;
+retain native MSAA as the reference/fallback. At 720p, aggressive downscaling
+can lose leaves and aiming detail, so require a demonstrated net quality/cost win.
 
-- Value: broad GPU relief when fill rate and per-pixel ray queries dominate.
-- Complexity: medium for spatial scaling, very high for temporal upscaling.
-- Suggested priority: defer until quality presets are insufficient.
+- Priority: P2; dependent on the P1 temporal foundation.
+- Platform gate: verify native Linux/Vulkan SDK support, features and licences.
+  Arc hardware alone does not imply XeSS availability on this platform.
+- Acceptance: reconstruction cost, memory, thin detail, latency and motion quality
+  are included. Frame generation does not substitute for real frame performance.
+- Details: [rendering roadmap](docs/RENDERING_ROADMAP.md#hdr-temporal-stability-and-reconstruction).
+
+### Terrain chunk culling and LOD
+
+If erosion resolution makes the single terrain mesh expensive, prototype chunk
+culling and screen-error LOD with shared boundaries and smooth transitions.
+Retain exact near-field tank contact and define raster/ray/query error limits
+before using simplified geometry. Ordinary indexed meshes are the first path.
+
+- Priority: P2, triggered by terrain raster/traversal or mesh-memory cost.
+- Acceptance: no cracks, visible bank popping or contact/shadow disagreement.
+- Full virtualised geometry and streaming remain P3 research, not required work.
 
 ### GPU-driven visibility and indirect drawing
 
-Move large-scale visibility selection and draw generation to compute shaders
-using indirect draw commands. This becomes useful if object counts grow far
-beyond the current scene. Foliage already uses CPU-generated multi-draw
-indirect batches; culling and LOD selection remain on the CPU. The completed
-bough LOD work does not implement compute-driven visibility or a GPU cluster
-hierarchy.
+Foliage already uses CPU-generated multi-draw commands. Add compute culling,
+optional conservative HZB occlusion and indirect command generation only when
+denser terrain/ground vegetation makes CPU selection or hidden geometry a
+measured limit. Query optional features and retain a working indexed fallback.
 
-- Value: scales to much denser environments.
-- Complexity: high.
-- Suggested priority: defer unless profiling shows CPU visibility/submission
-  becoming a bottleneck as scene density grows.
+- Priority: P2 after terrain/vegetation density is defined.
+- Acceptance: moving-camera/disocclusion correctness and net CPU/GPU savings,
+  including compute/Hi-Z construction cost. Preserve the current tree LOD output.
+- Mesh shaders and Nanite-style hierarchy/streaming remain separate P3 research.
 
 ### Performance recommendation
 
-For the active terrain overhaul, measure CPU generation stages, derived fields,
-meshing, uploads and acceleration-structure builds before choosing erosion
-resolution, iteration count or a GPU backend. Coordinate terrain and existing
-tree jobs under one worker budget and report cold-cache startup independently.
-Use the existing profiler for runtime terrain/scenery costs; erosion itself
-should contribute no per-frame simulation work.
+Measure generation and runtime as separate budgets. Keep the accepted cold
+startup target while coordinating erosion and tree work under one worker budget.
+During runtime, benchmark representative Release driving, water, terrain and
+tree scenes before adding passes or choosing quality defaults.
 
-The [terrain plan's budgets](docs/TERRAIN_EROSION_PLAN.md#budgets-and-acceptance)
-are the acceptance gate. Effect instancing, frame-history synchronisation and
-TLAS changes remain separate candidates when measured cost justifies them.
+Prioritise measured allocation/batching/ownership fixes that make room for P1
+materials and temporal stability. Terrain LOD, GPU visibility, reduced-resolution
+ray passes and upscaling are targeted P2 experiments, not mandatory rewrites.
+Use the [rendering roadmap](docs/RENDERING_ROADMAP.md) for hardware/memory gates
+and the [terrain plan](docs/TERRAIN_EROSION_PLAN.md) for generation acceptance.
 
 ## Visual improvements
 
@@ -488,8 +535,9 @@ add effects indiscriminately.
 
 ### Establish visual targets
 
-The chosen direction is grounded British countryside daylight: cool sky fill,
-slightly warm sunlight, English greens, broken cloud, and pale distance haze.
+The chosen direction is a realistic British countryside scene: coherent scale,
+materials and motion under cool sky fill, warm sunlight, broken cloud and
+restrained haze. Exact legacy terrain colours and shapes are replaceable.
 [Visual target and in-game reference board](docs/VISUAL_TARGET.md) record the
 pillars and repeatable tank, landscape, and water/rock views. `--seed` and
 `--view` reproduce static scenes for future material and lighting comparisons.
@@ -497,7 +545,8 @@ pillars and repeatable tank, landscape, and water/rock views. `--seed` and
 - Value: keeps otherwise-good effects visually coherent and prevents endless
   local tweaking.
 - Complexity: low.
-- Status: completed; use the reference views for future visual changes.
+- Status: initial reference board completed; use the evolving realism criteria
+  and preserved tree views for future changes.
 
 ### Weapon firing presentation
 
@@ -510,9 +559,9 @@ Camera movement is unchanged.
 Dry terrain hits leave irregular scorch patches blended directly into the
 terrain material. They follow slopes, stay for 45 seconds and fade over the last
 12 seconds. At most 16 patches, 4 flashes and 48 muzzle-smoke cards are retained.
-Terrain marks add no draws or RT instances. Tree/rock surface marks, craters,
-depth-softened particle intersections and broader explosion/trail improvements
-remain separate work.
+Terrain marks add no draws or RT instances. Depth-softened intersections are
+P1 effect work; bounded impact marks on non-tree props are P2. Runtime craters
+and tree damage remain P3 gameplay work outside the terrain-generation goal.
 
 - Value: high; firing is a frequent focal action and currently offers the
   clearest opportunity for stronger visual feedback.
@@ -530,8 +579,9 @@ small to resolve on screen; flat triangulation seams and concave corners do
 not. Model-space dust masks tint and dull the lower
 hull/tracks, and the muzzle has a localized soot band. Roughness and highlight
 strength vary with wear, dust, and soot while retaining readable camouflage.
-This is a static weathering pass; driving-dependent dirt/mud buildup remains
-an optional follow-up. See the updated [tank reference](docs/VISUAL_TARGET.md#tank-material-checkpoint).
+This is a static weathering pass. Shared PBR response is P1; bounded
+surface-driven dirt/mud accumulation is P2 after terrain fields and filtered
+material masks exist. See the updated [tank reference](docs/VISUAL_TARGET.md#tank-material-checkpoint).
 
 - Value: improves the main object at every camera distance where detail is
   visible.
@@ -555,8 +605,9 @@ elevation, recoil, material and capsule-collision systems.
   roof fittings and split engine grilles are modelled. Small details and
   equipment-fit differences remain approximations, not an exact replica.
 - Editing and limitations: [model asset notes](assets/models/README.md).
-- Running-gear animation is now covered by [animated tracks](#animated-tracks).
-  Articulated suspension remains optional future work.
+- Running-gear animation is covered by [animated tracks](#animated-tracks).
+  [Visual articulation](#visual-suspension-articulation) is a P2 contact improvement;
+  finer fittings need a screen-size benefit rather than blanket subdivision.
 
 ### Foliage and environmental motion
 
@@ -568,8 +619,9 @@ geometry to animate.
 - Value: makes an otherwise-static landscape feel alive and improves motion
   cues when the tank is stationary.
 - Complexity: medium.
-- Suggested priority: refine only when remaining environmental stillness is
-  noticeable without disrupting the accepted crown shape or load time.
+- Priority: delivered tree motion is protected during the terrain overhaul.
+  Shared wind for new grass/effects is P2; independent tree flutter or animated
+  ray geometry remains deferred until separately justified.
 - Status: bark, leaves, and shrubs bend coherently from anchored roots,
   using one low-frequency wind vector per instance and quadratic trunk
   bending. Current and previous wind vectors are now evaluated once per
@@ -589,107 +641,155 @@ The visible sky and reflection misses now use one directional sky function and
 cloud-density texture, with a small sun disk aligned to the direct light.
 Shared daylight colours control sky, horizon haze, ambient fill, direct light,
 cloud shading, and reflection hits. Fog uses the cloud-free horizon gradient.
-This is a fixed daylight preset; moving cloud shadows and time-of-day animation
-remain optional follow-ups.
+This is a fixed daylight preset. Modest cloud motion/shadows and improved
+sky illumination are P2 under the advanced-lighting item; a full time-of-day
+or weather cycle remains P3 until broader gameplay/lighting needs justify it.
 
 - Value: improves scene-wide cohesion, particularly in water reflections and
   at the horizon.
 - Complexity: medium; dynamic time of day and cloud shadows increase it.
 - Status: completed for the fixed British daylight preset.
 
+### Physically based material foundation
+
+Replace the current mixed highlight/reflection approximations with a coherent
+opaque material model: energy-conserving GGX response, base colour, roughness,
+metal/dielectric behaviour and filtered normal detail. Coordinate this with the
+terrain material rebuild. Painted armour remains dielectric; exposed metal,
+stone, rubber and wet deposits need distinct responses. Preserve tree leaf
+transmission and verify its appearance under any shared lighting changes.
+
+- Priority: P1, beginning at the terrain's material stage.
+- Acceptance: convincing response in neutral/matched lighting without compensating
+  albedo hacks, specular shimmer or unexplained scene-tone shifts.
+
+### Linear HDR and temporal image stability
+
+Add a linear HDR colour target and one output exposure/tone-map stage. Define
+motion vectors for all moving/deforming surfaces, depth/velocity resolve,
+responsive masks, history rejection and reset rules. Then prototype native
+colour TAA with the existing MSAA path as a comparison/fallback. Current
+shadow/AO accumulation is not full-scene temporal AA.
+
+- Priority: P1; prerequisite for temporal upscaling and advanced reconstruction.
+- Acceptance: less foliage/specular shimmer without blurred leaves, tank trails
+  or aim-point softness, with measured bandwidth and memory cost.
+- Details: [temporal design](docs/RENDERING_ROADMAP.md#hdr-temporal-stability-and-reconstruction).
+
+### Selective advanced lighting and atmosphere
+
+Tie diffuse sky illumination and roughness-filtered reflections to the same
+procedural sky. Retain dynamic lights and selective ray-query visibility. If
+indirect lighting remains visibly deficient, test sparse dynamic irradiance
+probes with fixed update/ray/memory caps and a sky-fill fallback. This avoids
+committing the whole scene to expensive multi-bounce tracing.
+
+Prefer analytic aerial perspective and a shared cloud-motion/shadow field
+before a volumetric weather system. Limited low-resolution scattering is an
+experiment only where it materially improves depth and target readability.
+
+- Priority: P2 after materials, temporal stability and quality budgets.
+- Acceptance: better reference-matched illumination, no probe leaks/history trails,
+  bounded update latency and a net acceptable GPU/memory cost.
+- Full-scene path tracing, large volumetric weather and complex GI frameworks
+  remain P3 research on this hardware.
+
+### Near-field ground vegetation
+
+Add bounded grass/clump instances driven by final soil/moisture and route
+fields. Fade density/detail into the ground material with distance and test
+geometry versus coverage cards by overdraw and visual stability. Most blades
+should not become individual ray-tracing instances. Existing tree assets stay intact.
+
+- Priority: P2 after terrain/material integration and temporal stability.
+- Acceptance: believable ground scale/contact without a carpet of shimmer,
+  visible density rings or excessive raster/TLAS cost.
+
 ### Shorelines and terrain transitions
 
-This is now part of the active
-[terrain erosion overhaul](docs/TERRAIN_EROSION_PLAN.md), particularly final
-hydrology and the ground-material rebuild. Derive water/land contact and wetness
-from the finished terrain and persistent water, replacing the current absolute
-height rules. The following visual aims remain useful within that work.
+Deliver this within the P0 terrain overhaul: persistent water and final ground
+must share shoreline intersections, water depth and wetness. Derive bank
+materials, deposits and exposed stone from the generated fields. Rework the
+old absolute-height rules and cliff strips where necessary.
 
-Improve contact between water and land with a wet shoreline band, subtle foam
-or ripple breakup, and terrain darkening near the water level. Further terrain
-work could add slope-aware texture scale variation, local colour patches,
-wheel-rut displacement cues, and softer blending between grass and exposed
-stone.
+Use flow-directed surface detail and restrained shoreline foam only where
+flow/depth supports it. Small normal detail is preferable to displacement
+that disagrees with the contact surface. PBR inputs join the P1 material work.
 
-- Value: removes visible material boundaries and makes generated terrain feel
-  less synthetic.
-- Complexity: medium.
-- Suggested priority: address where screenshots reveal obvious transition
-  lines or repetitive ground patterns.
+- Priority: P0 for geometry/classification; P1 for material response.
+- Acceptance: no floating water, hard artificial banks or material/prop mismatch.
 
 ### Particle and smoke presentation
 
-Replace or supplement blob-cluster smoke with camera-facing soft particles,
-depth-aware fading, colour evolution, and turbulence. Let debris collide with
-the terrain, and vary dust by surface type and moisture. Keep effect lifetimes
-and density bounded so added richness does not obscure targets or overwhelm
-the renderer.
+The muzzle already uses soft sorted cards. Extend that approach to remaining
+effects with depth-softened intersections, bounded lighting/extinction and
+surface-driven dust. Batch compatible draws while preserving transparent order.
+Define sampled depth and responsive-mask handling with the HDR/temporal work.
+Use simple terrain collision for cosmetic debris where contact is visible.
 
-- Value: improves explosions, muzzle blasts, shell trails, and tank motion.
-- Complexity: medium to high, depending on soft-particle and batching support.
-- Suggested priority: pair with effect instancing from the performance list.
+- Priority: P1 for batching, surface response and depth integration; P2 for
+  broader smoke lighting after profiling overdraw.
+- Acceptance: grounded effects during motion without colour/history trails,
+  occluded targets or unbounded particle/lighting cost.
+- Full fluid/volumetric explosion simulation remains P3 research.
 
 ### Camera presentation
 
-Add subtle spring lag during acceleration and turning, collision avoidance
-against terrain/scenery, a small speed-dependent field-of-view change, and
-carefully limited impulses for firing, impacts, and hard landings. Provide
-strength controls to avoid motion discomfort.
+Preserve the settled follow/aim views and stable firing camera. Address actual
+terrain/scenery clipping or contact-view problems exposed by the new landforms.
+Keep cinematic framing in optional capture tools rather than normal play.
 
-- Value: makes existing physics feel more substantial without changing the
-  simulation.
-- Complexity: low to medium.
-- Suggested priority: combine with weapon recoil, then tune conservatively.
+- Priority: P2 only for a reproduced visibility/clipping problem.
+- Recoil zoom, automatic speed FOV, additional shake and blanket spring lag
+  are not default upgrades; prior recoil-camera experiments were rejected.
+- Acceptance: stable aiming, readable terrain and no new motion discomfort.
 
 ### Post-processing and exposure
 
-Add a modest bloom pass for the boundary wall, muzzle flash, sparks, and bright
-water highlights. Consider configurable colour grading and exposure controls;
-automatic exposure is only worthwhile if lighting ranges or time of day vary
-substantially. Avoid heavy vignette, chromatic aberration, or motion blur unless
-the chosen art direction explicitly calls for them.
+Linear HDR and temporal stability are P1 foundations, not late polish. After
+they work, add restrained bloom for actual bright sources and optional grading
+with fixed exposure as the reference. Auto-exposure only earns a place when
+lighting range demands it and adaptation does not fight aiming/readability.
 
-- Value: can unify the final image and improve bright-effect readability.
-- Complexity: medium.
-- Suggested priority: late polish, after lighting and materials are stable.
+- Priority: P2 for bloom/grading after HDR and calibrated materials.
+- Acceptance: highlight detail and scene consistency improve without hiding
+  lighting/material faults. No default vignette, chromatic aberration, depth
+  of field or motion blur as a substitute for realism.
 
 ### Environmental variety and composition
 
-Reworking rocks, cliffs, scree, shrubs and their placement is in scope for the
-active [terrain overhaul](docs/TERRAIN_EROSION_PLAN.md). Existing tree assets and
-rendering remain intact, with placement driven by the new terrain. Additional
-landmark families below remain optional beyond that replacement.
+Replace rocks, cliffs, scree, shrubs and their placement as needed during the
+P0 terrain overhaul. Use erosion, resistance, slope and moisture fields for
+coherent formations and distribution. Preserve trees, adapting placement only.
 
-Add a small number of distinctive landmarks and prop families—fallen trees,
-stumps, ruined structures, grass clumps, flowers, or track-side clutter—placed
-according to terrain and water context. Prefer a few readable silhouettes and
-intentional focal areas over uniformly increasing object density.
+Add P2 near-field vegetation after its temporal/cost prerequisites. Additional
+ruins, landmarks and prop families should serve composition or navigation,
+with geometry and material detail chosen by actual screen size.
 
-- Value: improves navigation, composition, and replay-to-replay identity.
-- Complexity: medium to high because it includes asset creation and placement
-  rules.
-- Suggested priority: when expanding the space beyond a renderer/handling
-  showcase into a fuller game environment.
+- Priority: P0 for the environment replacement; P2 for measured visual variety.
+- Acceptance: coherent landscape scale and useful open routes, without hiding
+  weak terrain under uniformly dense clutter.
 
 ### HUD and interaction feedback
 
-Refine the crosshair, target/hit confirmation, reload or fire-state feedback,
-and control prompts. Maintain a clean separation between development metrics
-and player-facing UI, with scaling that remains legible at different window
-sizes.
+Keep the HUD at native output resolution after reconstruction/tone mapping.
+Preserve the current aiming feedback and performance controls through renderer
+changes. Add renderer diagnostics when needed for development; new gameplay
+hit/reload systems and broad UI redesign remain separate product work.
 
-- Value: improves readability and makes existing interactions feel complete.
-- Complexity: low to medium.
-- Suggested priority: when gameplay rules and weapon timing become more
-  defined.
+- Priority: P1 compatibility during HDR/upscaling; P3 new gameplay/UI features.
+- Acceptance: crisp aim feedback and legible metrics across resize and quality modes.
 
 ### Visual recommendation
 
-The next visual goal is the hydraulic erosion terrain overhaul. Establish
-convincing landforms, drainage and deposition in neutral shading before
-rebuilding ground materials and non-tree props. Treat the older landscape
-captures as comparison history, while preserving the accepted tree fidelity.
-Ground colours, water, cliffs and rocks may all change to support the new
-terrain. Keep tank readability, viable driving routes and dynamic lighting as
-cross-cutting checks. Broader particle, camera and post-processing work remains
-secondary to this goal.
+Deliver hydraulic terrain shape and shared environmental data first, then
+coordinate the ground rebuild with P1 physically based materials and HDR/temporal
+stability. These foundations address broad realism weaknesses before adding
+more geometry, rays or cinematic effects. Preserve the tree baseline and tank
+handling/camera while testing the new ground.
+
+Use P2 techniques for specific remaining problems: near vegetation and terrain
+LOD for scale, selective lighting for depth, temporal reconstruction for image
+stability or GPU headroom, and modest visual suspension for contact. Enable each
+only after target-hardware measurements and moving-image review. Expensive
+rendering research and simulation-heavy gameplay remain P3.

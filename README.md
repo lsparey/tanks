@@ -38,6 +38,20 @@ improvements. The [tree-rendering guide](docs/TREE_RENDERING.md) covers crown
 geometry, threaded loading, progressive LOD, wind, shadows, measured costs and
 validation.
 
+## Rendering direction
+
+The broader goal is a more realistic-looking game using modern techniques
+suited to Arc A370M and native Linux/Mesa Vulkan. The
+[rendering roadmap](docs/RENDERING_ROADMAP.md) prioritises physically based
+materials, linear HDR, temporal image stability and measured ray/geometry
+budgets, followed by selective vegetation, lighting and reconstruction work.
+These are planned upgrades; the feature list above describes what runs today.
+
+Terrain erosion remains the immediate goal. Establish representative Release
+frame times and memory use before choosing quality defaults. Retain the accepted
+tree fidelity and roughly 5.3-second startup target; hardware support alone
+never establishes that an advanced effect fits the frame budget.
+
 ## Next development goal
 
 The next planned overhaul is [hydraulic erosion terrain generation](docs/TERRAIN_EROSION_PLAN.md):
