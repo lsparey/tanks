@@ -38,6 +38,20 @@ improvements. The [tree-rendering guide](docs/TREE_RENDERING.md) covers crown
 geometry, threaded loading, progressive LOD, wind, shadows, measured costs and
 validation.
 
+## Next development goal
+
+The next planned overhaul is [hydraulic erosion terrain generation](docs/TERRAIN_EROSION_PLAN.md):
+connected landforms shaped by water and sediment, followed by drainage, rivers
+and lakes, ground materials and environment placement derived from the same
+data. The current terrain, water and non-tree scenery can be replaced. Existing
+tree geometry, density, progressive LOD, wind and soft shadows are preserved;
+tree placement will adapt to the new ground.
+
+This is a documented plan, not an implemented generator. Erosion is intended
+for level generation, with cold startup and runtime performance measured against
+the accepted baseline. The current gameplay features described above remain
+available while the replacement is developed.
+
 ## Requirements
 
 ### Hardware

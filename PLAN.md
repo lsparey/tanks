@@ -3,7 +3,40 @@
 This document records the project's delivered foundations and possible
 follow-up work. The progress index is the source of truth for task status;
 tick an item only after its implementation has been completed and verified.
-Unchecked items are options rather than a committed roadmap.
+The current goal defines the selected work. Other unchecked candidates are
+options rather than a committed roadmap.
+
+## Current goal
+
+**Hydraulic erosion terrain overhaul — planned, not yet implemented.** Replace
+terrain generation and rebuild the surrounding environment as needed, preserving
+the delivered tree system. The user has explicitly allowed the current terrain,
+water, ground materials and non-tree scenery approach to be discarded. Tree
+placement may adapt to the new world; tree geometry, density, LOD, wind and soft
+shadows remain the established baseline.
+
+The [terrain erosion plan](docs/TERRAIN_EROSION_PLAN.md) defines the architecture,
+research references, replacement boundaries, budgets and acceptance criteria.
+The default direction remains a temperate British landscape, with erosion,
+drainage, soil/rock exposure and placement derived from shared data. Work is
+planned in this order:
+
+- [ ] Establish CPU generation contracts, triangle-consistent ground sampling,
+  baseline timings and diagnostic views.
+- [ ] Generate broad landforms, material resistance and soil with explicit
+  drainage boundaries.
+- [ ] Prototype hydraulic erosion, deposition and limited slope relaxation;
+  select backend and resolution from measured quality and startup cost.
+- [ ] Build final drainage, persistent water and viable spawn/routes.
+- [ ] Rebuild ground materials and non-tree scenery; place existing trees.
+- [ ] Integrate and validate loading, gameplay, dynamic lighting, performance
+  and the final visual references.
+
+The accepted roughly 5.3-second cold-start baseline remains the target; cache
+hits must not hide a slower new-seed path. Keep generation out of normal frames
+and retain the current dynamically lit procedural renderer. These tasks take
+priority over the optional candidates below. Completed features remain recorded
+as history, including terrain components this goal may replace.
 
 ## Progress index
 
@@ -433,12 +466,16 @@ hierarchy.
 
 ### Performance recommendation
 
-Keep the current renderer until a representative scene misses its target frame
-budget. The profiler now includes CPU wait and draw-count measurements; use
-those alongside GPU stage timings to choose the next change. For trees, check
-CPU bough selection and GPU foliage shading separately. Effect instancing,
-synchronization and TLAS changes should follow when their measured timings
-justify the work.
+For the active terrain overhaul, measure CPU generation stages, derived fields,
+meshing, uploads and acceleration-structure builds before choosing erosion
+resolution, iteration count or a GPU backend. Coordinate terrain and existing
+tree jobs under one worker budget and report cold-cache startup independently.
+Use the existing profiler for runtime terrain/scenery costs; erosion itself
+should contribute no per-frame simulation work.
+
+The [terrain plan's budgets](docs/TERRAIN_EROSION_PLAN.md#budgets-and-acceptance)
+are the acceptance gate. Effect instancing, frame-history synchronisation and
+TLAS changes remain separate candidates when measured cost justifies them.
 
 ## Visual improvements
 
@@ -562,6 +599,12 @@ remain optional follow-ups.
 
 ### Shorelines and terrain transitions
 
+This is now part of the active
+[terrain erosion overhaul](docs/TERRAIN_EROSION_PLAN.md), particularly final
+hydrology and the ground-material rebuild. Derive water/land contact and wetness
+from the finished terrain and persistent water, replacing the current absolute
+height rules. The following visual aims remain useful within that work.
+
 Improve contact between water and land with a wet shoreline band, subtle foam
 or ripple breakup, and terrain darkening near the water level. Further terrain
 work could add slope-aware texture scale variation, local colour patches,
@@ -612,6 +655,11 @@ the chosen art direction explicitly calls for them.
 
 ### Environmental variety and composition
 
+Reworking rocks, cliffs, scree, shrubs and their placement is in scope for the
+active [terrain overhaul](docs/TERRAIN_EROSION_PLAN.md). Existing tree assets and
+rendering remain intact, with placement driven by the new terrain. Additional
+landmark families below remain optional beyond that replacement.
+
 Add a small number of distinctive landmarks and prop families—fallen trees,
 stumps, ruined structures, grass clumps, flowers, or track-side clutter—placed
 according to terrain and water context. Prefer a few readable silhouettes and
@@ -637,10 +685,11 @@ sizes.
 
 ### Visual recommendation
 
-Visual targets, unified sky/lighting, tank materials/model/animation, the first
-firing-presentation pass, full summer tree variants, coherent wind and
-progressive foliage LOD are delivered. Preserve the accepted crown density,
-soft shadows and startup budget while reviewing transition grain, leaf scale
-and species silhouettes. Choose shoreline, broader particle or post-processing
-work from actual screenshot and playtest weaknesses. Preserve the settled
-camera behaviour unless a specific problem calls for changing it.
+The next visual goal is the hydraulic erosion terrain overhaul. Establish
+convincing landforms, drainage and deposition in neutral shading before
+rebuilding ground materials and non-tree props. Treat the older landscape
+captures as comparison history, while preserving the accepted tree fidelity.
+Ground colours, water, cliffs and rocks may all change to support the new
+terrain. Keep tank readability, viable driving routes and dynamic lighting as
+cross-cutting checks. Broader particle, camera and post-processing work remains
+secondary to this goal.
