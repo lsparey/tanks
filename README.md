@@ -226,7 +226,7 @@ Handling is unchanged; individual wheel suspension is not implemented. See the
 [model editing notes](assets/models/README.md) for editable assets, regeneration,
 material groups, and current limitations.
 
-Run the CPU statistics, tank-surface, model-asset and running-gear regression tests after building (requires
+Run the CPU statistics, tank-surface, model-asset, running-gear and weapon-effect regression tests after building (requires
 `BUILD_TESTING=ON`, the default):
 
 ```bash
@@ -234,6 +234,20 @@ ctest --test-dir build --output-on-failure
 ```
 
 ## Automated screenshot capture
+
+Firing now includes a directional muzzle flame, soft expanding smoke and
+45-second dry-ground scorch marks. Camera behaviour is unchanged. To inspect
+the effects without keyboard/mouse automation, use the app-local preview:
+
+```bash
+./build/tanks --view tank-side --weapon-preview --screenshot screenshots/muzzle.png --screenshot-frame 91
+./build/tanks --view tank-side --weapon-preview --screenshot screenshots/smoke.png --screenshot-frame 105
+./build/tanks --view tank-side --weapon-preview --screenshot screenshots/scorch.png --screenshot-frame 240
+```
+
+This diagnostic mode uses a fixed 1/60 simulation step, fires once at frame 90
+and spawns a ground-effect sample at frame 180. Omit `--weapon-preview` for
+normal play. Scorches currently affect terrain only, not trees or rocks.
 
 To render a frame to a PNG and exit:
 

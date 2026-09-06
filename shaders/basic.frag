@@ -33,6 +33,9 @@ layout(set = 0, binding = 0) uniform FrameUBO {
     vec4 ambientColor;
     vec4 cloudColor;
     vec4 atmosphere;
+    vec4 weaponEffects;
+    vec4 scorchPositionRadius[16];
+    vec4 scorchParameters[16];
 } frame;
 layout(set = 0, binding = 2) uniform sampler2D environmentClouds;
 
@@ -351,6 +354,39 @@ vec3 acesFilmicTonemap(vec3 x) {
 // past that start, not total distance, so it ramps in gradually rather
 // than jumping straight to its far-clip value at the start line.
 void main() {
+    // Soft procedural weapon cards; all edges reach zero inside the quad.
+    // The effects pipeline disables depth and history writes, but tests depth.
+    if (pc.materialType > 7.5 && pc.materialType < 9.5) {
+        vec2 p = fragUV * 2.0 - 1.0;
+        float alpha;
+        vec3 color;
+        if (pc.materialType < 8.5) {
+            float t = fragUV.y;
+            float width = mix(.48, .025, t) + .13*sin(t*3.14159);
+            float lobe = 1.0-smoothstep(width*.3,width,abs(p.x));
+            alpha = lobe * smoothstep(0.0,.06,t) * (1.0-smoothstep(.5,1.0,t));
+            float core = (1.0-smoothstep(0.0,width*.65,abs(p.x))) * (1.0-t);
+            color = mix(vec3(1.0,.22,.035),vec3(3.8,2.8,1.3),core);
+            if (pc.tankSurface.z > .5) {
+                alpha = 1.0-smoothstep(.1,.95,length(p));
+                color = vec3(2.8,1.9,.75);
+            }
+        } else {
+            float age = pc.tankSurface.x;
+            float seed = pc.tankSurface.y;
+            float noise = valueNoise2D(p*3.2 + vec2(seed, age*.7));
+            float radius = length(p) + (noise-.5)*.22;
+            alpha = (1.0-smoothstep(.25,.95,radius)) * mix(.6,1.0,noise);
+            color = mix(vec3(.25,.26,.25),vec3(.48,.49,.47),age);
+        }
+        alpha *= pc.opacity;
+        // No discard needed: this pipeline writes neither depth nor history.
+        // Zero alpha is also compatible with devices without shader demotion.
+        if (alpha < .002) alpha = 0.0;
+        outColor = vec4(acesFilmicTonemap(color*kExposure),alpha);
+        outShadowHistory = vec4(0);
+        return;
+    }
     if (pc.materialType > 3.5 && pc.materialType < 4.5) {
         vec3 direction = normalize(fragWorldPos - frame.cameraPos.xyz);
         outColor = vec4(acesFilmicTonemap(skyColor(direction) * kExposure), 1.0);
@@ -562,6 +598,23 @@ void main() {
     // does something for fading ground decals like TrackMark, whose texture
     // has a soft alpha falloff and whose opacity decreases as it ages.
     float finalAlpha = texSample.a * pc.opacity;
+
+    // Ground scorch is part of the terrain material, not a hovering plane.
+    // This follows every terrain triangle and adds no geometry or RT instances.
+    if (pc.materialType > .5 && pc.materialType < 1.5 && pc.isInstanced < .5) {
+        float burn = 0.0;
+        for (int i=0; i<int(frame.weaponEffects.x); ++i) {
+            vec4 mark = frame.scorchPositionRadius[i];
+            vec3 delta = fragWorldPos-mark.xyz;
+            vec2 q = delta.xz/mark.w;
+            if (dot(q,q)>1.3 || abs(delta.y)>mark.w*2.0) continue;
+            float noise = valueNoise2D(q*5.0 + mark.xz);
+            float edge = length(q) + (noise-.5)*.24;
+            float mask = (1.0-smoothstep(.3,1.0,edge))*mix(.7,1.0,noise);
+            burn = max(burn,mask*frame.scorchParameters[i].x);
+        }
+        albedo *= mix(vec3(1),vec3(.12,.095,.07),burn);
+    }
 
     if (pc.unlit > 0.5) {
         outColor = vec4(acesFilmicTonemap(albedo * kExposure), finalAlpha);

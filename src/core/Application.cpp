@@ -270,10 +270,11 @@ VkImageMemoryBarrier2 imageBarrier(VkImage image, VkImageAspectFlags aspect,
 
 Application::Application(std::optional<ScreenshotRequest> screenshotRequest, bool performanceReporting,
                          std::optional<uint32_t> worldSeed, std::string referenceView,
-                         bool originalTankModel, bool animateTracks)
+                         bool originalTankModel, bool animateTracks, bool weaponPreview)
     : worldSeed_(worldSeed ? *worldSeed : std::random_device{}()),
       referenceView_(std::move(referenceView)), performanceReporting_(performanceReporting),
       screenshotRequest_(std::move(screenshotRequest)) {
+    weaponPreview_ = weaponPreview;
     std::cout << "World seed: " << worldSeed_ << '\n';
     initWindow();
     context_ = std::make_unique<VulkanContext>(window_);
@@ -417,6 +418,7 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
                                           /*worldSize=*/180.0f, /*amplitude=*/2.2f, terrainSeed);
     WaterGenerator::FloodField waterField =
         WaterGenerator::computeFloodField(*terrain_, kWaterThreshold, kWaterMaxDepth);
+    weaponWaterField_ = waterField;
     waterMesh_ = WaterGenerator::buildMesh(*context_, *commands_, *terrain_, waterField);
     float deepestWater = -1.0f;
     for (int z = 1; z < waterField.resolution - 1; ++z) {
@@ -723,7 +725,7 @@ void Application::mainLoop() {
         }
 
         double now = glfwGetTime();
-        float deltaTime = static_cast<float>(now - lastFrameTime_);
+        float deltaTime = weaponPreview_ ? 1.0f/60.0f : static_cast<float>(now - lastFrameTime_);
         lastFrameTime_ = now;
         // Exponential moving average rather than the raw instantaneous
         // value, which jitters wildly frame to frame and is unreadable as
@@ -775,6 +777,17 @@ void Application::mainLoop() {
         prevScreenshotKeyDown_ = screenshotKeyDown;
 
         const auto simulationStart = FrameProfiler::Clock::now();
+        // Deterministic, app-local visual check: never inject desktop input.
+        if (weaponPreview_ && frameCounter_ == 90) fireProjectile();
+        if (weaponPreview_ && frameCounter_ == 180) {
+            glm::vec3 point = tank_->position() + tank_->forward()*3.8f;
+            point.y = terrain_->heightAt(point.x,point.z);
+            spawnGroundScorch(point);
+            spawnExplosion(point);
+            ImpactEffect effect;
+            effect.position=point;
+            impactEffects_.push_back(effect);
+        }
         tank_->update(*input_, deltaTime, *terrain_, obstacles_, boundaryHalfExtent_);
         updateTrackMarks(deltaTime);
 
@@ -1554,30 +1567,34 @@ void Application::fireProjectile() {
     spawnDynamicLight(shell.position, glm::vec3(1.0f, 0.85f, 0.5f), /*radius=*/5.0f, /*intensity=*/25.0f,
                        /*lifetime=*/0.08f);
 
-    // Muzzle blast: a small burst of smoke puffs kicked mostly forward
-    // along the barrel (like a real muzzle blast) with some outward spread
-    // and a little upward drift, not a single puff -- one puff alone reads
-    // as a ball, a handful with varied speed/spread/scale reads as an
-    // actual blast of gas dissipating.
-    std::mt19937 blastRng(std::random_device{}());
-    std::uniform_real_distribution<float> blastSpread(-0.5f, 0.5f);
-    std::uniform_real_distribution<float> blastSpeed(1.5f, 4.0f);
-    std::uniform_real_distribution<float> blastScale(0.3f, 0.5f);
-    glm::vec3 blastUp(0.0f, 1.0f, 0.0f);
-    glm::vec3 blastRight = glm::normalize(glm::cross(blastUp, shell.velocity));
-    for (int i = 0; i < 5; ++i) {
-        glm::vec3 spread = blastRight * blastSpread(blastRng) + blastUp * blastSpread(blastRng);
-        glm::vec3 puffVelocity =
-            glm::normalize(tank_->aimDirection() + spread * 0.6f) * blastSpeed(blastRng) +
-            blastUp * 0.6f;
-        spawnSmokePuff(shell.position, puffVelocity, blastScale(blastRng), blastScale(blastRng) * 2.2f,
-                       /*lifetime=*/0.5f);
+    const glm::vec3 direction = tank_->aimDirection();
+    WeaponEffects::addBounded(muzzleFlashes_, WeaponEffects::Flash{shell.position,direction},
+                              WeaponEffects::kMaxFlashes);
+    const auto basis = WeaponEffects::card(shell.position,direction,glm::vec3(1,0,0),1,1);
+    for (int i=0; i<7; ++i) {
+        float angle = static_cast<float>(i)*2.399963f;
+        glm::vec3 radial = glm::vec3(basis[0])*std::cos(angle) + glm::vec3(basis[1])*std::sin(angle);
+        WeaponEffects::Smoke puff;
+        puff.position = shell.position + direction*(.08f+.035f*i);
+        puff.velocity = direction*(2.8f+.25f*i) + radial*(.6f+.13f*i);
+        puff.size = .22f+.025f*i;
+        puff.lifetime = puff.remaining = .75f+.045f*i;
+        puff.seed = angle;
+        WeaponEffects::addBounded(blastSmoke_,puff,WeaponEffects::kMaxSmoke);
     }
 
     // Spawn the shell and blast at the barrel's pre-recoil muzzle first,
     // then kick the weapon/body for this rendered frame. The camera remains
     // stable; moving it backward read as a zoom rather than firing impact.
     tank_->applyGunRecoil();
+}
+
+void Application::spawnGroundScorch(glm::vec3 point) {
+    float half=terrain_->worldSize()*.5f;
+    if (std::abs(point.x)>half || std::abs(point.z)>half ||
+        WaterGenerator::isUnderwater(weaponWaterField_,point.x,point.z)) return;
+    point.y=terrain_->heightAt(point.x,point.z);
+    WeaponEffects::addBounded(scorches_,WeaponEffects::Scorch{point},WeaponEffects::kMaxScorches);
 }
 
 void Application::updateProjectilesAndCollisions(float deltaTime) {
@@ -1659,7 +1676,17 @@ void Application::updateProjectilesAndCollisions(float deltaTime) {
         if (shell.alive) {
             float groundHeight = terrain_->heightAt(shell.position.x, shell.position.z);
             if (shell.position.y <= groundHeight) {
-                triggerHit(glm::vec3(shell.position.x, groundHeight, shell.position.z));
+                // Refine the terrain entry along this frame's swept segment.
+                float low=0, high=1;
+                for (int i=0; i<10; ++i) {
+                    float mid=(low+high)*.5f;
+                    glm::vec3 p=glm::mix(shell.previousPosition,shell.position,mid);
+                    if (p.y>terrain_->heightAt(p.x,p.z)) low=mid; else high=mid;
+                }
+                glm::vec3 point=glm::mix(shell.previousPosition,shell.position,high);
+                point.y=terrain_->heightAt(point.x,point.z);
+                triggerHit(point);
+                spawnGroundScorch(point);
             }
         }
     }
@@ -1692,6 +1719,9 @@ void Application::updateProjectilesAndCollisions(float deltaTime) {
     }
 
     for (auto& effect : impactEffects_) effect.update(deltaTime);
+    WeaponEffects::update(muzzleFlashes_,deltaTime);
+    WeaponEffects::update(blastSmoke_,deltaTime);
+    WeaponEffects::update(scorches_,deltaTime);
     impactEffects_.erase(
         std::remove_if(impactEffects_.begin(), impactEffects_.end(),
                         [](const ImpactEffect& e) { return !e.alive; }),
@@ -1825,6 +1855,12 @@ void Application::drawFrame() {
     // frames' worth of *different* samples actually accumulate into
     // something smooth.
     ubo.cameraPos = glm::vec4(camera_.position(), static_cast<float>(frameCounter_ % 1024));
+    static_assert(WeaponEffects::kMaxScorches == 16); // shader/FrameUBO capacity
+    ubo.weaponEffects.x = static_cast<float>(scorches_.size());
+    for (size_t i=0; i<scorches_.size(); ++i) {
+        ubo.scorchPositionRadius[i] = glm::vec4(scorches_[i].position,scorches_[i].radius);
+        ubo.scorchParameters[i].x = scorches_[i].opacity();
+    }
     // dynamicLights_ is already capped at kMaxDynamicLights (see
     // spawnDynamicLight), so this is a direct copy; the UBO arrays default-
     // initialize to all-zero (see Pipeline::FrameUBO), which basic.frag
@@ -2436,6 +2472,46 @@ void Application::drawFrame() {
         const Mesh& mesh = particle.ember ? *debrisEmberMesh_ : *debrisChunkMesh_;
         mesh.bindAndDraw(frame.commandBuffer);
     }
+    // Weapon cards are drawn back-to-front after opaque effects. They keep
+    // scene depth testing, without writing depth or temporal lighting history.
+    vkCmdBindPipeline(frame.commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline_->effectsHandle());
+    std::vector<const WeaponEffects::Smoke*> orderedSmoke;
+    orderedSmoke.reserve(blastSmoke_.size());
+    for (const auto& puff : blastSmoke_) orderedSmoke.push_back(&puff);
+    const glm::vec3 eye=camera_.position();
+    std::sort(orderedSmoke.begin(),orderedSmoke.end(),[&](const auto* a,const auto* b) {
+        glm::vec3 da=a->position-eye, db=b->position-eye;
+        return glm::dot(da,da)>glm::dot(db,db);
+    });
+    for (const auto* puff : orderedSmoke) {
+        Pipeline::PushConstants pc{};
+        pc.model=puff->matrix(eye);
+        pc.materialType=9;
+        pc.opacity=puff->opacity();
+        pc.tankSurface=glm::vec4(puff->age(),puff->seed,0,0);
+        vkCmdPushConstants(frame.commandBuffer,pipeline_->layout(),
+                            VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(pc),&pc);
+        trackMarkMesh_->bindAndDraw(frame.commandBuffer);
+    }
+    for (const auto& flash : muzzleFlashes_) {
+        Pipeline::PushConstants pc{};
+        pc.model=flash.matrix(eye);
+        pc.materialType=8;
+        pc.opacity=flash.opacity();
+        vkCmdPushConstants(frame.commandBuffer,pipeline_->layout(),
+                            VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(pc),&pc);
+        trackMarkMesh_->bindAndDraw(frame.commandBuffer);
+        // Small face-on core keeps the muzzle visible when looking down the
+        // barrel, where a longitudinal flame card is naturally edge-on.
+        auto cameraFrame=glm::inverse(ubo.view);
+        pc.model=WeaponEffects::card(flash.position+flash.direction*.12f,
+                                      glm::vec3(cameraFrame[1]),glm::vec3(cameraFrame[0]),.22f,.22f);
+        pc.tankSurface.z=1;
+        vkCmdPushConstants(frame.commandBuffer,pipeline_->layout(),
+                            VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(pc),&pc);
+        trackMarkMesh_->bindAndDraw(frame.commandBuffer);
+    }
+    vkCmdBindPipeline(frame.commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline_->handle());
     vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                          gpuTimestampPool_, timestampBase + 5);
 

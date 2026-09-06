@@ -41,6 +41,7 @@ Pipeline::Pipeline(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthForma
 }
 
 Pipeline::~Pipeline() {
+    if (effectsPipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(ctx_.device(), effectsPipeline_, nullptr);
     if (pipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(ctx_.device(), pipeline_, nullptr);
     if (pipelineLayout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(ctx_.device(), pipelineLayout_, nullptr);
@@ -468,6 +469,14 @@ void Pipeline::createPipeline(VkFormat colorFormat, VkFormat depthFormat, VkForm
 
     VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
                                         &pipeline_));
+
+    // Soft weapon cards test against opaque geometry but never occlude later
+    // particles or overwrite terrain shadow/AO history through transparent pixels.
+    depthStencil.depthWriteEnable = VK_FALSE;
+    rasterizer.cullMode = VK_CULL_MODE_NONE;
+    colorBlendAttachments[1].colorWriteMask = 0;
+    VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+                                      &effectsPipeline_));
 
     vkDestroyShaderModule(ctx_.device(), vertModule, nullptr);
     vkDestroyShaderModule(ctx_.device(), fragModule, nullptr);

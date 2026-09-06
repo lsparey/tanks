@@ -44,7 +44,7 @@ Unchecked items are options rather than a committed roadmap.
 ### Visual candidates
 
 - [x] [Establish visual targets](#establish-visual-targets)
-- [ ] [Weapon firing presentation](#weapon-firing-presentation)
+- [x] [Weapon firing presentation](#weapon-firing-presentation)
 - [x] [Tank material detail and wear](#tank-material-detail-and-wear)
 - [x] [Tank model silhouette and running gear](#tank-model-silhouette-and-running-gear)
 - [ ] [Foliage and environmental motion](#foliage-and-environmental-motion)
@@ -403,16 +403,26 @@ pillars and repeatable tank, landscape, and water/rock views. `--seed` and
 
 ### Weapon firing presentation
 
-Build on the existing muzzle flash, smoke, shell, impact light, and debris with
-barrel recoil, spring return, a brief chassis kick, shaped muzzle flame, and
-restrained camera impulse. Scorch or impact decals could make hits persist
-after the short-lived particles disappear.
+The existing recoil, spring return and chassis kick now have a brief directional
+muzzle flame with a small face-on core, followed by a soft expanding smoke burst.
+Smoke slows from a forward jet into a rising cloud; back-to-front transparent
+cards test against the scene without overwriting depth or shadow/AO history.
+Camera movement is unchanged.
+
+Dry terrain hits leave irregular scorch patches blended directly into the
+terrain material. They follow slopes, stay for 45 seconds and fade over the last
+12 seconds. At most 16 patches, 4 flashes and 48 muzzle-smoke cards are retained.
+Terrain marks add no draws or RT instances. Tree/rock surface marks, craters,
+depth-softened particle intersections and broader explosion/trail improvements
+remain separate work.
 
 - Value: high; firing is a frequent focal action and currently offers the
   clearest opportunity for stronger visual feedback.
 - Complexity: low to medium for recoil, medium for persistent impact decals.
-- Suggested priority: strongest self-contained visual improvement. See also
-  the earlier **Gun recoil** item.
+- Status: completed. `--weapon-preview` triggers an app-local shot at frame 90
+  and a ground-effect sample at frame 180, with a fixed 1/60 simulation step;
+  it needs no synthetic keyboard/mouse input. See the visual target document
+  for capture commands. Existing shell physics and firing controls are retained.
 
 ### Tank material detail and wear
 
@@ -553,9 +563,8 @@ sizes.
 
 ### Visual recommendation
 
-Choose an explicit visual target before attempting a general polish pass. The
-best immediate package is weapon recoil plus restrained camera response because
-it strengthens the prototype's central action using systems already present.
-After that, unified sky/lighting and coherent foliage wind offer the largest
-scene-wide improvement; material, shoreline, particle, and post-processing
-work should be selected from actual screenshot and playtest weaknesses.
+Visual targets, unified sky/lighting, tank materials/model/animation and the
+first firing-presentation pass are delivered. Coherent foliage wind is a good
+next scene-wide candidate. Shoreline, broader particle and post-processing work
+should be selected from actual screenshot and playtest weaknesses. Preserve
+the settled camera behaviour unless a specific problem calls for changing it.

@@ -62,6 +62,9 @@ public:
         glm::vec4 ambientColor{0.72f, 0.81f, 0.89f, 0.30f};
         glm::vec4 cloudColor{0.82f, 0.85f, 0.86f, 0.46f};  // rgb, coverage threshold
         glm::vec4 atmosphere{45.0f, 0.0035f, 0.25f, 0.006f};  // fog start/density, UV scale, sun radius
+        glm::vec4 weaponEffects{0}; // x: active ground scorch count
+        std::array<glm::vec4, 16> scorchPositionRadius{};
+        std::array<glm::vec4, 16> scorchParameters{}; // x: opacity
     };
 
     struct PushConstants {
@@ -142,6 +145,7 @@ public:
     void updateHistoryDescriptor(size_t frameIndex, VkImageView historyView, VkSampler historySampler);
 
     VkPipeline handle() const { return pipeline_; }
+    VkPipeline effectsHandle() const { return effectsPipeline_; }
     VkPipelineLayout layout() const { return pipelineLayout_; }
     VkDescriptorSet descriptorSet() const { return descriptorSet_; }
     VkDescriptorSet tlasDescriptorSet(size_t frameIndex) const { return tlasDescriptorSets_[frameIndex]; }
@@ -167,6 +171,7 @@ private:
     VkDescriptorSetLayout historySetLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
+    VkPipeline effectsPipeline_ = VK_NULL_HANDLE;
 
     Buffer uniformBuffer_;
     Buffer instanceBuffer_;

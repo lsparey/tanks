@@ -30,6 +30,7 @@
 #include "../scene/RockInstance.h"
 #include "../scene/ShrubInstance.h"
 #include "../scene/SmokePuff.h"
+#include "../scene/WeaponEffects.h"
 #include "../scene/Tank.h"
 #include "../scene/Terrain.h"
 #include "../scene/TrackMark.h"
@@ -60,7 +61,7 @@ public:
                          bool performanceReporting = false,
                          std::optional<uint32_t> worldSeed = std::nullopt,
                          std::string referenceView = {}, bool originalTankModel = false,
-                         bool animateTracks = true);
+                         bool animateTracks = true, bool weaponPreview = false);
     ~Application();
 
     Application(const Application&) = delete;
@@ -221,6 +222,11 @@ private:
     // fixed-size FrameUBO array every frame.
     std::vector<DynamicLight> dynamicLights_;
     std::vector<SmokePuff> smokePuffs_;
+    std::vector<WeaponEffects::Flash> muzzleFlashes_;
+    std::vector<WeaponEffects::Smoke> blastSmoke_;
+    std::vector<WeaponEffects::Scorch> scorches_;
+    WaterGenerator::FloodField weaponWaterField_;
+    bool weaponPreview_ = false;
     std::vector<TrackMark> trackMarks_;
     struct TrackTrailState {
         glm::vec3 previousPosition{0.0f};
@@ -270,6 +276,7 @@ private:
     void destroyBox(Box& box);
     void updateTrackMarks(float deltaTime);
     void fireProjectile();
+    void spawnGroundScorch(glm::vec3 point);
     void updateProjectilesAndCollisions(float deltaTime);
     void buildAccelerationStructures();
     std::vector<AccelerationStructure::Instance> gatherRayTracingInstances() const;
