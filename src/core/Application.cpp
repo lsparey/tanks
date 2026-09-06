@@ -270,7 +270,7 @@ VkImageMemoryBarrier2 imageBarrier(VkImage image, VkImageAspectFlags aspect,
 
 Application::Application(std::optional<ScreenshotRequest> screenshotRequest, bool performanceReporting,
                          std::optional<uint32_t> worldSeed, std::string referenceView,
-                         bool originalTankModel)
+                         bool originalTankModel, bool animateTracks)
     : worldSeed_(worldSeed ? *worldSeed : std::random_device{}()),
       referenceView_(std::move(referenceView)), performanceReporting_(performanceReporting),
       screenshotRequest_(std::move(screenshotRequest)) {
@@ -444,7 +444,7 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
                                                           boundaryHalfExtent_, kBoundaryWallHeight);
     tank_ = std::make_unique<Tank>(*context_, *commands_,
                                     std::string(ASSET_ROOT) + (originalTankModel
-                                        ? "/assets/models/tank.x" : "/assets/models/challenger2.obj"));
+                                        ? "/assets/models/tank.x" : "/assets/models/challenger2.obj"), animateTracks);
     // Near-white so the crate texture's own wood color/detail shows through
     // unmodified (same reasoning as the bark/leaf/rock tints).
     boxMesh_ = std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(1.0f)));
@@ -977,10 +977,10 @@ void Application::spawnTrees(const WaterGenerator::FloodField& waterField) {
 
 void Application::spawnRocks(const WaterGenerator::FloodField& waterField) {
     // Cluster/rock counts kept in check against the scene's TLAS instance
-    // capacity (SceneAccelerationStructure::kMaxInstances = 384): worst case
+    // capacity (SceneAccelerationStructure::kMaxInstances = 576): worst case
     // here is 16*6=96 rocks; combined with trees (100*2=200 instances, bark
     // + leaves each) and the terrain/tank/boxes/shells baseline (well under
-    // 30), that's ~326 worst case, leaving headroom under the cap.
+    // 30), plus 160 animated gear instances, leaves headroom under the cap.
     constexpr int kClusterCount = 16;
     constexpr float kEdgeMargin = 3.0f;
     constexpr float kMinDistanceFromSpawn = 6.0f;
@@ -1497,6 +1497,10 @@ std::vector<AccelerationStructure::Instance> Application::gatherRayTracingInstan
     for (const auto& part : tank_->drawParts()) {
         instances.push_back({part.blasAddress, part.worldMatrix});
     }
+    const auto gearTransforms = tank_->gearTransforms();
+    for (size_t i=0;i<gearTransforms.size();++i)
+        for (const auto& transform : gearTransforms[i])
+            instances.push_back({tank_->gearBatches()[i].blas->deviceAddress(),transform});
     for (const auto& box : boxes_) {
         if (!box.alive) continue;
         instances.push_back({boxBLAS_->deviceAddress(), box.worldMatrix()});
@@ -1913,8 +1917,9 @@ void Application::drawFrame() {
     std::vector<InstanceBatch> smallRockBatches = appendGroups(smallRockGroups);
     std::vector<InstanceBatch> shrubBatches = appendGroups(shrubGroups);
     std::vector<InstanceBatch> cliffBatches = appendGroups(cliffGroups);
-    pipeline_->updateInstanceTransforms(rasterInstanceTransforms);
     performanceSample_.visibleProps = static_cast<double>(rasterInstanceTransforms.size());
+    auto gearBatches = appendGroups(tank_->gearTransforms());
+    pipeline_->updateInstanceTransforms(rasterInstanceTransforms);
     performanceSample_.ms[FrameProfiler::Visibility] = FrameProfiler::elapsedMs(phaseStart);
     prevViewProj_ = ubo.proj * ubo.view;
     prevCameraPos_ = camera_.position();
@@ -2203,6 +2208,23 @@ void Application::drawFrame() {
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(tankPc), &tankPc);
         part.mesh->bindAndDraw(frame.commandBuffer);
+    }
+
+    for (size_t i=0;i<gearBatches.size();++i) {
+        const auto& part = tank_->gearBatches()[i];
+        VkDescriptorSet material = part.surface == Tank::Surface::Armour ? camoMaterialSet_ : metalMaterialSet_;
+        vkCmdBindDescriptorSets(frame.commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipeline_->layout(),1,1,&material,0,nullptr);
+        Pipeline::PushConstants pc{};
+        pc.model = tank_->worldToHull(); // instanced tank shading recovers hull-space dust coordinates
+        pc.isInstanced = 1;
+        pc.isDynamicObject = 1;
+        pc.materialType = static_cast<float>(part.surface);
+        pc.specularStrength = part.surface == Tank::Surface::Armour ? .10f : .24f;
+        pc.tankSurface = tank_->surfaceBounds();
+        vkCmdPushConstants(frame.commandBuffer,pipeline_->layout(),
+                            VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(pc),&pc);
+        part.mesh->bindAndDrawInstanced(frame.commandBuffer,gearBatches[i].count,gearBatches[i].first);
     }
 
     vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,

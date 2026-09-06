@@ -220,11 +220,13 @@ The refined tank is the default. For a matched comparison, run:
 ./build/tanks --model original --view tank-side
 ```
 
-Wheels and shoes are geometric but not animated yet. See the
+Wheels rotate and shoes circulate independently on each side, including
+reverse and pivot turns. Use `--static-tracks` for a matched static comparison.
+Handling is unchanged; individual wheel suspension is not implemented. See the
 [model editing notes](assets/models/README.md) for editable assets, regeneration,
 material groups, and current limitations.
 
-Run the CPU statistics, tank-surface, and model-asset regression tests after building (requires
+Run the CPU statistics, tank-surface, model-asset and running-gear regression tests after building (requires
 `BUILD_TESTING=ON`, the default):
 
 ```bash

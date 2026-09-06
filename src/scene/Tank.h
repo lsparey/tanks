@@ -10,6 +10,7 @@
 #include "../render/Mesh.h"
 #include "../render/VulkanContext.h"
 #include "CollisionSystem.h"
+#include "RunningGear.h"
 
 class InputManager;
 class Terrain;
@@ -24,8 +25,9 @@ class Terrain;
 // mesh; the turret (and the barrel riding on it) get their own yaw, driven
 // by Q/E, applied as a rotation about the model's local Y axis before the
 // hull's own placement. The barrel additionally pitches around a trunnion
-// derived from its breech geometry. The tracks share the hull's own
-// placement (they don't move independently in this prototype).
+// derived from its breech geometry. The refined OBJ's named wheels and
+// shoes are extracted into instanced batches with independent per-side travel.
+// Legacy models without that rig retain their original rigid tracks.
 class Tank {
 public:
     // Matches the tank material branch in basic.frag.
@@ -36,8 +38,19 @@ public:
         VkDeviceAddress blasAddress;
         Surface surface = Surface::Armour;
     };
+    struct GearBatch {
+        std::unique_ptr<Mesh> mesh;
+        std::unique_ptr<AccelerationStructure> blas;
+        Surface surface = Surface::Tracks;
+    };
+    const std::vector<GearBatch>& gearBatches() const { return gearBatches_; }
+    std::vector<std::vector<glm::mat4>> gearTransforms() const {
+        return runningGear_.transforms(hullWorldMatrix());
+    }
+    glm::mat4 worldToHull() const { return glm::inverse(hullWorldMatrix()); }
 
-    Tank(VulkanContext& ctx, CommandContext& commands, const std::string& modelPath);
+    Tank(VulkanContext& ctx, CommandContext& commands, const std::string& modelPath,
+         bool animateTracks = true);
 
     // Track-driven movement (W/S throttle, A/D differential steering) plus
     // turret traverse (Q/E, independent of hull yaw). Movement is simulated
@@ -50,9 +63,8 @@ public:
                 const std::vector<CollisionSystem::CircleObstacle>& obstacles,
                 float boundaryHalfExtent);
 
-    // One entry per renderable part with its own world matrix -- just the
-    // hull if the model had no separate turret/barrel materials, otherwise
-    // hull + turret + barrel.
+    // Rigid parts. Instanced running gear is exposed separately so raster
+    // batches and ray instances can share the same computed transforms.
     std::vector<DrawPart> drawParts() const;
 
     glm::vec3 position() const { return position_; }
@@ -94,7 +106,7 @@ public:
     glm::mat4& modelCorrection() { return modelCorrection_; }
 
 private:
-    void load(VulkanContext& ctx, CommandContext& commands, const std::string& path);
+    void load(VulkanContext& ctx, CommandContext& commands, const std::string& path, bool animateTracks);
     void simulateMovement(float throttle, float turn, float deltaTime, const Terrain& terrain,
                           const std::vector<CollisionSystem::CircleObstacle>& obstacles,
                           float boundaryHalfExtent);
@@ -119,6 +131,8 @@ private:
     std::unique_ptr<AccelerationStructure> barrelBLAS_;
     std::unique_ptr<AccelerationStructure> trackBLAS_;
     std::unique_ptr<AccelerationStructure> turretDetailBLAS_;
+    RunningGear::Rig runningGear_;
+    std::vector<GearBatch> gearBatches_;
     // Local-space muzzle tip, valid only when barrelMesh_ is non-null: the
     // centre of the barrel's forward-most cross-section.
     glm::vec3 muzzleLocal_{0.0f};

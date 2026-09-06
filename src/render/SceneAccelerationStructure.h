@@ -28,7 +28,8 @@ public:
     // reserve extra headroom (each slot is a fixed-size instance buffer
     // sized at construction) rather than risk silently dropping instances
     // under AccelerationStructure::recordRebuildTLAS's clamp-to-capacity.
-    static constexpr uint32_t kMaxInstances = 384;
+    // Original 384 scene slots plus 160 animated tank instances and headroom.
+    static constexpr uint32_t kMaxInstances = 576;
 
     SceneAccelerationStructure(VulkanContext& ctx, CommandContext& commands,
                                 const std::vector<AccelerationStructure::Instance>& initialInstances);

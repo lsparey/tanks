@@ -37,8 +37,10 @@ int main(int argc, char** argv) {
         std::optional<uint32_t> seed;
         std::string view;
         bool originalTankModel = false;
+        bool animateTracks = true;
         for (int i = 1; i < argc; ++i) {
             if (std::strcmp(argv[i], "--profile") == 0) profile = true;
+            if (std::strcmp(argv[i], "--static-tracks") == 0) animateTracks = false;
             if (std::strcmp(argv[i], "--seed") == 0) {
                 if (++i >= argc) throw std::runtime_error("--seed requires an unsigned integer");
                 uint32_t value;
@@ -62,7 +64,7 @@ int main(int argc, char** argv) {
             }
         }
         if (!view.empty() && !seed) seed = 7331;
-        Application app(parseScreenshotRequest(argc, argv), profile, seed, view, originalTankModel);
+        Application app(parseScreenshotRequest(argc, argv), profile, seed, view, originalTankModel, animateTracks);
         app.run();
     } catch (const std::exception& e) {
         std::cerr << "Fatal error: " << e.what() << std::endl;

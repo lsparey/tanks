@@ -45,6 +45,7 @@ add_executable(tanks
     src/scene/MetalTextureGenerator.cpp
     src/scene/Terrain.cpp
     src/scene/Tank.cpp
+    src/scene/RunningGear.cpp
     src/scene/CollisionSystem.cpp
     src/io/ModelLoader.cpp
 )
@@ -81,4 +82,9 @@ if(BUILD_TESTING)
     target_compile_definitions(tank_model_test PRIVATE ASSET_ROOT="${CMAKE_SOURCE_DIR}")
     target_link_libraries(tank_model_test PRIVATE glm::glm Vulkan::Vulkan assimp::assimp)
     add_test(NAME tank_model COMMAND tank_model_test)
+    add_executable(running_gear_test tests/RunningGearTest.cpp src/scene/RunningGear.cpp src/io/ModelLoader.cpp)
+    target_include_directories(running_gear_test PRIVATE src)
+    target_compile_definitions(running_gear_test PRIVATE ASSET_ROOT="${CMAKE_SOURCE_DIR}")
+    target_link_libraries(running_gear_test PRIVATE glm::glm Vulkan::Vulkan assimp::assimp)
+    add_test(NAME running_gear COMMAND running_gear_test)
 endif()

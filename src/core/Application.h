@@ -59,7 +59,8 @@ public:
     explicit Application(std::optional<ScreenshotRequest> screenshotRequest = std::nullopt,
                          bool performanceReporting = false,
                          std::optional<uint32_t> worldSeed = std::nullopt,
-                         std::string referenceView = {}, bool originalTankModel = false);
+                         std::string referenceView = {}, bool originalTankModel = false,
+                         bool animateTracks = true);
     ~Application();
 
     Application(const Application&) = delete;

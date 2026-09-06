@@ -25,7 +25,7 @@ Unchecked items are options rather than a committed roadmap.
 - [x] [Gun recoil](#gun-recoil)
 - [x] [Hull-shaped collision](#hull-shaped-collision)
 - [ ] [Surface-dependent traction](#surface-dependent-traction)
-- [ ] [Animated tracks](#animated-tracks)
+- [x] [Animated tracks](#animated-tracks)
 - [ ] [Physics tuning tools](#physics-tuning-tools)
 - [ ] [Dynamic props](#dynamic-props)
 - [ ] [Full suspension and airborne simulation](#full-suspension-and-airborne-simulation)
@@ -193,15 +193,19 @@ grip, tread darkness, and dust production.
 
 ### Animated tracks
 
-Animate track shoes and wheels according to each side's signed speed,
-including opposing motion during pivot turns. The refined model now has named
-left/right belts, individual shoes, and wheels, but these are still merged into
-static render meshes. Animation needs per-side runtime data and transforms (or
-a belt-specific UV/shader approach); geometry alone does not complete this task.
+Track shoes now circulate around paths extracted from the authored belts;
+road wheels, hubs, idlers and sprockets rotate from each side's signed travel.
+The post-collision longitudinal velocity and yaw rate drive animation at the
+existing fixed simulation step, handling reverse, coasting and opposing pivot
+motion without changing handling. Lateral sliding does not spin the wheels.
+Five shared instanced draws render the moving parts; the same 160 transforms
+drive ray-traced geometry. The original model remains rigid. `--static-tracks`
+restores the static refined model for matched visual/performance comparisons.
 
 - Value: visual polish most noticeable near the tank.
 - Complexity: medium, depending on the model's UV and mesh layout.
-- Suggested priority: after core gameplay and camera presentation are settled.
+- Status: completed for distance-driven rigid wheels and shoes. Individual
+  suspension articulation, track sag and powered wheelspin remain separate work.
 
 ### Physics tuning tools
 
@@ -435,7 +439,7 @@ six road wheels per side, hubs, raised end wheels, hollow track belts, tread
 shoes, roof fittings, rear drums and a proportioned sleeved barrel
 with an open muzzle. The original `tank.x` is preserved via `--model original`.
 The asset is generated offline, not constructed every frame. Named objects
-merge into five rendering parts (including dark turret optics/grilles), retaining the current turret,
+merge into five base rendering parts plus five instanced running-gear batches, retaining the current turret,
 elevation, recoil, material and capsule-collision systems.
 
 - Status: static geometry and side/front/rear/top reference passes completed.
@@ -443,8 +447,8 @@ elevation, recoil, material and capsule-collision systems.
   roof fittings and split engine grilles are modelled. Small details and
   equipment-fit differences remain approximations, not an exact replica.
 - Editing and limitations: [model asset notes](assets/models/README.md).
-- Follow-up: [animated tracks](#animated-tracks), rotating wheels and optional
-  articulated suspension. These are not implemented by the model pass.
+- Running-gear animation is now covered by [animated tracks](#animated-tracks).
+  Articulated suspension remains optional future work.
 
 ### Foliage and environmental motion
 

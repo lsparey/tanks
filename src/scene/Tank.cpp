@@ -79,11 +79,11 @@ bool containsCaseInsensitive(const std::string& haystack, const char* needle) {
 
 }  // namespace
 
-Tank::Tank(VulkanContext& ctx, CommandContext& commands, const std::string& modelPath) {
-    load(ctx, commands, modelPath);
+Tank::Tank(VulkanContext& ctx, CommandContext& commands, const std::string& modelPath, bool animateTracks) {
+    load(ctx, commands, modelPath, animateTracks);
 }
 
-void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string& path) {
+void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string& path, bool animateTracks) {
     ModelLoader::Result result = ModelLoader::load(path);
 
     // Imported material tints are replaced below with feature-edge distances.
@@ -125,6 +125,7 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
     // Dark turret fittings need one extra rigid draw to keep optics/grilles
     // off the camouflage material while following turret traversal.
     ModelLoader::Part turretGroup, barrelGroup, trackGroup, turretDetailGroup;
+    if (animateTracks) runningGear_ = RunningGear::extract(result);
 
     for (auto& part : result.parts) {
         ModelLoader::Part* group = nullptr;
@@ -139,6 +140,7 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
         }
         if (!group && !containsCaseInsensitive(part.materialName, "hullfittings"))
             collisionVertices.insert(collisionVertices.end(), part.vertices.begin(), part.vertices.end());
+        if (runningGear_.movingNames.contains(part.meshName)) continue;
         auto& vertices = group ? group->vertices : hullVertices;
         auto& indices = group ? group->indices : hullIndices;
         uint32_t base = static_cast<uint32_t>(vertices.size());
@@ -170,9 +172,9 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
     hullWidth_ = maxX - minX;
     hullLength_ = maxZ - minZ;
 
-    float minY = hullVertices.empty() ? 0.0f : hullVertices.front().position.y;
+    float minY = collisionVertices.empty() ? 0.0f : collisionVertices.front().position.y;
     float maxY = minY;
-    for (const auto& v : hullVertices) {
+    for (const auto& v : collisionVertices) {
         minY = std::min(minY, v.position.y);
         maxY = std::max(maxY, v.position.y);
     }
@@ -224,6 +226,15 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
         turretDetailMesh_ = std::make_unique<Mesh>(ctx, commands, turretDetailPart->vertices, turretDetailPart->indices);
         turretDetailBLAS_ = std::make_unique<AccelerationStructure>(
             AccelerationStructure::buildBLAS(ctx, commands, *turretDetailMesh_));
+    }
+    for (auto& batch : runningGear_.batches) {
+        TankSurface::bakeEdgeDistances(batch.mesh.vertices,batch.mesh.indices);
+        GearBatch gpu;
+        gpu.surface = batch.mesh.materialName == "Base" ? Surface::Armour : Surface::Tracks;
+        gpu.mesh = std::make_unique<Mesh>(ctx,commands,batch.mesh.vertices,batch.mesh.indices);
+        gpu.blas = std::make_unique<AccelerationStructure>(
+            AccelerationStructure::buildBLAS(ctx,commands,*gpu.mesh));
+        gearBatches_.push_back(std::move(gpu));
     }
 }
 
@@ -428,6 +439,8 @@ void Tank::simulateMovement(
     glm::vec2 acceleration = (velocity_ - velocityBeforeStep) / deltaTime;
     glm::vec2 currentForward(std::sin(yaw_), std::cos(yaw_));
     glm::vec2 currentRight(currentForward.y, -currentForward.x);
+    runningGear_.advance(glm::dot(velocity_,currentForward)*deltaTime,
+                         angularVelocity_*deltaTime);
     float longitudinalAcceleration = glm::dot(acceleration, currentForward);
     float feedbackBlend = 1.0f - std::exp(-kGroundFeedbackResponse * deltaTime);
     longitudinalAcceleration_ =
@@ -582,8 +595,8 @@ glm::mat4 Tank::barrelWorldMatrix() const {
 std::vector<Tank::DrawPart> Tank::drawParts() const {
     std::vector<DrawPart> parts;
     parts.push_back({hullMesh_.get(), hullWorldMatrix(), hullBLAS_->deviceAddress()});
-    // Tracks share the hull's own placement (they don't move independently
-    // in this prototype) but are bare metal rather than painted camo.
+    // Belt backing and fixed dark hull fittings remain rigid. The named
+    // moving shoes/wheels were extracted into instanced batches at load time.
     if (trackMesh_) {
         parts.push_back({trackMesh_.get(), hullWorldMatrix(), trackBLAS_->deviceAddress(), Surface::Tracks});
     }

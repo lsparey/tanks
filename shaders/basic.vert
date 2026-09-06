@@ -57,5 +57,9 @@ void main() {
     fragUV = inUV;
     fragWorldPos = worldPos.xyz;
     fragModelPos = inPosition;
+    // Running gear uses shared local meshes. UVs/edge masks rotate with each
+    // part, while height-based dust is evaluated in the tank hull's frame.
+    if (pc.isInstanced > 0.5 && pc.materialType > 4.5 && pc.materialType < 7.5)
+        fragModelPos = vec3(pc.model * worldPos);
     fragTangent = mat3(model) * vec3(1.0, 0.0, 0.0);
 }

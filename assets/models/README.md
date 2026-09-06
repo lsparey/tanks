@@ -39,7 +39,8 @@ The multi-view revision has 5,652 authored positions and 9,942 triangles. Object
 named individually, including left/right tread shoes, six road wheels per
 side, raised end wheels, hubs, deep skirts, armour, hatches, sights, aerials,
 rear auxiliary drums, and barrel sections.
-Keep these six material names, which the runtime merges into five meshes:
+Keep these six material names. The runtime extracts the named moving gear,
+then merges the remaining objects into five rigid meshes:
 
 | Material | Transform and finish |
 | --- | --- |
@@ -78,9 +79,23 @@ these previews; it is not an in-game rendering effect. See the
 
 ## Deliberate limits
 
-Wheels and track shoes are real geometry but **static**. They are named for
-future animation but merged at load time; per-side belt motion, rotating
-wheels, suspension articulation and dedicated track UVs remain separate work.
+Wheels and shoes now animate independently per side, using five shared mesh
+batches (shoes, road tires, road discs/hubs, end tires, end discs/hubs). All 128
+shoes circulate around a convex path extracted from each belt. The belt body
+stays fixed as backing geometry; visible shoes move. Wheel radius comes from
+the imported tire bounds. Mirrored wheel placement retains outward-facing hubs.
+Templates reuse the right-side source geometry and UVs, so repeated wheels
+share their paint pattern. Preserve the existing object names, 64 shoes per
+side, six road wheels and two end wheels per side when regenerating the asset.
+An incomplete named rig reports a load error rather than dropping geometry.
+
+The same transforms drive rasterization and ray tracing. Colliders retain the
+original full hull bounds; shoe/wheel movement does not affect handling.
+`--static-tracks` disables extraction/animation for A/B checks. `tank.x` has no
+named rig and remains a supported static fallback.
+
+Individual suspension articulation, track sag and powered wheelspin are not
+implemented. Motion follows resolved hull travel, not engine/throttle demand.
 Small sprocket teeth, bolts and flexible skirts are omitted at this detail
 level. Launchers, lamps and optics are static details, not new gameplay systems.
 The current camouflage is retained; desert paint, markings and photographic
