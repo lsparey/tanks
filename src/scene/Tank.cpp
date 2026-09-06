@@ -11,6 +11,7 @@
 #include "../io/ModelLoader.h"
 #include "InputManager.h"
 #include "Terrain.h"
+#include "TankSurface.h"
 
 namespace {
 
@@ -85,17 +86,9 @@ Tank::Tank(VulkanContext& ctx, CommandContext& commands, const std::string& mode
 void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string& path) {
     ModelLoader::Result result = ModelLoader::load(path);
 
-    // The .x file's baked per-part material colors (tan hull/turret, sage
-    // tracks, grey barrel) are overridden to near-white here rather than
-    // touching ModelLoader (which is generic, not tank-specific) -- the tank
-    // is drawn with an actual camo texture now (see Application's
-    // camoMaterialSet_/CamoTextureGenerator), and letting the old baked
-    // tints multiply against it would muddy its colors, the same reasoning
-    // the crate/track/bark/leaf textures use their own near-white tint for.
-    constexpr float kColorTint = 0.95f;
-    for (auto& part : result.parts) {
-        for (auto& vertex : part.vertices) vertex.color = glm::vec3(kColorTint);
-    }
+    // Imported material tints are replaced below with feature-edge distances.
+    // The tank shader applies a uniform 0.95 tint to its material texture,
+    // leaving these vertex channels available for geometric wear masks.
 
     // This old MilkShape export's UV unwrap is unusable for a tiled material
     // texture: most materials (Base/Detail/Tracks, i.e. everything that
@@ -164,6 +157,18 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
     hullWidth_ = maxX - minX;
     hullLength_ = maxZ - minZ;
 
+    float minY = hullVertices.empty() ? 0.0f : hullVertices.front().position.y;
+    float maxY = minY;
+    for (const auto& v : hullVertices) {
+        minY = std::min(minY, v.position.y);
+        maxY = std::max(maxY, v.position.y);
+    }
+    surfaceBounds_.x = minY;
+    surfaceBounds_.y = 1.0f / std::max(maxY - minY, 0.001f);
+    TankSurface::bakeEdgeDistances(hullVertices, hullIndices);
+    for (auto* part : {turretPart, trackPart})
+        if (part) TankSurface::bakeEdgeDistances(part->vertices, part->indices);
+
     hullMesh_ = std::make_unique<Mesh>(ctx, commands, hullVertices, hullIndices);
     hullBLAS_ = std::make_unique<AccelerationStructure>(AccelerationStructure::buildBLAS(ctx, commands, *hullMesh_));
     if (turretPart) {
@@ -172,10 +177,6 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
             std::make_unique<AccelerationStructure>(AccelerationStructure::buildBLAS(ctx, commands, *turretMesh_));
     }
     if (barrelPart) {
-        barrelMesh_ = std::make_unique<Mesh>(ctx, commands, barrelPart->vertices, barrelPart->indices);
-        barrelBLAS_ =
-            std::make_unique<AccelerationStructure>(AccelerationStructure::buildBLAS(ctx, commands, *barrelMesh_));
-
         // The muzzle tip is the barrel-part vertex farthest from the local
         // origin. A plain "farthest from the part's own centroid" heuristic
         // doesn't work for a barrel: a straight cylinder is roughly
@@ -204,6 +205,14 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
         barrelPivotLocal_ = glm::vec3(0.5f * (barrelMinimum.x + barrelMaximum.x),
                                       0.5f * (barrelMinimum.y + barrelMaximum.y),
                                       barrelMinimum.z);
+        surfaceBounds_.z = barrelMaximum.z;
+        surfaceBounds_.w = 1.0f / std::max(barrelMaximum.z - barrelMinimum.z, 0.001f);
+        // Preserve the authored vertex order while locating the muzzle,
+        // before the mask bake duplicates corners in triangle order.
+        TankSurface::bakeEdgeDistances(barrelPart->vertices, barrelPart->indices);
+        barrelMesh_ = std::make_unique<Mesh>(ctx, commands, barrelPart->vertices, barrelPart->indices);
+        barrelBLAS_ =
+            std::make_unique<AccelerationStructure>(AccelerationStructure::buildBLAS(ctx, commands, *barrelMesh_));
     }
     if (trackPart) {
         trackMesh_ = std::make_unique<Mesh>(ctx, commands, trackPart->vertices, trackPart->indices);
@@ -570,7 +579,7 @@ std::vector<Tank::DrawPart> Tank::drawParts() const {
     // Tracks share the hull's own placement (they don't move independently
     // in this prototype) but are bare metal rather than painted camo.
     if (trackMesh_) {
-        parts.push_back({trackMesh_.get(), hullWorldMatrix(), trackBLAS_->deviceAddress(), /*metallic=*/true});
+        parts.push_back({trackMesh_.get(), hullWorldMatrix(), trackBLAS_->deviceAddress(), Surface::Tracks});
     }
 
     if (turretMesh_ || barrelMesh_) {
@@ -578,13 +587,12 @@ std::vector<Tank::DrawPart> Tank::drawParts() const {
         if (turretMesh_) {
             parts.push_back({turretMesh_.get(), turretWorld, turretBLAS_->deviceAddress()});
         }
-        // The barrel isn't independently elevated yet -- it just rides
-        // along with the turret's yaw, with a local translation added for
-        // firing recoil. Bare metal, like the tracks.
+        // Independent elevation and recoil retain the barrel's authored
+        // material coordinates, including the soot band at the muzzle.
         if (barrelMesh_) {
             parts.push_back(
                 {barrelMesh_.get(), barrelWorldMatrix(), barrelBLAS_->deviceAddress(),
-                 /*metallic=*/true});
+                 Surface::Barrel});
         }
     }
     return parts;

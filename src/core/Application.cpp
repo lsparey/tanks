@@ -2164,19 +2164,21 @@ void Application::drawFrame() {
     // Tank: painted parts (hull, turret) get the camo texture; bare-metal
     // parts (tracks, barrel) get a plain gunmetal texture instead -- see
     // CamoTextureGenerator/MetalTextureGenerator and Tank::DrawPart::
-    // metallic. Tank::load's vertex color is kept near-white so either
-    // texture's own baked colors show through unmodified, the same
-    // reasoning as the crate/track/bark/leaf textures. No reflectivity on
+    // surface. Tank vertices carry edge-distance masks in their otherwise
+    // uniform colour channels; the tank shader decodes these for wear.
+    // No ray-traced reflectivity on
     // either -- the tank's own per-pixel specular map (see basic.frag's
     // isDynamicObject branch) carries the metal/paint highlight instead, so
     // a real traced reflection on top just muddied it without adding much.
     for (const auto& part : tank_->drawParts()) {
-        VkDescriptorSet materialSet = part.metallic ? metalMaterialSet_ : camoMaterialSet_;
+        VkDescriptorSet materialSet = part.surface == Tank::Surface::Armour ? camoMaterialSet_ : metalMaterialSet_;
         vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(),
                                  1, 1, &materialSet, 0, nullptr);
         Pipeline::PushConstants tankPc{};
         tankPc.model = part.worldMatrix;
-        tankPc.specularStrength = part.metallic ? 0.35f : 0.12f;
+        tankPc.specularStrength = part.surface == Tank::Surface::Armour ? 0.10f : 0.24f;
+        tankPc.materialType = static_cast<float>(part.surface);
+        tankPc.tankSurface = tank_->surfaceBounds();
         tankPc.reflectivity = 0.0f;
         // See Pipeline::PushConstants::isDynamicObject -- specularStrength
         // alone no longer uniquely identifies the tank now that its own

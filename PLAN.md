@@ -45,7 +45,7 @@ Unchecked items are options rather than a committed roadmap.
 
 - [x] [Establish visual targets](#establish-visual-targets)
 - [ ] [Weapon firing presentation](#weapon-firing-presentation)
-- [ ] [Tank material detail and wear](#tank-material-detail-and-wear)
+- [x] [Tank material detail and wear](#tank-material-detail-and-wear)
 - [ ] [Foliage and environmental motion](#foliage-and-environmental-motion)
 - [x] [Unified sky, sun, and atmosphere](#unified-sky-sun-and-atmosphere)
 - [ ] [Shorelines and terrain transitions](#shorelines-and-terrain-transitions)
@@ -409,16 +409,20 @@ after the short-lived particles disappear.
 
 ### Tank material detail and wear
 
-Give painted metal, bare tracks, and the barrel more distinct surface response
-through packed roughness/metalness or material masks rather than relying mainly
-on uniform per-part constants. Add restrained edge wear, soot near the muzzle,
-dust accumulation on lower surfaces, and possibly track-driven mud buildup.
+Painted armour, tracks, and the barrel now have separate material responses.
+Convex mesh edges receive restrained, broad scuffs that fade away when too
+small to resolve on screen; flat triangulation seams and concave corners do
+not. Model-space dust masks tint and dull the lower
+hull/tracks, and the muzzle has a localized soot band. Roughness and highlight
+strength vary with wear, dust, and soot while retaining readable camouflage.
+This is a static weathering pass; driving-dependent dirt/mud buildup remains
+an optional follow-up. See the updated [tank reference](docs/VISUAL_TARGET.md#tank-material-checkpoint).
 
 - Value: improves the main object at every camera distance where detail is
   visible.
 - Complexity: medium; procedural masks can avoid requiring a full new asset
   pipeline.
-- Suggested priority: after the overall visual target is chosen.
+- Status: completed for the initial material and static-weathering pass.
 
 ### Foliage and environmental motion
 

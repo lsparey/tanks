@@ -110,12 +110,18 @@ public:
         // parts different specularStrength values.
         float isDynamicObject = 0.0f;
         // Material-specific shading without another descriptor set. Values
-        // must match basic.frag: 0 generic, 1 terrain, 2 foliage, 3 rock.
+        // must match basic.frag: 0 generic, 1 terrain, 2 foliage, 3 rock,
+        // 4 sky, 5 armour, 6 tracks, 7 barrel.
         float materialType = 0.0f;
         // Nonzero selects instanceTransforms[gl_InstanceIndex] in basic.vert
         // instead of model, allowing repeated static meshes to batch.
         float isInstanced = 0.0f;
+        // GLSL vec4 offset 112; the full range remains within Vulkan's
+        // guaranteed 128-byte push-constant budget.
+        alignas(16) glm::vec4 tankSurface{0.0f};
     };
+    static_assert(offsetof(PushConstants, tankSurface) == 112);
+    static_assert(sizeof(PushConstants) == 128);
 
     Pipeline(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthFormat, VkFormat historyFormat);
     ~Pipeline();

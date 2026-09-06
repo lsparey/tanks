@@ -28,14 +28,13 @@ class Terrain;
 // placement (they don't move independently in this prototype).
 class Tank {
 public:
+    // Matches the tank material branch in basic.frag.
+    enum class Surface { Armour = 5, Tracks = 6, Barrel = 7 };
     struct DrawPart {
         const Mesh* mesh;
         glm::mat4 worldMatrix;
         VkDeviceAddress blasAddress;
-        // Bare metal (tracks, barrel) vs. painted camo (hull, turret) -- see
-        // Application's camoMaterialSet_/metalMaterialSet_, bound per-part
-        // in the tank draw loop based on this flag.
-        bool metallic = false;
+        Surface surface = Surface::Armour;
     };
 
     Tank(VulkanContext& ctx, CommandContext& commands, const std::string& modelPath);
@@ -60,6 +59,7 @@ public:
     glm::vec3 forward() const { return forward_; }
     // Hull's local-space X extent (outer edge to outer edge) -- see load().
     float hullWidth() const { return hullWidth_; }
+    glm::vec4 surfaceBounds() const { return surfaceBounds_; }
     // Physical ground-contact locations used by independent tread trails.
     // They follow the stable gameplay pose rather than the oscillating
     // suspension render pose.
@@ -127,6 +127,9 @@ private:
     glm::vec3 barrelPivotLocal_{0.0f};
     float hullWidth_ = 0.0f;
     float hullLength_ = 0.0f;
+    // Hull bottom/inverse height and muzzle Z/inverse barrel length, in the
+    // authored model space used by the procedural dust and soot masks.
+    glm::vec4 surfaceBounds_{0.0f};
 
     // Ground-constrained gameplay pose, used for movement, collision, the
     // follow camera, and track-mark placement.

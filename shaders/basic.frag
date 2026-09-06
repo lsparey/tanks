@@ -7,6 +7,7 @@ layout(location = 1) in vec3 fragColor;
 layout(location = 2) in vec2 fragUV;
 layout(location = 3) in vec3 fragWorldPos;
 layout(location = 4) in vec3 fragTangent;
+layout(location = 5) in vec3 fragModelPos;
 
 // Must match DynamicLight.h's kMaxDynamicLights -- GLSL can't share that
 // constant with the C++ side, so the array size here is a plain literal.
@@ -74,6 +75,7 @@ layout(push_constant) uniform PushConstants {
     float isDynamicObject;
     float materialType;
     float isInstanced;
+    vec4 tankSurface;
 } pc;
 
 layout(location = 0) out vec4 outColor;
@@ -514,7 +516,47 @@ void main() {
             terrainBump = mix(grassBump, gravelBump, bumpBlend);
         }
     }
-    vec3 albedo = fragColor * texColor;
+    bool tankMaterial = pc.materialType > 4.5 && pc.materialType < 7.5;
+    // Tank colour channels carry feature-edge distances baked at load time.
+    vec3 albedo = tankMaterial ? texColor * 0.95 : fragColor * texColor;
+    float tankWear = 0.0;
+    float tankDust = 0.0;
+    float tankSoot = 0.0;
+    float tankRoughness = 0.78;
+    if (tankMaterial) {
+        bool tracks = pc.materialType > 5.5 && pc.materialType < 6.5;
+        bool barrel = pc.materialType > 6.5;
+        // Object-space noise stays attached during hull, turret and gun motion.
+        float patches = valueNoise2D(fragModelPos.xz * 5.0 + fragModelPos.y * vec2(1.7, 2.3));
+        float edgeDistance = min(fragColor.x, min(fragColor.y, fragColor.z));
+        float edgeWidth = mix(0.015, 0.030, patches);
+        // Use the surface's pixel footprint, not derivatives of edge masks:
+        // active-edge channels can change across adjacent triangles. Broader
+        // low-frequency scuffs replace the undersampled chip-noise threshold.
+        float pixelSize = max(length(dFdx(fragModelPos)), length(dFdy(fragModelPos)));
+        float edgeAA = max(pixelSize, 0.001);
+        float resolvedWear = smoothstep(0.8, 2.0, edgeWidth / edgeAA);
+        float scuff = smoothstep(0.30, 0.70, patches);
+        tankWear = (1.0 - smoothstep(edgeWidth - edgeAA * 0.5,
+                                    edgeWidth + edgeAA * 0.5, edgeDistance)) *
+                   scuff * resolvedWear * 0.45;
+        float height = (fragModelPos.y - pc.tankSurface.x) * pc.tankSurface.y;
+        tankDust = (1.0 - smoothstep(0.12, 0.62, height + (patches - 0.5) * 0.22)) *
+                   mix(0.10, tracks ? 0.38 : 0.25, patches);
+        if (barrel) {
+            tankDust = 0.0;
+            float muzzleDistance = (pc.tankSurface.z - fragModelPos.z) * pc.tankSurface.w;
+            tankSoot = (1.0 - smoothstep(0.015, 0.16, muzzleDistance)) * mix(0.65, 0.90, patches);
+        }
+        if (tracks || barrel) albedo = mix(albedo, vec3(0.028, 0.031, 0.034), 0.35);
+        albedo *= mix(0.96, 1.04, patches);
+        albedo = mix(albedo, vec3(0.12, 0.13, 0.14), tankWear * (tracks ? 0.65 : 0.38));
+        albedo = mix(albedo, vec3(0.15, 0.125, 0.085), tankDust);
+        albedo = mix(albedo, vec3(0.006, 0.005, 0.004), tankSoot);
+        tankRoughness = tracks ? 0.86 : (barrel ? 0.53 : 0.78);
+        tankRoughness = mix(tankRoughness, tracks ? 0.48 : 0.56, tankWear);
+        tankRoughness = mix(tankRoughness, 0.95, clamp(tankDust + tankSoot, 0.0, 1.0));
+    }
     // Texture alpha times the per-draw opacity (PushConstants::opacity) --
     // both are 1.0 for every opaque draw in the scene, so this only actually
     // does something for fading ground decals like TrackMark, whose texture
@@ -715,7 +757,7 @@ void main() {
     // Opaque foliage blobs and rocks still need fine surface relief. Build a
     // derivative tangent frame from their real UV mapping, then treat albedo
     // luminance as a compact height channel. Rock is intentionally stronger.
-    if (pc.materialType > 1.5) {
+    if (pc.materialType > 1.5 && pc.materialType < 3.5) {
         vec3 dpdx = dFdx(fragWorldPos), dpdy = dFdy(fragWorldPos);
         vec2 duvdx = dFdx(sampleUV), duvdy = dFdy(sampleUV);
         float det = duvdx.x * duvdy.y - duvdx.y * duvdy.x;
@@ -791,13 +833,20 @@ void main() {
     // of like paneling). Left as plain pc.specularStrength for everything
     // else (terrain, water, etc.), same as before.
     float specularStrength = pc.specularStrength;
-    if (pc.isDynamicObject > 0.5) {
+    if (pc.isDynamicObject > 0.5 && !tankMaterial) {
         specularStrength = pc.specularStrength * mix(0.5, 1.5, tankSpecularGrain(fragUV));
+    }
+    if (tankMaterial) {
+        float grainFade = 1.0 - smoothstep(0.015, 0.06, length(fwidth(fragUV)));
+        float grain = mix(0.5, tankSpecularGrain(fragUV), grainFade);
+        specularStrength = mix(pc.specularStrength, max(pc.specularStrength, 0.22), tankWear) *
+                           mix(0.85, 1.15, grain);
+        specularStrength *= 1.0 - clamp(tankDust * 1.7 + tankSoot * 0.9, 0.0, 0.9);
     }
     // Stone has a broad, faint mineral response; foliage only a tiny waxy
     // sheen. Both remain much rougher than painted metal.
-    if (pc.materialType > 2.5) specularStrength = 0.055;
-    else if (pc.materialType > 1.5) specularStrength = 0.025;
+    if (pc.materialType > 2.5 && pc.materialType < 3.5) specularStrength = 0.055;
+    else if (pc.materialType > 1.5 && pc.materialType < 2.5) specularStrength = 0.025;
 
     // Everything below is gated by specularStrength (0 for terrain/other
     // matte objects), so only opted-in draws (the tank) get these. Real
@@ -836,6 +885,7 @@ void main() {
     vec3 halfDir = normalize(toLight + viewDir);
     float specAngle = max(dot(shadingNormal, halfDir), 0.0);
     float specExponent = isWater ? 150.0 : (pc.materialType > 2.5 ? 9.0 : 20.0);
+    if (tankMaterial) specExponent = clamp(2.0 / pow(tankRoughness, 4.0) - 2.0, 6.0, 96.0);
     float specular = pow(specAngle, specExponent) * specularStrength * 0.6 * shadowFactor;
 
     // Fresnel/rim term: surfaces brighten at grazing view angles, a cheap

@@ -18,6 +18,8 @@ runtime/build libraries.
 - Procedural terrain, river water, English temperate grass, trees, shrubs,
   rocks, cliffs, scree, clouds, and play-area boundary.
 - Multipart tank model with independent turret and barrel transforms.
+- Distinct armour, track, and barrel finishes with subtle edge wear, lower-hull
+  dust, and muzzle soot attached to the model through movement and aiming.
 - Projectiles, destructible crates, impacts, debris, smoke, shell trails, and
   short-lived explosion lighting.
 - Vulkan dynamic rendering, MSAA, instanced scenery, mesh LODs, GPU timings,

@@ -27,6 +27,7 @@ layout(push_constant) uniform PushConstants {
     float isDynamicObject;
     float materialType;
     float isInstanced;
+    vec4 tankSurface;
 } pc;
 
 layout(location = 0) out vec3 fragNormal;
@@ -39,6 +40,7 @@ layout(location = 3) out vec3 fragWorldPos;
 // tangent for decal bump mapping (see PushConstants::bumpStrength) without
 // needing a dedicated tangent vertex attribute.
 layout(location = 4) out vec3 fragTangent;
+layout(location = 5) out vec3 fragModelPos;
 
 void main() {
     mat4 model = pc.isInstanced > 0.5 ? instanceData.transforms[gl_InstanceIndex] : pc.model;
@@ -54,5 +56,6 @@ void main() {
     fragColor = inColor;
     fragUV = inUV;
     fragWorldPos = worldPos.xyz;
+    fragModelPos = inPosition;
     fragTangent = mat3(model) * vec3(1.0, 0.0, 0.0);
 }
