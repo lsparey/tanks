@@ -9,9 +9,15 @@ function(compile_shaders TARGET_NAME)
     foreach(SHADER_SOURCE ${ARGN})
         set(SHADER_INPUT "${CMAKE_SOURCE_DIR}/shaders/${SHADER_SOURCE}")
         set(SHADER_OUTPUT "${CMAKE_SOURCE_DIR}/shaders/${SHADER_SOURCE}.spv")
+        set(SHADER_OPTIONS --target-env=vulkan1.3)
+        if(SHADER_SOURCE STREQUAL "foliage_depth.frag")
+            # Use core OpKill for discard. SPIR-V 1.6 emits demotion, whose
+            # optional Vulkan feature is not required by our renderer.
+            list(APPEND SHADER_OPTIONS --target-spv=spv1.5)
+        endif()
         add_custom_command(
             OUTPUT ${SHADER_OUTPUT}
-            COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.3 ${SHADER_INPUT} -o ${SHADER_OUTPUT}
+            COMMAND ${GLSLC_EXECUTABLE} ${SHADER_OPTIONS} ${SHADER_INPUT} -o ${SHADER_OUTPUT}
             DEPENDS ${SHADER_INPUT}
             COMMENT "Compiling shader ${SHADER_SOURCE}"
             VERBATIM

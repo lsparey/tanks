@@ -13,6 +13,7 @@ struct Builder {
     std::mt19937 structure, foliage;
     Species species;
     float density;
+    uint32_t group = 0;
     float random(float lo, float hi) {
         return std::uniform_real_distribution<float>(lo, hi)(structure);
     }
@@ -54,7 +55,7 @@ struct Builder {
             float opening = unit();
             uint32_t noiseSeed = foliage();
             if (keep < density * vigor && opening > .035f)
-                tree.sprays.push_back({position, glm::mat3(leafU, leafV, rolledW), leafRadii, noiseSeed});
+                tree.sprays.push_back({position, glm::mat3(leafU, leafV, rolledW), leafRadii, noiseSeed, group});
         }
     }
     // Foliage grows along a shoot, not just at its tip. Several differently
@@ -102,6 +103,7 @@ struct Builder {
             float y = .85f + tier * .43f;
             float reach = (1.0f - y / height) * 1.85f;
             for (int i = 0; i < 5; ++i) {
+                ++group;
                 float angle = phase + tier * 1.7f + i * kPi * .4f + random(-.22f, .22f);
                 glm::vec3 direction(std::cos(angle), 0, std::sin(angle));
                 glm::vec3 base(.035f * y / height, y + random(-.09f, .09f), -.025f * y / height);
@@ -116,6 +118,7 @@ struct Builder {
         }
         // A narrow tuft around the leader rather than a solid conical cap.
         for (int i = 0; i < 4; ++i) {
+            ++group;
             float angle = phase + i * kPi * .5f;
             glm::vec3 a(.025f, height - .3f, -.02f);
             glm::vec3 b = a + glm::vec3(std::cos(angle) * .16f, .22f, std::sin(angle) * .16f);
@@ -126,6 +129,7 @@ struct Builder {
         branch(glm::vec3(0), glm::vec3(.10f, 3.8f, -.08f), .105f, .008f);
         float phase = random(0, 2 * kPi);
         for (int tier = 0; tier < 6; ++tier) for (int i = 0; i < 2; ++i) {
+            ++group;
             float angle = phase + tier * 1.35f + i * kPi + random(-.15f, .15f);
             float y = 1.0f + tier * .43f;
             glm::vec3 base(.10f * y / 3.8f, y, -.08f * y / 3.8f);
@@ -176,6 +180,7 @@ struct Builder {
             float y = 1.15f + tier * .66f;
             glm::vec3 base = glm::mix(fork, leader, (y - fork.y) / (leader.y - fork.y));
             for (int i = 0; i < 3; ++i) {
+                ++group;
                 float angle = phase + tier * 1.35f + i * 2 * kPi / 3 + random(-.25f, .25f);
                 glm::vec3 direction = glm::normalize(glm::vec3(std::cos(angle),
                     random(.15f, .5f) + tier * .13f, std::sin(angle)));
@@ -184,6 +189,7 @@ struct Builder {
                 oakFork(base, direction, length, .058f - tier * .009f, 1);
             }
         }
+        ++group;
         oakFork(leader, glm::normalize(glm::vec3(.22f, 1.f, -.14f)), .42f, .025f, 1);
     }
 

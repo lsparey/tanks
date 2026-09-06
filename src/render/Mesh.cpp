@@ -933,3 +933,58 @@ Mesh::Geometry Mesh::treeLeafGeometry(glm::vec3 tint,
     }
     return {std::move(vertices), std::move(indices)};
 }
+
+Mesh::FoliageGeometry Mesh::treeFoliageGeometry(glm::vec3 tint, const TreeGenerator::Tree& tree) {
+    std::map<uint32_t, TreeGenerator::Tree> boughs;
+    for (const auto& spray : tree.sprays) {
+        auto& bough = boughs[spray.group];
+        bough.species = tree.species;
+        bough.sprays.push_back(spray);
+    }
+    FoliageGeometry result;
+    for (const auto& [id, bough] : boughs) {
+        FoliageGroup group;
+        group.seed = id;
+        glm::vec3 lo(std::numeric_limits<float>::max()), hi(-std::numeric_limits<float>::max());
+        for (const auto& spray : bough.sprays) {
+            // Include the coarse-grid thickness and oak's three laminae.
+            glm::vec3 r = spray.radii;
+            r.z = std::max(r.z, .075f * .75f);
+            glm::vec3 extent = (glm::abs(spray.axes[0])*r.x + glm::abs(spray.axes[1])*r.y
+                              + glm::abs(spray.axes[2])*r.z) * 1.1f + glm::vec3(.075f);
+            lo = glm::min(lo, spray.center-extent);
+            hi = glm::max(hi, spray.center+extent);
+        }
+        group.center = (lo+hi)*.5f;
+        group.radius = glm::length(hi-lo)*.5f;
+        for (int lod=0;lod<3;++lod) {
+            auto mesh = treeLeafGeometry(tint,bough,lod);
+            auto& range=group.levels[lod];
+            range.firstIndex=static_cast<uint32_t>(result.mesh.indices.size());
+            range.indexCount=static_cast<uint32_t>(mesh.indices.size());
+            uint32_t base=static_cast<uint32_t>(result.mesh.vertices.size());
+            for (uint32_t index:mesh.indices) result.mesh.indices.push_back(base+index);
+            result.mesh.vertices.insert(result.mesh.vertices.end(),mesh.vertices.begin(),mesh.vertices.end());
+        }
+        result.groups.push_back(group);
+    }
+    return result;
+}
+
+void Mesh::bindAndDrawIndirect(VkCommandBuffer cmd, VkBuffer commands, VkDeviceSize offset,
+                               uint32_t count) const {
+    VkBuffer buffers[]={vertexBuffer_.handle()};
+    VkDeviceSize offsets[]={0};
+    vkCmdBindVertexBuffers(cmd,0,1,buffers,offsets);
+    vkCmdBindIndexBuffer(cmd,indexBuffer_.handle(),0,VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexedIndirect(cmd,commands,offset,count,sizeof(VkDrawIndexedIndirectCommand));
+    ++DrawStatistics::calls;
+}
+void Mesh::bindAndDrawRange(VkCommandBuffer cmd, const VkDrawIndexedIndirectCommand& draw) const {
+    VkBuffer buffers[]={vertexBuffer_.handle()};
+    VkDeviceSize offsets[]={0};
+    vkCmdBindVertexBuffers(cmd,0,1,buffers,offsets);
+    vkCmdBindIndexBuffer(cmd,indexBuffer_.handle(),0,VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmd,draw.indexCount,draw.instanceCount,draw.firstIndex,draw.vertexOffset,draw.firstInstance);
+    ++DrawStatistics::calls;
+}

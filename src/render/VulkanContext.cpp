@@ -340,6 +340,14 @@ void VulkanContext::createLogicalDevice() {
     // angles (see Texture::fromPixels) -- a near-universal feature on real
     // GPUs, not worth a support query.
     features2.features.samplerAnisotropy = VK_TRUE;
+    VkPhysicalDeviceFeatures supported{};
+    vkGetPhysicalDeviceFeatures(physicalDevice_, &supported);
+    multiDrawIndirect_ = supported.multiDrawIndirect && supported.drawIndirectFirstInstance;
+    features2.features.multiDrawIndirect = multiDrawIndirect_;
+    features2.features.drawIndirectFirstInstance = multiDrawIndirect_;
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
+    maxIndirectDrawCount_ = properties.limits.maxDrawIndirectCount;
 
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;

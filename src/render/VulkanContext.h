@@ -28,6 +28,8 @@ public:
     uint32_t graphicsQueueFamily() const { return graphicsQueueFamily_; }
     uint32_t presentQueueFamily() const { return presentQueueFamily_; }
     VkSampleCountFlagBits msaaSamples() const { return msaaSamples_; }
+    bool multiDrawIndirect() const { return multiDrawIndirect_; }
+    uint32_t maxIndirectDrawCount() const { return maxIndirectDrawCount_; }
 
 private:
     void createInstance();
@@ -49,4 +51,6 @@ private:
     uint32_t graphicsQueueFamily_ = 0;
     uint32_t presentQueueFamily_ = 0;
     VkSampleCountFlagBits msaaSamples_ = VK_SAMPLE_COUNT_1_BIT;
+    bool multiDrawIndirect_ = false;
+    uint32_t maxIndirectDrawCount_ = 1;
 };

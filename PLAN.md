@@ -97,7 +97,21 @@ Unchecked items are options rather than a committed roadmap.
   visible scaffold gaps and dense terminal shoots. Small, separately shaded
   lobed leaf surfaces preserve leaf edges instead of merging into a solid
   voxel mass. Coarser LODs simplify these leaves within each spray.
-- Canopy ray proxies use eight inset triangles per leaf or voxel spray and are flattened
+- Foliage raster LOD is selected per generated bough, using projected bough
+  radius rather than a whole-tree distance switch. Fine/medium levels blend
+  over 32–48 pixels; medium/far blend over 16–24 pixels. At most two adjacent
+  levels are active. Complementary, time-stable pixel masks provide gradual
+  coverage changes, with lighting-history reactivity based on coverage change.
+  A cheap masked depth pass precedes equal-depth lighting so hidden leaves
+  do not run expensive ray queries. Ranges share one mesh per variant and
+  use multi-draw indirect, with a direct indexed fallback when the optional
+  multi-draw/first-instance features are unavailable. Frustum planes are
+  normalized once per frame; bough bounds include current wind displacement.
+  This is a CPU-selected bough LOD system, not Nanite's GPU hierarchy,
+  streaming or measured geometric-error selection. All three levels stay
+  resident, bark retains discrete LOD, and some spatial dithering can remain
+  visible during transitions because colour is not temporally accumulated.
+- Canopy ray proxies use inset triangles per leaf or voxel spray and are flattened
   to follow the visible foliage. Near-grid occupancy checks keep each proxy
   inside its voxel leaf group; oak proxies fit inside the thin leaf surfaces.
   Medium/far raster LODs engage at smaller screen sizes
@@ -283,7 +297,8 @@ foundation:
   effects, and HUD regions without stalling the active submission.
 - Trees, rocks, shrubs, scree, and cliffs are CPU-frustum-culled and submitted
   in instanced mesh/material groups.
-- Trees and rocks use three projected-size LODs with hysteresis.
+- Tree bark and rocks use three projected-size LODs with hysteresis;
+  foliage uses progressive per-bough selection and batched indexed draws.
 - Ray-tracing geometry uses simplified proxies where appropriate, and
   numerous minor effects are excluded from the TLAS.
 - Shadow and AO ray counts decrease with distance and use temporal
@@ -501,7 +516,9 @@ objects. Dust and clouds can follow the same wind direction.
 - Suggested priority: high if environmental stillness is noticeable.
 - Status: bark, leaves, and shrubs bend coherently from anchored roots,
   using one low-frequency wind vector per instance and quadratic trunk
-  bending. Elapsed time drives the motion independently of frame rate;
+  bending. Current and previous wind vectors are now evaluated once per
+  placement on the CPU and shared by bark and all foliage boughs, avoiding
+  repeated trigonometry in each vertex invocation. Elapsed time drives the motion independently of frame rate;
   there is no travelling wave across the solid canopy. Bent normals and
   previous bent positions keep lighting and temporal reprojection aligned.
   Ray queries retain static coarse proxies to avoid rebuilding tree geometry.

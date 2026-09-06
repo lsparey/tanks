@@ -28,8 +28,11 @@ Pipeline::Pipeline(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthForma
     : ctx_(ctx),
       uniformBuffer_(ctx, sizeof(FrameUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-      instanceBuffer_(ctx, sizeof(glm::mat4) * kMaxRasterInstances,
+      instanceBuffer_(ctx, sizeof(RasterInstance) * kMaxRasterInstances,
                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+      foliageDrawBuffer_(ctx, sizeof(VkDrawIndexedIndirectCommand) * kMaxRasterInstances,
+                      VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) {
     createDescriptorSetLayout();
     createMaterialSetLayout();
@@ -41,6 +44,8 @@ Pipeline::Pipeline(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthForma
 }
 
 Pipeline::~Pipeline() {
+    if (foliageDepthPipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(ctx_.device(), foliageDepthPipeline_, nullptr);
+    if (foliagePipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(ctx_.device(), foliagePipeline_, nullptr);
     if (effectsPipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(ctx_.device(), effectsPipeline_, nullptr);
     if (pipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(ctx_.device(), pipeline_, nullptr);
     if (pipelineLayout_ != VK_NULL_HANDLE)
@@ -59,13 +64,17 @@ Pipeline::~Pipeline() {
 
 void Pipeline::updateFrameUBO(const FrameUBO& ubo) { uniformBuffer_.copyData(&ubo, sizeof(ubo)); }
 
-void Pipeline::updateInstanceTransforms(const std::vector<glm::mat4>& transforms) {
-    if (transforms.size() > kMaxRasterInstances) {
+void Pipeline::updateInstances(const std::vector<RasterInstance>& instances) {
+    if (instances.size() > kMaxRasterInstances) {
         throw std::runtime_error("raster instance transform capacity exceeded");
     }
-    if (!transforms.empty()) {
-        instanceBuffer_.copyData(transforms.data(), sizeof(glm::mat4) * transforms.size());
+    if (!instances.empty()) {
+        instanceBuffer_.copyData(instances.data(), sizeof(RasterInstance) * instances.size());
     }
+}
+void Pipeline::updateFoliageDraws(const std::vector<VkDrawIndexedIndirectCommand>& draws) {
+    if (draws.size() > kMaxRasterInstances) throw std::runtime_error("foliage draw capacity exceeded");
+    if (!draws.empty()) foliageDrawBuffer_.copyData(draws.data(), draws.size()*sizeof(draws[0]));
 }
 
 void Pipeline::createDescriptorSetLayout() {
@@ -471,6 +480,25 @@ void Pipeline::createPipeline(VkFormat colorFormat, VkFormat depthFormat, VkForm
 
     VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
                                         &pipeline_));
+
+    // Resolve the complementary LOD masks with a tiny depth-only shader.
+    // Keeping discard out of the lighting shader preserves early depth rejection
+    // before its expensive ray queries, including for leaves hidden by other boughs.
+    VkShaderModule foliageDepthModule = loadShaderModule("foliage_depth.frag.spv");
+    stages[1].module = foliageDepthModule;
+    colorBlendAttachments[0].colorWriteMask = 0;
+    colorBlendAttachments[1].colorWriteMask = 0;
+    VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+                                      &foliageDepthPipeline_));
+    stages[1].module = fragModule;
+    colorBlendAttachments[0] = colorBlendAttachment;
+    colorBlendAttachments[1] = historyBlendAttachment;
+    depthStencil.depthWriteEnable = VK_FALSE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_EQUAL;
+    VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+                                      &foliagePipeline_));
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    vkDestroyShaderModule(ctx_.device(), foliageDepthModule, nullptr);
 
     // Soft weapon cards test against opaque geometry but never occlude later
     // particles or overwrite terrain shadow/AO history through transparent pixels.

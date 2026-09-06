@@ -70,10 +70,14 @@ target_link_libraries(tanks PRIVATE
 )
 
 include(cmake/CompileShaders.cmake)
-compile_shaders(tanks basic.vert basic.frag hud.vert hud.frag)
+compile_shaders(tanks basic.vert basic.frag foliage_depth.frag hud.vert hud.frag)
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(foliage_lod_test tests/FoliageLodTest.cpp)
+    target_include_directories(foliage_lod_test PRIVATE src)
+    target_link_libraries(foliage_lod_test PRIVATE glm::glm)
+    add_test(NAME foliage_lod COMMAND foliage_lod_test)
     add_executable(tree_mesh_test tests/TreeMeshTest.cpp src/render/Mesh.cpp
         src/render/VoxelSurface.cpp src/render/Buffer.cpp src/render/SingleTimeCommands.cpp
         src/scene/TreeGenerator.cpp)

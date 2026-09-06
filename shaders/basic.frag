@@ -11,6 +11,7 @@ layout(location = 5) in vec3 fragModelPos;
 layout(location = 6) in vec3 fragPrevWorldPos;
 layout(location = 7) in vec3 fragRayWorldPos;
 layout(location = 8) in vec3 fragRayNormal;
+layout(location = 9) flat in vec4 fragFoliageFade;
 
 // Must match DynamicLight.h's kMaxDynamicLights -- GLSL can't share that
 // constant with the C++ side, so the array size here is a plain literal.
@@ -813,6 +814,7 @@ void main() {
                     shadowAlpha =
                         mix(0.08, 0.9, clamp((shadowDisagreementHistory - 0.15) * 4.0, 0.0, 1.0));
                 }
+                shadowAlpha = max(shadowAlpha, fragFoliageFade.w);
                 shadowFactor = mix(historySample.x, rawShadow, shadowAlpha);
 
                 // AO: same invalid-reprojection reasoning as shadow above
@@ -823,6 +825,7 @@ void main() {
                 // frames, enough to read as a trail. alpha=0.75 leaves under
                 // 2% after 3 frames, close enough to call fully resolved.
                 float aoAlpha = isTank ? 1.0 : 0.75;
+                aoAlpha = max(aoAlpha, fragFoliageFade.w);
                 aoFactor = mix(historySample.y, rawAO, aoAlpha);
             }
         }

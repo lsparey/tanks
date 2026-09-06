@@ -20,6 +20,8 @@ runtime/build libraries.
   forms have full summer crowns, overlapping thin leaf sprays, varied density
   and coherent wind sway. Oaks use separate lobed leaves and a deep branching
   crown; CPU tree builds run concurrently while the loading screen stays active.
+  Foliage detail changes progressively per bough, with complementary coverage
+  masks blending adjacent levels while retaining dynamic lighting and soft shadows.
 - Multipart tank model with independent turret and barrel transforms.
 - Editable Challenger-2-inspired mesh with sloped armour, road wheels, hubs,
   track belts and tread shoes; the original model remains selectable.
@@ -189,6 +191,9 @@ A long wait alone does not establish that ray tracing is the bottleneck.
 
 Counts are averages over the same CPU window. Draw calls are counted at the
 actual Vulkan draw sites, including the HUD; an instanced batch counts once.
+A multi-draw foliage batch also counts once per pass, even though it contains
+several indexed commands. Trees use a masked depth pass followed by lighting;
+draw-call counts alone do not describe their geometry or shading cost.
 Visible props count unique scenery instances accepted by culling (trees,
 rocks, scree, shrubs, and cliff sections), not their separate material passes
 or every object in the scene. TLAS instances count the ray-query scene.

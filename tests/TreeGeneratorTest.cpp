@@ -29,7 +29,7 @@ int main() {
             require(sparse.branches.size() == full.branches.size() && bare.branches.size() == full.branches.size(), "Density changed the skeleton");
             require(repeat.sprays.size() == full.sprays.size(), "Non-deterministic foliage");
             std::set<std::array<float, 3>> twigTips;
-            std::set<std::tuple<std::array<float, 3>, std::array<float, 3>, uint32_t>> fullSprays;
+            std::set<std::tuple<std::array<float, 3>, std::array<float, 3>, uint32_t, uint32_t>> fullSprays;
             for (size_t i = 0; i < full.branches.size(); ++i) {
                 const Branch& b = full.branches[i];
                 require(finite(b.base) && finite(b.tip) && glm::length(b.tip-b.base) > .001f, "Invalid branch");
@@ -41,7 +41,7 @@ int main() {
             }
             for (size_t i = 0; i < full.sprays.size(); ++i) {
                 const Spray& s = full.sprays[i];
-                require(s.center == repeat.sprays[i].center && s.seed == repeat.sprays[i].seed, "Non-deterministic spray");
+                require(s.center == repeat.sprays[i].center && s.seed == repeat.sprays[i].seed && s.group == repeat.sprays[i].group, "Non-deterministic spray");
                 require(finite(s.center) && finite(s.radii) && glm::all(glm::greaterThan(s.radii,glm::vec3(0))), "Invalid spray");
                 require(s.radii.z < s.radii.x * .4f, "Foliage inflated into a ball");
                 for(int axis=0;axis<3;++axis) {
@@ -51,10 +51,10 @@ int main() {
                 require(glm::determinant(s.axes)>0.99f, "Mirrored spray winding");
                 require(glm::length(s.center-glm::vec3(0,2.4f,0)) + glm::length(s.radii)*1.08f < 3.5f, "Spray exceeds scene culling bound");
                 require(twigTips.contains(pointKey(s.center)), "Floating spray without a supporting twig");
-                fullSprays.emplace(pointKey(s.center), pointKey(s.radii), s.seed);
+                fullSprays.emplace(pointKey(s.center), pointKey(s.radii), s.seed, s.group);
             }
             for (const Spray& s : sparse.sprays) {
-                require(fullSprays.contains({pointKey(s.center), pointKey(s.radii), s.seed}), "Thinning moved surviving leaves");
+                require(fullSprays.contains({pointKey(s.center), pointKey(s.radii), s.seed, s.group}), "Thinning moved surviving leaves");
             }
         }
     }

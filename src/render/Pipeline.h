@@ -10,6 +10,7 @@
 #include "CommandContext.h"
 #include "Texture.h"
 #include "VulkanContext.h"
+#include "RasterInstance.h"
 
 // Owns the single graphics pipeline used for everything in the scene
 // (terrain, boxes, shells, tank), plus the per-frame uniform buffer/
@@ -38,7 +39,7 @@
 // frame's history) alongside the usual color output -- see historyFormat.
 class Pipeline {
 public:
-    static constexpr uint32_t kMaxRasterInstances = 8192;
+    static constexpr uint32_t kMaxRasterInstances = 16384;
 
     struct FrameUBO {
         glm::mat4 view;
@@ -120,7 +121,7 @@ public:
         // 4 sky, 5 armour, 6 tracks, 7 barrel, 8 flash, 9 smoke,
         // 10 opaque bark.
         float materialType = 0.0f;
-        // Nonzero selects instanceTransforms[gl_InstanceIndex] in basic.vert
+        // Nonzero selects instances[gl_InstanceIndex] in basic.vert
         // instead of model, allowing repeated static meshes to batch.
         float isInstanced = 0.0f;
         // GLSL vec4 offset 112; the full range remains within Vulkan's
@@ -137,7 +138,11 @@ public:
     Pipeline& operator=(const Pipeline&) = delete;
 
     void updateFrameUBO(const FrameUBO& ubo);
-    void updateInstanceTransforms(const std::vector<glm::mat4>& transforms);
+    void updateInstances(const std::vector<RasterInstance>& instances);
+    void updateFoliageDraws(const std::vector<VkDrawIndexedIndirectCommand>& draws);
+    VkBuffer foliageDrawBuffer() const { return foliageDrawBuffer_.handle(); }
+    VkPipeline foliageDepthHandle() const { return foliageDepthPipeline_; }
+    VkPipeline foliageHandle() const { return foliagePipeline_; }
     // highA/highB and lowA/lowB are only sampled/blended when a draw's
     // PushConstants::heightBlend is nonzero (terrain). terrainControl is an
     // optional fifth terrain-only lookup; other sets fall back to highA.
@@ -179,6 +184,9 @@ private:
 
     Buffer uniformBuffer_;
     Buffer instanceBuffer_;
+    Buffer foliageDrawBuffer_;
+    VkPipeline foliagePipeline_ = VK_NULL_HANDLE;
+    VkPipeline foliageDepthPipeline_ = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
     VkDescriptorSet descriptorSet_ = VK_NULL_HANDLE;
     std::array<VkDescriptorSet, CommandContext::kFramesInFlight> tlasDescriptorSets_{};

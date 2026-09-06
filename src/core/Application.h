@@ -156,7 +156,7 @@ private:
     std::unique_ptr<Texture> boundaryLineTexture_;
     std::unique_ptr<Texture> boundaryWallTexture_;
     // One texture (and one material set below) per mesh variant -- see
-    // treeBarkMeshes_/treeLeafMeshes_/rockMeshes_ -- rather than a single
+    // treeBarkMeshes_/treeFoliageMeshes_/rockMeshes_ -- rather than a single
     // shared texture, so the small pool of tree/rock shapes also looks
     // materially different from one instance to the next, not just tinted.
     std::vector<std::unique_ptr<Texture>> barkTextures_;
@@ -172,7 +172,7 @@ private:
     VkDescriptorSet boundaryLineMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet boundaryWallMaterialSet_ = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> barkMaterialSets_;  // one per treeBarkMeshes_ variant
-    std::vector<VkDescriptorSet> leafMaterialSets_;  // one per treeLeafMeshes_ variant
+    std::vector<VkDescriptorSet> leafMaterialSets_;  // one per treeFoliageMeshes_ variant
     std::vector<VkDescriptorSet> rockMaterialSets_;  // one per rockMeshes_ variant
     std::unique_ptr<Mesh> boxMesh_;
     std::unique_ptr<Mesh> shellMesh_;
@@ -200,17 +200,14 @@ private:
     // Inset copies of LOD 2 used only for ray queries. Keeping these inside
     // the visible boulders prevents the proxy from self-shadowing them.
     std::vector<std::unique_ptr<Mesh>> rockProxyMeshes_;
-    // Small pool of distinct fractal branch structures, one bark + one
-    // leaves mesh per variant (see Mesh::treeBark/treeLeaves) -- matching
-    // indices in each vector share the same seed, so their branch tips line
-    // up.
+    // Matching variants share one generated skeleton. Foliage packs all
+    // bough/LOD ranges into one mesh; bark retains three whole-tree meshes.
     std::vector<std::unique_ptr<Mesh>> treeBarkMeshes_;
-    std::vector<std::unique_ptr<Mesh>> treeLeafMeshes_;
+    std::vector<std::unique_ptr<Mesh>> treeFoliageMeshes_;
+    std::vector<std::vector<Mesh::FoliageGroup>> treeFoliageGroups_;
     std::vector<std::unique_ptr<Mesh>> mediumTreeBarkMeshes_;
-    std::vector<std::unique_ptr<Mesh>> mediumTreeLeafMeshes_;
     // Far raster LOD and simplified ray-tracing proxy geometry.
     std::vector<std::unique_ptr<Mesh>> farTreeBarkMeshes_;
-    std::vector<std::unique_ptr<Mesh>> farTreeLeafMeshes_;
     std::vector<std::unique_ptr<Mesh>> treeLeafProxyMeshes_;
     std::vector<std::unique_ptr<Mesh>> shrubMeshes_;  // small pool of distinct bush shapes
     std::unique_ptr<Mesh> cloudDomeMesh_;
@@ -260,7 +257,7 @@ private:
     std::vector<std::unique_ptr<AccelerationStructure>> rockBLAS_;  // one inset proxy per rock variant
     std::unique_ptr<AccelerationStructure> sedimentaryCliffBLAS_;
     std::vector<std::unique_ptr<AccelerationStructure>> treeBarkBLAS_;  // one per treeBarkMeshes_ variant
-    std::vector<std::unique_ptr<AccelerationStructure>> treeLeafBLAS_;  // one per treeLeafMeshes_ variant
+    std::vector<std::unique_ptr<AccelerationStructure>> treeLeafBLAS_;  // one per treeFoliageMeshes_ variant
     std::unique_ptr<SceneAccelerationStructure> sceneAS_;
     std::unique_ptr<HistoryBuffer> historyBuffer_;
 

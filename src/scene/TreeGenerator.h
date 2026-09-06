@@ -15,6 +15,7 @@ struct Spray {
     glm::mat3 axes; // long axis, transverse axis, thickness axis
     glm::vec3 radii;
     uint32_t seed;
+    uint32_t group = 0; // owning bough, shared by every foliage LOD
 };
 struct Tree {
     std::vector<Branch> branches;

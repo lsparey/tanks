@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <array>
 
 #include "Buffer.h"
 #include "CommandContext.h"
@@ -30,6 +31,9 @@ public:
     void bindAndDraw(VkCommandBuffer cmd) const;
     void bindAndDrawInstanced(VkCommandBuffer cmd, uint32_t instanceCount,
                               uint32_t firstInstance) const;
+    void bindAndDrawIndirect(VkCommandBuffer cmd, VkBuffer commands, VkDeviceSize offset,
+                             uint32_t count) const;
+    void bindAndDrawRange(VkCommandBuffer cmd, const VkDrawIndexedIndirectCommand& draw) const;
 
     // Exposed so a BLAS can be built directly from this mesh's existing GPU
     // buffers (see AccelerationStructure::buildBLAS) without a second copy.
@@ -63,6 +67,17 @@ public:
     // Mesh constructor on the render thread that owns the command pool.
     static Geometry treeBarkGeometry(glm::vec3 tint, const TreeGenerator::Tree& tree, int lod = 0);
     static Geometry treeLeafGeometry(glm::vec3 tint, const TreeGenerator::Tree& tree, int lod = 0);
+    struct FoliageGroup {
+        glm::vec3 center{0};
+        float radius = 0;
+        uint32_t seed = 0;
+        std::array<VkDrawIndexedIndirectCommand, 3> levels{};
+    };
+    struct FoliageGeometry {
+        Geometry mesh;
+        std::vector<FoliageGroup> groups;
+    };
+    static FoliageGeometry treeFoliageGeometry(glm::vec3 tint, const TreeGenerator::Tree& tree);
 
     // A procedural boulder: a subdivided icosahedron with
     // broad, ridged, and fine layers of fractal displacement for an

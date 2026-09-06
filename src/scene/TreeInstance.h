@@ -2,18 +2,18 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <vector>
+#include "FoliageLod.h"
 
-// A purely decorative, static tree placement. Geometry is a small shared
-// pool of pine, ash and oak forms with varied crown density (see Mesh::treeBark/
-// treeLeaves and Application::treeBarkMeshes_/treeLeafMeshes_); each
-// instance just carries a position/yaw/scale/meshVariant and positions the
-// shared mesh pair via worldMatrix().
+// Decorative placement of shared pine, ash or oak geometry. Bark retains
+// whole-tree LOD; each foliage bough tracks its own progressive selection.
 struct TreeInstance {
     glm::vec3 position;
     float yaw = 0.0f;
     float scale = 1.0f;
     int meshVariant = 0;
-    int lod = 0;  // updated from projected screen size with hysteresis
+    int lod = 0;  // bark: updated from projected screen size with hysteresis
+    std::vector<FoliageLod::Selection> foliageLods;
 
     glm::mat4 worldMatrix() const {
         glm::mat4 m = glm::translate(glm::mat4(1.0f), position);

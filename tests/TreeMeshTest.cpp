@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <future>
+#include <map>
 #include <stdexcept>
 
 namespace {
@@ -61,6 +62,56 @@ int main() {
             }
             for (auto index:a.indices) require(index<a.vertices.size(), "Invalid index");
         }
+    }
+    for (int species=0;species<3;++species) {
+        auto tree=TreeGenerator::generate(7,static_cast<TreeGenerator::Species>(species),1);
+        // Sample every bough, including the crown leader, without a full-size
+        // asset build in the test suite.
+        std::map<uint32_t,TreeGenerator::Tree> boughs;
+        for (const auto& spray:tree.sprays) {
+            auto& bough=boughs[spray.group];
+            bough.species=tree.species;
+            if (bough.sprays.size()<2) bough.sprays.push_back(spray);
+        }
+        tree.sprays.clear();
+        for (const auto& [id,bough]:boughs)
+            tree.sprays.insert(tree.sprays.end(),bough.sprays.begin(),bough.sprays.end());
+        auto job=std::async(std::launch::async,[&]{return Mesh::treeFoliageGeometry(glm::vec3(1),tree);});
+        auto grouped=Mesh::treeFoliageGeometry(glm::vec3(1),tree);
+        auto parallel=job.get();
+        require(grouped.groups.size()==boughs.size(), "Lost a bough");
+        require(grouped.mesh.indices==parallel.mesh.indices, "Non-deterministic grouped topology");
+        require(grouped.mesh.vertices.size()==parallel.mesh.vertices.size(), "Non-deterministic grouped vertices");
+        for (size_t i=0;i<grouped.mesh.vertices.size();++i) {
+            const auto& a=grouped.mesh.vertices[i]; const auto& b=parallel.mesh.vertices[i];
+            require(a.position==b.position && a.normal==b.normal && a.uv==b.uv && a.color==b.color,
+                    "Parallel grouped build changed a vertex");
+        }
+        uint32_t nextIndex=0;
+        for (size_t i=0;i<grouped.groups.size();++i) {
+            const auto& group=grouped.groups[i];
+            const auto& other=parallel.groups[i];
+            require(group.center==other.center && group.radius==other.radius && group.seed==other.seed,
+                    "Non-deterministic bough metadata");
+            for (int lod=0;lod<3;++lod) {
+                const auto& range=group.levels[lod];
+                auto standalone=Mesh::treeLeafGeometry(glm::vec3(1),boughs.at(group.seed),lod);
+                require(range.firstIndex==nextIndex && range.indexCount==standalone.indices.size(),
+                        "Overlapping or incomplete bough range");
+                require(range.vertexOffset==0 && range.instanceCount==0 && range.firstInstance==0,
+                        "Asset contains runtime draw state");
+                for (uint32_t j=0;j<range.indexCount;++j) {
+                    auto index=grouped.mesh.indices.at(range.firstIndex+j);
+                    const auto& vertex=grouped.mesh.vertices.at(index);
+                    require(vertex.position==standalone.vertices[standalone.indices[j]].position,
+                            "Grouping moved foliage or included another bough");
+                    require(glm::length(vertex.position-group.center) <= group.radius+1e-5f,
+                            "Foliage outside bough culling bound");
+                }
+                nextIndex+=range.indexCount;
+            }
+        }
+        require(nextIndex==grouped.mesh.indices.size(), "Unowned foliage geometry");
     }
     for (const auto& leaf:trees[2].sprays) {
         TreeGenerator::Tree one; one.species=TreeGenerator::Species::Oak; one.sprays={leaf};
