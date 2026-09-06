@@ -34,7 +34,9 @@ runtime/build libraries.
 - In-engine PNG screenshot capture for interactive and automated use.
 
 See [PLAN.md](PLAN.md) for the completed-feature index and possible future
-improvements.
+improvements. The [tree-rendering guide](docs/TREE_RENDERING.md) covers crown
+geometry, threaded loading, progressive LOD, wind, shadows, measured costs and
+validation.
 
 ## Requirements
 
@@ -55,9 +57,10 @@ is currently no raster-only fallback:
 The renderer automatically prefers a discrete GPU, then an integrated GPU,
 when more than one compatible device is available. It uses 4x MSAA where
 supported, falls back to 2x or 1x, and opens at 1280x720. The project has been
-developed on Intel Raptor Lake integrated graphics with the Mesa ANV driver;
-other sufficiently capable Vulkan drivers should work but are not yet a
-regularly tested target.
+developed on Intel Raptor Lake integrated graphics and Intel Arc A370M with
+Mesa ANV. Other sufficiently capable Vulkan drivers should work but are not
+yet a regularly tested target. Tree batches use optional multi-draw indirect
+features when supported, with a direct indexed fallback otherwise.
 
 Use `vulkaninfo` to inspect the installed driver before building:
 
@@ -234,8 +237,9 @@ Handling is unchanged; individual wheel suspension is not implemented. See the
 [model editing notes](assets/models/README.md) for editable assets, regeneration,
 material groups, and current limitations.
 
-Run the voxel-surface, CPU statistics, tank-surface, model-asset, running-gear and weapon-effect regression tests after building (requires
-`BUILD_TESTING=ON`, the default):
+Run the nine regression tests after building (requires `BUILD_TESTING=ON`,
+the default): foliage LOD/wind, tree generation, tree meshes, voxel surfaces,
+CPU statistics, tank surfaces, model assets, running gear and weapon effects.
 
 ```bash
 ctest --test-dir build --output-on-failure

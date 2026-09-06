@@ -33,6 +33,7 @@ Unchecked items are options rather than a committed roadmap.
 ### Performance candidates
 
 - [x] [Extend performance instrumentation](#extend-performance-instrumentation)
+- [x] [Progressive tree LOD and loading](#progressive-tree-lod-and-loading)
 - [ ] [Instance decals and short-lived effects](#instance-decals-and-short-lived-effects)
 - [ ] [Remove the cross-frame CPU history wait](#remove-the-cross-frame-cpu-history-wait)
 - [ ] [Refit the ray-tracing TLAS](#refit-the-ray-tracing-tlas)
@@ -97,20 +98,11 @@ Unchecked items are options rather than a committed roadmap.
   visible scaffold gaps and dense terminal shoots. Small, separately shaded
   lobed leaf surfaces preserve leaf edges instead of merging into a solid
   voxel mass. Coarser LODs simplify these leaves within each spray.
-- Foliage raster LOD is selected per generated bough, using projected bough
-  radius rather than a whole-tree distance switch. Fine/medium levels blend
-  over 32–48 pixels; medium/far blend over 16–24 pixels. At most two adjacent
-  levels are active. Complementary, time-stable pixel masks provide gradual
-  coverage changes, with lighting-history reactivity based on coverage change.
-  A cheap masked depth pass precedes equal-depth lighting so hidden leaves
-  do not run expensive ray queries. Ranges share one mesh per variant and
-  use multi-draw indirect, with a direct indexed fallback when the optional
-  multi-draw/first-instance features are unavailable. Frustum planes are
-  normalized once per frame; bough bounds include current wind displacement.
-  This is a CPU-selected bough LOD system, not Nanite's GPU hierarchy,
-  streaming or measured geometric-error selection. All three levels stay
-  resident, bark retains discrete LOD, and some spatial dithering can remain
-  visible during transitions because colour is not temporally accumulated.
+- Foliage uses progressive per-bough LOD, complementary coverage masks and
+  a masked depth pass before lighting. Indexed ranges batch by variant,
+  with direct draws available when optional multi-draw features are absent.
+  Bark retains discrete LOD. See the [tree-rendering guide](docs/TREE_RENDERING.md)
+  for thresholds, geometry, wind, shadow behaviour, validation and limits.
 - Canopy ray proxies use inset triangles per leaf or voxel spray and are flattened
   to follow the visible foliage. Near-grid occupancy checks keep each proxy
   inside its voxel leaf group; oak proxies fit inside the thin leaf surfaces.
@@ -305,6 +297,29 @@ foundation:
   accumulation to recover quality.
 - Two frame-in-flight resource slots are already available.
 
+### Progressive tree LOD and loading
+
+Tree generation and meshing now run on up to three CPU workers while loading
+progress remains visible; Vulkan uploads and acceleration-structure work stay
+on the main thread. Foliage detail is selected separately per bough and blends
+adjacent levels through limited screen-size bands. A masked depth pass resolves
+coverage before lighting, and variant batches use multi-draw indirect with a
+direct indexed fallback. Current and previous wind vectors are evaluated once
+per placement and shared by bark and foliage.
+
+The matched Arc A370M Debug check at 1280×720 retained roughly 5.3-second
+startup. GPU time fell from 25.83 to 23.96 ms, while mean frame time stayed
+near 31 ms because CPU visibility/grouping work increased. All nine tests
+passed, final GPU validation was clean, and 31 diagnostic scene captures
+matched between direct and multi-draw paths. See the
+[measurement conditions and results](docs/TREE_RENDERING.md#recorded-validation-and-performance).
+
+- Status: completed for CPU-selected progressive foliage LOD and bounded
+  parallel tree builds.
+- Limits: all three foliage levels remain resident, bark still switches
+  discretely, colour dithering can remain visible, and ray proxies stay static.
+  GPU cluster selection, geometric-error LOD and streaming remain future work.
+
 ### Extend performance instrumentation
 
 CPU timings now cover simulation, visibility/grouping and upload, TLAS instance
@@ -406,8 +421,10 @@ produces a softer image.
 
 Move large-scale visibility selection and draw generation to compute shaders
 using indirect draw commands. This becomes useful if object counts grow far
-beyond the current scene; at present, CPU culling plus instancing is simpler
-and likely sufficient.
+beyond the current scene. Foliage already uses CPU-generated multi-draw
+indirect batches; culling and LOD selection remain on the CPU. The completed
+bough LOD work does not implement compute-driven visibility or a GPU cluster
+hierarchy.
 
 - Value: scales to much denser environments.
 - Complexity: high.
@@ -417,10 +434,11 @@ and likely sufficient.
 ### Performance recommendation
 
 Keep the current renderer until a representative scene misses its target frame
-budget. When optimization resumes, first extend the existing profiler with CPU
-wait and draw-count measurements. The likely first implementation candidate is
-instancing track marks and other effects; synchronization and TLAS changes
-should follow only when their measured timings justify the additional risk.
+budget. The profiler now includes CPU wait and draw-count measurements; use
+those alongside GPU stage timings to choose the next change. For trees, check
+CPU bough selection and GPU foliage shading separately. Effect instancing,
+synchronization and TLAS changes should follow when their measured timings
+justify the work.
 
 ## Visual improvements
 
@@ -505,20 +523,22 @@ elevation, recoil, material and capsule-collision systems.
 
 ### Foliage and environmental motion
 
-Add coherent wind animation to branches, leaves, shrubs, and grass shading.
-Use low-frequency world-space gusts with smaller high-frequency leaf motion so
-the environment moves as one weather system rather than as unrelated wobbling
-objects. Dust and clouds can follow the same wind direction.
+Bark, foliage and shrubs now share coherent low-frequency wind sway. The
+remaining options are smaller independent leaf motion and aligning dust and
+cloud motion with the same weather direction. Terrain has no grass-blade
+geometry to animate.
 
 - Value: makes an otherwise-static landscape feel alive and improves motion
   cues when the tank is stationary.
 - Complexity: medium.
-- Suggested priority: high if environmental stillness is noticeable.
+- Suggested priority: refine only when remaining environmental stillness is
+  noticeable without disrupting the accepted crown shape or load time.
 - Status: bark, leaves, and shrubs bend coherently from anchored roots,
   using one low-frequency wind vector per instance and quadratic trunk
   bending. Current and previous wind vectors are now evaluated once per
   placement on the CPU and shared by bark and all foliage boughs, avoiding
-  repeated trigonometry in each vertex invocation. Elapsed time drives the motion independently of frame rate;
+  repeated trigonometry in each vertex invocation. Elapsed time drives the
+  motion independently of frame rate;
   there is no travelling wave across the solid canopy. Bent normals and
   previous bent positions keep lighting and temporal reprojection aligned.
   Ray queries retain static coarse proxies to avoid rebuilding tree geometry.
@@ -617,8 +637,10 @@ sizes.
 
 ### Visual recommendation
 
-Visual targets, unified sky/lighting, tank materials/model/animation and the
-first firing-presentation pass are delivered. Coherent foliage wind is a good
-next scene-wide candidate. Shoreline, broader particle and post-processing work
-should be selected from actual screenshot and playtest weaknesses. Preserve
-the settled camera behaviour unless a specific problem calls for changing it.
+Visual targets, unified sky/lighting, tank materials/model/animation, the first
+firing-presentation pass, full summer tree variants, coherent wind and
+progressive foliage LOD are delivered. Preserve the accepted crown density,
+soft shadows and startup budget while reviewing transition grain, leaf scale
+and species silhouettes. Choose shoreline, broader particle or post-processing
+work from actual screenshot and playtest weaknesses. Preserve the settled
+camera behaviour unless a specific problem calls for changing it.
