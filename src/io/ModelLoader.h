@@ -18,6 +18,7 @@
 class ModelLoader {
 public:
     struct Part {
+        std::string meshName;
         std::string materialName;
         std::vector<Vertex> vertices;
         std::vector<uint32_t> indices;

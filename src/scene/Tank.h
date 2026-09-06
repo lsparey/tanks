@@ -110,6 +110,7 @@ private:
     std::unique_ptr<Mesh> turretMesh_;  // null if the model had no separate turret material
     std::unique_ptr<Mesh> barrelMesh_;  // null if the model had no separate barrel material
     std::unique_ptr<Mesh> trackMesh_;   // null if the model had no separate tracks material
+    std::unique_ptr<Mesh> turretDetailMesh_;  // dark optics/grilles, rigidly attached to turret
     // BLAS per rigid part, built once at load time alongside the meshes
     // above -- geometry never deforms, only the per-frame world matrix
     // (from hullWorldMatrix()/turretWorldMatrix()) changes.
@@ -117,9 +118,9 @@ private:
     std::unique_ptr<AccelerationStructure> turretBLAS_;
     std::unique_ptr<AccelerationStructure> barrelBLAS_;
     std::unique_ptr<AccelerationStructure> trackBLAS_;
+    std::unique_ptr<AccelerationStructure> turretDetailBLAS_;
     // Local-space muzzle tip, valid only when barrelMesh_ is non-null: the
-    // barrel part's vertex farthest from the local origin (the turret's
-    // pivot, which sits near the barrel's mount/breech end, not its tip).
+    // centre of the barrel's forward-most cross-section.
     glm::vec3 muzzleLocal_{0.0f};
     // Local trunnion at the center of the barrel's breech-end cross-section.
     // Elevation rotates the barrel around this point rather than orbiting it

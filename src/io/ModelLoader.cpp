@@ -43,6 +43,7 @@ void processNode(const aiScene* scene, const aiNode* node, const glm::mat4& pare
         glm::vec3 color = materialDiffuseColor(scene, mesh->mMaterialIndex);
 
         ModelLoader::Part part;
+        part.meshName = mesh->mName.C_Str();
         part.materialName = materialName(scene, mesh->mMaterialIndex);
 
         for (unsigned int v = 0; v < mesh->mNumVertices; ++v) {

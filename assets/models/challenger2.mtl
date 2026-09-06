@@ -1,0 +1,30 @@
+# Runtime replaces these preview colours with the existing tiled materials.
+newmtl Base
+Kd 0.28 0.32 0.18
+Ks 0.1 0.1 0.1
+Ns 24
+
+newmtl HullFittings
+Kd 0.28 0.32 0.18
+Ks 0.1 0.1 0.1
+Ns 24
+
+newmtl Turret
+Kd 0.28 0.32 0.18
+Ks 0.1 0.1 0.1
+Ns 24
+
+newmtl TurretDark
+Kd 0.10 0.11 0.10
+Ks 0.1 0.1 0.1
+Ns 24
+
+newmtl Tracks
+Kd 0.10 0.11 0.10
+Ks 0.1 0.1 0.1
+Ns 24
+
+newmtl Barrel
+Kd 0.19 0.22 0.15
+Ks 0.1 0.1 0.1
+Ns 24

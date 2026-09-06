@@ -269,7 +269,8 @@ VkImageMemoryBarrier2 imageBarrier(VkImage image, VkImageAspectFlags aspect,
 }  // namespace
 
 Application::Application(std::optional<ScreenshotRequest> screenshotRequest, bool performanceReporting,
-                         std::optional<uint32_t> worldSeed, std::string referenceView)
+                         std::optional<uint32_t> worldSeed, std::string referenceView,
+                         bool originalTankModel)
     : worldSeed_(worldSeed ? *worldSeed : std::random_device{}()),
       referenceView_(std::move(referenceView)), performanceReporting_(performanceReporting),
       screenshotRequest_(std::move(screenshotRequest)) {
@@ -442,7 +443,8 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
     boundaryWallMesh_ = BoundaryGenerator::buildWallMesh(*context_, *commands_, *terrain_,
                                                           boundaryHalfExtent_, kBoundaryWallHeight);
     tank_ = std::make_unique<Tank>(*context_, *commands_,
-                                    std::string(ASSET_ROOT) + "/assets/models/tank.x");
+                                    std::string(ASSET_ROOT) + (originalTankModel
+                                        ? "/assets/models/tank.x" : "/assets/models/challenger2.obj"));
     // Near-white so the crate texture's own wood color/detail shows through
     // unmodified (same reasoning as the bark/leaf/rock tints).
     boxMesh_ = std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(1.0f)));
@@ -869,6 +871,19 @@ void Application::applyReferenceCamera() {
     if (referenceView_ == "tank") {
         target = tank_->position() + glm::vec3(0.0f, 1.1f, 0.0f);
         offset = {6.2f, 2.8f, -7.5f};
+    } else if (referenceView_ == "tank-side") {
+        target = tank_->position() + glm::vec3(0.0f, 0.95f, 0.45f);
+        offset = {7.8f, 1.0f, 0.0f};
+    } else if (referenceView_ == "tank-front") {
+        target = tank_->position() + glm::vec3(0.0f, 1.1f, 0.5f);
+        offset = {5.5f, 2.4f, 7.5f};
+    } else if (referenceView_ == "tank-rear") {
+        target = tank_->position() + glm::vec3(0.0f, 0.95f, -0.5f);
+        offset = {0.0f, 1.2f, -7.8f};
+    } else if (referenceView_ == "tank-top") {
+        target = tank_->position() + glm::vec3(0.0f, 0.8f, 0.4f);
+        // Tiny horizontal offset avoids a singular world-up/look direction.
+        offset = {0.01f, 5.0f, 0.0f};
     } else if (referenceView_ == "landscape") {
         target = {0.0f, terrain_->heightAt(0.0f, 25.0f) + 3.0f, 25.0f};
         offset = {-14.0f, 6.0f, -30.0f};

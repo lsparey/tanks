@@ -46,6 +46,7 @@ Unchecked items are options rather than a committed roadmap.
 - [x] [Establish visual targets](#establish-visual-targets)
 - [ ] [Weapon firing presentation](#weapon-firing-presentation)
 - [x] [Tank material detail and wear](#tank-material-detail-and-wear)
+- [x] [Tank model silhouette and running gear](#tank-model-silhouette-and-running-gear)
 - [ ] [Foliage and environmental motion](#foliage-and-environmental-motion)
 - [x] [Unified sky, sun, and atmosphere](#unified-sky-sun-and-atmosphere)
 - [ ] [Shorelines and terrain transitions](#shorelines-and-terrain-transitions)
@@ -192,9 +193,11 @@ grip, tread darkness, and dust production.
 
 ### Animated tracks
 
-Scroll track texture coordinates according to each track's speed and direction,
-including opposing motion during pivot turns. The current model may require its
-left and right track geometry or material data to be separated first.
+Animate track shoes and wheels according to each side's signed speed,
+including opposing motion during pivot turns. The refined model now has named
+left/right belts, individual shoes, and wheels, but these are still merged into
+static render meshes. Animation needs per-side runtime data and transforms (or
+a belt-specific UV/shader approach); geometry alone does not complete this task.
 
 - Value: visual polish most noticeable near the tank.
 - Complexity: medium, depending on the model's UV and mesh layout.
@@ -423,6 +426,25 @@ an optional follow-up. See the updated [tank reference](docs/VISUAL_TARGET.md#ta
 - Complexity: medium; procedural masks can avoid requiring a full new asset
   pipeline.
 - Status: completed for the initial material and static-weathering pass.
+
+### Tank model silhouette and running gear
+
+The default is now an editable Challenger 2 OBJ, revised against the supplied
+side profile: long low turret, sloped cheeks/glacis, deep segmented skirts,
+six road wheels per side, hubs, raised end wheels, hollow track belts, tread
+shoes, roof fittings, rear drums and a proportioned sleeved barrel
+with an open muzzle. The original `tank.x` is preserved via `--model original`.
+The asset is generated offline, not constructed every frame. Named objects
+merge into five rendering parts (including dark turret optics/grilles), retaining the current turret,
+elevation, recoil, material and capsule-collision systems.
+
+- Status: static geometry and side/front/rear/top reference passes completed.
+  Broad cheek armour, launchers, rear grilles/drums, mud flaps, asymmetric
+  roof fittings and split engine grilles are modelled. Small details and
+  equipment-fit differences remain approximations, not an exact replica.
+- Editing and limitations: [model asset notes](assets/models/README.md).
+- Follow-up: [animated tracks](#animated-tracks), rotating wheels and optional
+  articulated suspension. These are not implemented by the model pass.
 
 ### Foliage and environmental motion
 

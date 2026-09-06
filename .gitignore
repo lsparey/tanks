@@ -10,3 +10,6 @@ VP_VULKANINFO_*.json
 
 # F12-triggered manual screenshots (see Application::nextScreenshotPath)
 /screenshots/
+
+# Offline Python mesh-authoring tools
+__pycache__/

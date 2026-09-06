@@ -120,23 +120,35 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
 
     std::vector<Vertex> hullVertices;
     std::vector<uint32_t> hullIndices;
-    ModelLoader::Part* turretPart = nullptr;
-    ModelLoader::Part* barrelPart = nullptr;
-    ModelLoader::Part* trackPart = nullptr;
+    std::vector<Vertex> collisionVertices;
+    // OBJ/editor exports may split a material into many named objects.
+    // Dark turret fittings need one extra rigid draw to keep optics/grilles
+    // off the camouflage material while following turret traversal.
+    ModelLoader::Part turretGroup, barrelGroup, trackGroup, turretDetailGroup;
 
     for (auto& part : result.parts) {
-        if (containsCaseInsensitive(part.materialName, "turret")) {
-            turretPart = &part;
+        ModelLoader::Part* group = nullptr;
+        if (containsCaseInsensitive(part.materialName, "turretdark")) {
+            group = &turretDetailGroup;
+        } else if (containsCaseInsensitive(part.materialName, "turret")) {
+            group = &turretGroup;
         } else if (containsCaseInsensitive(part.materialName, "barrel")) {
-            barrelPart = &part;
+            group = &barrelGroup;
         } else if (containsCaseInsensitive(part.materialName, "track")) {
-            trackPart = &part;
-        } else {
-            uint32_t base = static_cast<uint32_t>(hullVertices.size());
-            hullVertices.insert(hullVertices.end(), part.vertices.begin(), part.vertices.end());
-            for (uint32_t idx : part.indices) hullIndices.push_back(base + idx);
+            group = &trackGroup;
         }
+        if (!group && !containsCaseInsensitive(part.materialName, "hullfittings"))
+            collisionVertices.insert(collisionVertices.end(), part.vertices.begin(), part.vertices.end());
+        auto& vertices = group ? group->vertices : hullVertices;
+        auto& indices = group ? group->indices : hullIndices;
+        uint32_t base = static_cast<uint32_t>(vertices.size());
+        vertices.insert(vertices.end(), part.vertices.begin(), part.vertices.end());
+        for (uint32_t idx : part.indices) indices.push_back(base + idx);
     }
+    auto* turretPart = turretGroup.indices.empty() ? nullptr : &turretGroup;
+    auto* barrelPart = barrelGroup.indices.empty() ? nullptr : &barrelGroup;
+    auto* trackPart = trackGroup.indices.empty() ? nullptr : &trackGroup;
+    auto* turretDetailPart = turretDetailGroup.indices.empty() ? nullptr : &turretDetailGroup;
 
     // Local-space X extent of the hull, i.e. the tank's actual outer width
     // (left track's outer edge to the right track's outer edge) -- used by
@@ -144,11 +156,12 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
     // hull instead of a guessed constant. Local X is what basis(right_, ...)
     // maps to world "right" in hullWorldMatrix, same reasoning muzzleLocal_
     // above relies on for the barrel's local Z axis.
-    float minX = hullVertices.empty() ? 0.0f : hullVertices[0].position.x;
+    // Decorative drums/lamps must not stretch the gameplay hull capsule.
+    float minX = collisionVertices.empty() ? 0.0f : collisionVertices[0].position.x;
     float maxX = minX;
-    float minZ = hullVertices.empty() ? 0.0f : hullVertices[0].position.z;
+    float minZ = collisionVertices.empty() ? 0.0f : collisionVertices[0].position.z;
     float maxZ = minZ;
-    for (const auto& v : hullVertices) {
+    for (const auto& v : collisionVertices) {
         minX = std::min(minX, v.position.x);
         maxX = std::max(maxX, v.position.x);
         minZ = std::min(minZ, v.position.z);
@@ -166,7 +179,7 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
     surfaceBounds_.x = minY;
     surfaceBounds_.y = 1.0f / std::max(maxY - minY, 0.001f);
     TankSurface::bakeEdgeDistances(hullVertices, hullIndices);
-    for (auto* part : {turretPart, trackPart})
+    for (auto* part : {turretPart, trackPart, turretDetailPart})
         if (part) TankSurface::bakeEdgeDistances(part->vertices, part->indices);
 
     hullMesh_ = std::make_unique<Mesh>(ctx, commands, hullVertices, hullIndices);
@@ -177,23 +190,9 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
             std::make_unique<AccelerationStructure>(AccelerationStructure::buildBLAS(ctx, commands, *turretMesh_));
     }
     if (barrelPart) {
-        // The muzzle tip is the barrel-part vertex farthest from the local
-        // origin. A plain "farthest from the part's own centroid" heuristic
-        // doesn't work for a barrel: a straight cylinder is roughly
-        // symmetric along its length, so both the breech and muzzle ends
-        // are equally far from ITS centroid. The local origin, however, is
-        // the turret's pivot, which sits near the breech/mount end -- so
-        // the point farthest from the origin is reliably the far (muzzle)
-        // end instead.
-        float maxDistSq = -1.0f;
         glm::vec3 barrelMinimum = barrelPart->vertices.front().position;
         glm::vec3 barrelMaximum = barrelMinimum;
         for (const auto& v : barrelPart->vertices) {
-            float distSq = glm::dot(v.position, v.position);
-            if (distSq > maxDistSq) {
-                maxDistSq = distSq;
-                muzzleLocal_ = v.position;
-            }
             barrelMinimum = glm::min(barrelMinimum, v.position);
             barrelMaximum = glm::max(barrelMaximum, v.position);
         }
@@ -205,10 +204,12 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
         barrelPivotLocal_ = glm::vec3(0.5f * (barrelMinimum.x + barrelMaximum.x),
                                       0.5f * (barrelMinimum.y + barrelMaximum.y),
                                       barrelMinimum.z);
+        // A model with a circular muzzle has many equally distant rim
+        // vertices. Fire along the bore centre, not one arbitrary rim corner.
+        muzzleLocal_ = glm::vec3(barrelPivotLocal_.x, barrelPivotLocal_.y, barrelMaximum.z);
         surfaceBounds_.z = barrelMaximum.z;
         surfaceBounds_.w = 1.0f / std::max(barrelMaximum.z - barrelMinimum.z, 0.001f);
-        // Preserve the authored vertex order while locating the muzzle,
-        // before the mask bake duplicates corners in triangle order.
+        // Locate bounds before the mask bake duplicates triangle corners.
         TankSurface::bakeEdgeDistances(barrelPart->vertices, barrelPart->indices);
         barrelMesh_ = std::make_unique<Mesh>(ctx, commands, barrelPart->vertices, barrelPart->indices);
         barrelBLAS_ =
@@ -218,6 +219,11 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
         trackMesh_ = std::make_unique<Mesh>(ctx, commands, trackPart->vertices, trackPart->indices);
         trackBLAS_ =
             std::make_unique<AccelerationStructure>(AccelerationStructure::buildBLAS(ctx, commands, *trackMesh_));
+    }
+    if (turretDetailPart) {
+        turretDetailMesh_ = std::make_unique<Mesh>(ctx, commands, turretDetailPart->vertices, turretDetailPart->indices);
+        turretDetailBLAS_ = std::make_unique<AccelerationStructure>(
+            AccelerationStructure::buildBLAS(ctx, commands, *turretDetailMesh_));
     }
 }
 
@@ -582,10 +588,14 @@ std::vector<Tank::DrawPart> Tank::drawParts() const {
         parts.push_back({trackMesh_.get(), hullWorldMatrix(), trackBLAS_->deviceAddress(), Surface::Tracks});
     }
 
-    if (turretMesh_ || barrelMesh_) {
+    if (turretMesh_ || barrelMesh_ || turretDetailMesh_) {
         glm::mat4 turretWorld = turretWorldMatrix();
         if (turretMesh_) {
             parts.push_back({turretMesh_.get(), turretWorld, turretBLAS_->deviceAddress()});
+        }
+        if (turretDetailMesh_) {
+            parts.push_back({turretDetailMesh_.get(), turretWorld,
+                             turretDetailBLAS_->deviceAddress(), Surface::Tracks});
         }
         // Independent elevation and recoil retain the barrel's authored
         // material coordinates, including the soot band at the muzzle.
