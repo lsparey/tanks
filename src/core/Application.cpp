@@ -297,6 +297,10 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
                                             swapchain_->depthFormat(), historyBuffer_->format());
     hud_ = std::make_unique<HudRenderer>(*context_, swapchain_->imageFormat(),
                                           swapchain_->depthFormat());
+    // Nothing has been presented yet -- show an empty bar immediately so the
+    // window doesn't sit with undefined content while textures/terrain/tank
+    // model/vegetation load below (see presentLoadingProgress's comment).
+    presentLoadingProgress(0.0f);
 
     // Each frame-in-flight slot reads the OTHER slot's history image (last
     // frame's temporally-accumulated result); like the TLAS descriptor,
@@ -404,6 +408,7 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
         *boundaryLineTexture_, *boundaryLineTexture_, *boundaryLineTexture_, *boundaryLineTexture_);
     boundaryWallMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(
         *boundaryWallTexture_, *boundaryWallTexture_, *boundaryWallTexture_, *boundaryWallTexture_);
+    presentLoadingProgress(0.15f);
 
     uint32_t terrainSeed = worldSeed_;
     // 256, not the old 64 -> 128 -> 256 progression: coarser hills' large
@@ -416,6 +421,7 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
     // the whole terrain BLAS, built once at load time.
     terrain_ = std::make_unique<Terrain>(*context_, *commands_, /*resolution=*/256,
                                           /*worldSize=*/180.0f, /*amplitude=*/2.2f, terrainSeed);
+    presentLoadingProgress(0.35f);
     WaterGenerator::FloodField waterField =
         WaterGenerator::computeFloodField(*terrain_, kWaterThreshold, kWaterMaxDepth);
     weaponWaterField_ = waterField;
@@ -444,9 +450,11 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
         BoundaryGenerator::buildLineMesh(*context_, *commands_, *terrain_, boundaryHalfExtent_);
     boundaryWallMesh_ = BoundaryGenerator::buildWallMesh(*context_, *commands_, *terrain_,
                                                           boundaryHalfExtent_, kBoundaryWallHeight);
+    presentLoadingProgress(0.45f);
     tank_ = std::make_unique<Tank>(*context_, *commands_,
                                     std::string(ASSET_ROOT) + (originalTankModel
                                         ? "/assets/models/tank.x" : "/assets/models/challenger2.obj"), animateTracks);
+    presentLoadingProgress(0.55f);
     // Near-white so the crate texture's own wood color/detail shows through
     // unmodified (same reasoning as the bark/leaf/rock tints).
     boxMesh_ = std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(1.0f)));
@@ -565,6 +573,7 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
     // and palette with water reflections, independently of the mesh UVs.
     cloudDomeMesh_ =
         std::make_unique<Mesh>(Mesh::dome(*context_, *commands_, glm::vec3(1.0f), 0.25f));
+    presentLoadingProgress(0.85f);
     spawnBoxes();
     spawnTrees(waterField);
     spawnRocks(waterField);
@@ -620,9 +629,160 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
         }
     }
 
+    presentLoadingProgress(0.92f);
     buildAccelerationStructures();
+    presentLoadingProgress(1.0f);
     input_ = std::make_unique<InputManager>(window_);
     lastFrameTime_ = glfwGetTime();
+}
+
+// Presents a single frame containing only a fill bar, via a fully
+// synchronous acquire/submit/present using frame-in-flight slot 0 -- called
+// only during construction, before mainLoop's own drawFrame ever runs, so
+// there's no frame pacing to preserve and no risk of racing normal
+// rendering. context_/swapchain_/commands_/hud_ are all built before the
+// first call site (see the constructor above); everything after them
+// (terrain, water, tank model, tree/rock/cliff meshes, acceleration
+// structures) can take several seconds, during which the window would
+// otherwise show undefined content and read as hung to the window manager.
+void Application::presentLoadingProgress(float fraction) {
+    auto& frame = commands_->frame(0);
+    VK_CHECK(vkWaitForFences(context_->device(), 1, &frame.inFlight, VK_TRUE, UINT64_MAX));
+
+    // Pump the event queue so the OS doesn't consider the window
+    // unresponsive across a multi-second loading step; this is the only
+    // reason to poll here, so ignore anything but a close request. If the
+    // acquire below turns out stale (a resize mid-load), just skip this
+    // update rather than trying to recreate swapchain-dependent resources
+    // in the middle of construction.
+    glfwPollEvents();
+
+    uint32_t imageIndex = 0;
+    VkResult acquireResult =
+        vkAcquireNextImageKHR(context_->device(), swapchain_->handle(), UINT64_MAX,
+                               frame.imageAvailable, VK_NULL_HANDLE, &imageIndex);
+    if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) return;
+
+    VK_CHECK(vkResetFences(context_->device(), 1, &frame.inFlight));
+    VK_CHECK(vkResetCommandBuffer(frame.commandBuffer, 0));
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    VK_CHECK(vkBeginCommandBuffer(frame.commandBuffer, &beginInfo));
+
+    VkImage colorImage = swapchain_->image(imageIndex);
+    VkImageMemoryBarrier2 toAttachment =
+        imageBarrier(colorImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    VkDependencyInfo toAttachmentDep{};
+    toAttachmentDep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    toAttachmentDep.imageMemoryBarrierCount = 1;
+    toAttachmentDep.pImageMemoryBarriers = &toAttachment;
+    vkCmdPipelineBarrier2(frame.commandBuffer, &toAttachmentDep);
+
+    VkExtent2D extent = swapchain_->extent();
+    VkRenderingAttachmentInfo colorAttachment{};
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView = swapchain_->imageView(imageIndex);
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.clearValue.color = {{0.05f, 0.05f, 0.06f, 1.0f}};
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea = {{0, 0}, extent};
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments = &colorAttachment;
+    vkCmdBeginRendering(frame.commandBuffer, &renderingInfo);
+
+    // Same Y-flip as the main scene viewport (see drawFrame), so the bar's
+    // NDC coordinates follow the same up/down convention as the rest of the
+    // HUD (ammo ticks, FPS counter).
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = static_cast<float>(extent.height);
+    viewport.width = static_cast<float>(extent.width);
+    viewport.height = -static_cast<float>(extent.height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(frame.commandBuffer, 0, 1, &viewport);
+    VkRect2D scissor{{0, 0}, extent};
+    vkCmdSetScissor(frame.commandBuffer, 0, 1, &scissor);
+
+    hud_->begin();
+    constexpr float kBarHalfWidth = 0.4f;
+    constexpr float kBarHalfHeight = 0.02f;
+    const glm::vec3 kTrackColor(0.16f, 0.17f, 0.18f);
+    const glm::vec3 kFillColor(0.30f, 0.75f, 0.35f);
+    hud_->addQuad({0.0f, 0.0f}, {kBarHalfWidth, kBarHalfHeight}, kTrackColor);
+    float clamped = glm::clamp(fraction, 0.0f, 1.0f);
+    if (clamped > 0.0f) {
+        float fillHalfWidth = kBarHalfWidth * clamped;
+        hud_->addQuad({-kBarHalfWidth + fillHalfWidth, 0.0f}, {fillHalfWidth, kBarHalfHeight}, kFillColor);
+    }
+    hud_->render(frame.commandBuffer);
+
+    vkCmdEndRendering(frame.commandBuffer);
+
+    VkImageMemoryBarrier2 toPresent = imageBarrier(
+        colorImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0);
+    VkDependencyInfo toPresentDep{};
+    toPresentDep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    toPresentDep.imageMemoryBarrierCount = 1;
+    toPresentDep.pImageMemoryBarriers = &toPresent;
+    vkCmdPipelineBarrier2(frame.commandBuffer, &toPresentDep);
+
+    VK_CHECK(vkEndCommandBuffer(frame.commandBuffer));
+
+    VkSemaphoreSubmitInfo waitSemaphoreInfo{};
+    waitSemaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+    waitSemaphoreInfo.semaphore = frame.imageAvailable;
+    waitSemaphoreInfo.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+    VkSemaphore renderFinished = swapchain_->renderFinishedSemaphore(imageIndex);
+    VkSemaphoreSubmitInfo signalSemaphoreInfo{};
+    signalSemaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+    signalSemaphoreInfo.semaphore = renderFinished;
+    signalSemaphoreInfo.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+    VkCommandBufferSubmitInfo cmdBufferInfo{};
+    cmdBufferInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+    cmdBufferInfo.commandBuffer = frame.commandBuffer;
+
+    VkSubmitInfo2 submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+    submitInfo.waitSemaphoreInfoCount = 1;
+    submitInfo.pWaitSemaphoreInfos = &waitSemaphoreInfo;
+    submitInfo.commandBufferInfoCount = 1;
+    submitInfo.pCommandBufferInfos = &cmdBufferInfo;
+    submitInfo.signalSemaphoreInfoCount = 1;
+    submitInfo.pSignalSemaphoreInfos = &signalSemaphoreInfo;
+    VK_CHECK(vkQueueSubmit2(context_->graphicsQueue(), 1, &submitInfo, frame.inFlight));
+
+    VkPresentInfoKHR presentInfo{};
+    presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = &renderFinished;
+    VkSwapchainKHR swapchains[] = {swapchain_->handle()};
+    presentInfo.swapchainCount = 1;
+    presentInfo.pSwapchains = swapchains;
+    presentInfo.pImageIndices = &imageIndex;
+    VkResult presentResult = vkQueuePresentKHR(context_->presentQueue(), &presentInfo);
+    if (presentResult != VK_SUCCESS && presentResult != VK_SUBOPTIMAL_KHR &&
+        presentResult != VK_ERROR_OUT_OF_DATE_KHR) {
+        throw std::runtime_error("failed to present loading progress frame");
+    }
+    // Loading continues immediately with more GPU uploads on this same
+    // queue/pool -- wait for this submission to actually finish rather than
+    // letting it float as an extra frame-in-flight the rest of construction
+    // doesn't know about.
+    VK_CHECK(vkWaitForFences(context_->device(), 1, &frame.inFlight, VK_TRUE, UINT64_MAX));
 }
 
 Application::~Application() {

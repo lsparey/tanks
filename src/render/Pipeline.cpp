@@ -411,6 +411,11 @@ void Pipeline::createPipeline(VkFormat colorFormat, VkFormat depthFormat, VkForm
     // (everything except fading ground decals like TrackMark, see
     // PushConstants::opacity), so this doesn't change how existing opaque
     // geometry looks: result = src*1 + dst*0 = src, same as no blending.
+    // The alpha channel itself uses the same over-operator (src + dst*(1-srcA))
+    // rather than a flat overwrite, so a translucent draw over already-opaque
+    // background leaves alpha at 1 instead of stamping in its own low alpha --
+    // the swapchain's composite mode ignores alpha either way, but the
+    // GPU-readback screenshot path (see ScreenshotRequest) exposes it directly.
     VkPipelineColorBlendAttachmentState colorBlendAttachment{};
     colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -419,7 +424,7 @@ void Pipeline::createPipeline(VkFormat colorFormat, VkFormat depthFormat, VkForm
     colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
     colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
 
     // Second color attachment: this frame's blended shadow value (R), AO

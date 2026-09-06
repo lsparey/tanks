@@ -282,4 +282,5 @@ private:
     std::vector<AccelerationStructure::Instance> gatherRayTracingInstances() const;
     void recreateSwapchainDependentResources();
     std::string nextScreenshotPath();
+    void presentLoadingProgress(float fraction);
 };
