@@ -16,7 +16,8 @@
 // descriptor set (set 0) it's bound to. Per-object data goes through a push
 // constant (including the model matrix/material flags); repeated static
 // geometry instead indexes a transform SSBO in set 0. Per-frame data
-// (view/proj/light) shares set 0 and is updated once per frame. Set 1 is
+// (view/proj/light) shares set 0 and is updated once per frame. Binding 2
+// in set 0 holds the shared environment cloud-density sampler. Set 1 is
 // four combined-image-sampler bindings for
 // whatever textures a given draw call wants: for terrain, a "high" pair
 // (two grass variants, patch-blended by a noise mask) and a "low" pair (two
@@ -53,6 +54,14 @@ public:
         // from dynamicLights_ each frame and zeroes the rest.
         std::array<glm::vec4, kMaxDynamicLights> dynamicLightPosRadius{};
         std::array<glm::vec4, kMaxDynamicLights> dynamicLightColorIntensity{};
+        // English countryside daylight, in linear colour. Shared by direct
+        // light, sky rendering, fog, and reflection misses (basic.frag).
+        glm::vec4 sunColor{1.0f, 0.96f, 0.88f, 0.72f};  // rgb, intensity
+        glm::vec4 skyZenith{0.18f, 0.29f, 0.43f, 0.0f};
+        glm::vec4 skyHorizon{0.53f, 0.61f, 0.67f, 0.0f};
+        glm::vec4 ambientColor{0.72f, 0.81f, 0.89f, 0.30f};
+        glm::vec4 cloudColor{0.82f, 0.85f, 0.86f, 0.46f};  // rgb, coverage threshold
+        glm::vec4 atmosphere{45.0f, 0.0035f, 0.25f, 0.006f};  // fog start/density, UV scale, sun radius
     };
 
     struct PushConstants {
@@ -123,6 +132,7 @@ public:
                                                    const Texture& lowA, const Texture& lowB,
                                                    const Texture* terrainControl = nullptr);
     void updateTLASDescriptor(size_t frameIndex, VkAccelerationStructureKHR tlas);
+    void updateEnvironmentDescriptor(const Texture& clouds);
     void updateHistoryDescriptor(size_t frameIndex, VkImageView historyView, VkSampler historySampler);
 
     VkPipeline handle() const { return pipeline_; }

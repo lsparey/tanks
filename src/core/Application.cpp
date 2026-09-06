@@ -268,8 +268,12 @@ VkImageMemoryBarrier2 imageBarrier(VkImage image, VkImageAspectFlags aspect,
 
 }  // namespace
 
-Application::Application(std::optional<ScreenshotRequest> screenshotRequest, bool performanceReporting)
-    : performanceReporting_(performanceReporting), screenshotRequest_(std::move(screenshotRequest)) {
+Application::Application(std::optional<ScreenshotRequest> screenshotRequest, bool performanceReporting,
+                         std::optional<uint32_t> worldSeed, std::string referenceView)
+    : worldSeed_(worldSeed ? *worldSeed : std::random_device{}()),
+      referenceView_(std::move(referenceView)), performanceReporting_(performanceReporting),
+      screenshotRequest_(std::move(screenshotRequest)) {
+    std::cout << "World seed: " << worldSeed_ << '\n';
     initWindow();
     context_ = std::make_unique<VulkanContext>(window_);
 
@@ -308,7 +312,7 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
     // than picking a fixed pair, randomly choose 2 distinct variants each
     // run -- more variety across playthroughs without touching that
     // blending logic.
-    std::mt19937 textureVariantRng(std::random_device{}());
+    std::mt19937 textureVariantRng(worldSeed_ ^ 0x107u);
     auto pickTwoDistinct = [&](int count) {
         std::uniform_int_distribution<int> dist(0, count - 1);
         int a = dist(textureVariantRng);
@@ -345,6 +349,7 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
     // well outside [0,1] near the horizon, so this needs to tile.
     cloudTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 256, 256, cloudPixels, /*repeat=*/true));
+    pipeline_->updateEnvironmentDescriptor(*cloudTexture_);
     std::vector<uint8_t> cratePixels = CrateTextureGenerator::generate(128);
     // Mapped exactly once per cube face (see Mesh::cube's UV), not tiled,
     // so CLAMP rather than REPEAT.
@@ -398,7 +403,7 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
     boundaryWallMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(
         *boundaryWallTexture_, *boundaryWallTexture_, *boundaryWallTexture_, *boundaryWallTexture_);
 
-    uint32_t terrainSeed = std::random_device{}();
+    uint32_t terrainSeed = worldSeed_;
     // 256, not the old 64 -> 128 -> 256 progression: coarser hills' large
     // flat triangles were visible as faceting at grazing angles/close
     // range, and the sharper features HeightmapGenerator now carves (the
@@ -412,6 +417,23 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
     WaterGenerator::FloodField waterField =
         WaterGenerator::computeFloodField(*terrain_, kWaterThreshold, kWaterMaxDepth);
     waterMesh_ = WaterGenerator::buildMesh(*context_, *commands_, *terrain_, waterField);
+    float deepestWater = -1.0f;
+    for (int z = 1; z < waterField.resolution - 1; ++z) {
+        for (int x = 1; x < waterField.resolution - 1; ++x) {
+            size_t index = static_cast<size_t>(z) * waterField.resolution + x;
+            if (!waterField.submerged[index]) continue;
+            float wx = (static_cast<float>(x) / (waterField.resolution - 1) - 0.5f) * waterField.worldSize;
+            float wz = (static_cast<float>(z) / (waterField.resolution - 1) - 0.5f) * waterField.worldSize;
+            if (std::abs(wx) > 65.0f || std::abs(wz) > 65.0f) continue;
+            float depth = waterField.waterLevel[index] - terrain_->heightAt(wx, wz);
+            if (depth > deepestWater) {
+                deepestWater = depth;
+                waterReferenceTarget_ = {wx, waterField.waterLevel[index], wz};
+            }
+        }
+    }
+    if (referenceView_ == "water" && deepestWater < 0.0f)
+        throw std::runtime_error("reference seed has no interior water; choose another --seed");
     // The boundary sits kBoundaryInsetFraction of the terrain's total width
     // in from its actual edge, forming a smaller square play area.
     boundaryHalfExtent_ = terrain_->worldSize() * (0.5f - kBoundaryInsetFraction);
@@ -535,15 +557,16 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
         shrubMeshes_.push_back(std::make_unique<Mesh>(
             Mesh::shrub(*context_, *commands_, leafTint, static_cast<uint32_t>(i) + 101)));
     }
-    // White so the cloud texture's own baked-in white/grey shading shows
-    // through unmodified; uvScale tuned by eye for plausible-looking cloud
-    // size once projected onto the dome's "distant plane" mapping.
+    // Geometry supplies sky directions; basic.frag shares the cloud lookup
+    // and palette with water reflections, independently of the mesh UVs.
     cloudDomeMesh_ =
         std::make_unique<Mesh>(Mesh::dome(*context_, *commands_, glm::vec3(1.0f), 0.25f));
     spawnBoxes();
     spawnTrees(waterField);
     spawnRocks(waterField);
     spawnSedimentaryCliffs(waterField);
+    if (referenceView_ == "cliffs" && sedimentaryCliffs_.empty())
+        throw std::runtime_error("reference seed has no cliffs; choose another --seed");
     spawnShrubs(waterField);
     spawnSmallRocks(waterField);
 
@@ -736,6 +759,7 @@ void Application::mainLoop() {
             }
         }
         prevCameraToggleKeyDown_ = cameraToggleDown;
+        if (cameraToggleDown) referenceView_.clear();
 
         // Manual screenshot capture, saved via the same GPU-readback path
         // as the --screenshot CLI flag (see drawFrame) rather than any
@@ -774,6 +798,7 @@ void Application::mainLoop() {
                 break;
         }
 
+        if (!referenceView_.empty()) applyReferenceCamera();
         performanceSample_.ms[FrameProfiler::Simulation] = FrameProfiler::elapsedMs(simulationStart);
         drawFrame();
         performanceSample_.ms[FrameProfiler::Frame] = FrameProfiler::elapsedMs(frameStart);
@@ -838,6 +863,29 @@ void Application::reportPerformance() {
     std::cout << report.str() << std::flush;
 }
 
+void Application::applyReferenceCamera() {
+    glm::vec3 target;
+    glm::vec3 offset;
+    if (referenceView_ == "tank") {
+        target = tank_->position() + glm::vec3(0.0f, 1.1f, 0.0f);
+        offset = {6.2f, 2.8f, -7.5f};
+    } else if (referenceView_ == "landscape") {
+        target = {0.0f, terrain_->heightAt(0.0f, 25.0f) + 3.0f, 25.0f};
+        offset = {-14.0f, 6.0f, -30.0f};
+    } else if (referenceView_ == "cliffs" && !sedimentaryCliffs_.empty()) {
+        target = sedimentaryCliffs_.front().position;
+        offset = {7.0f, 3.0f, -11.0f};
+    } else {
+        target = waterReferenceTarget_;
+        offset = {3.0f, 6.0f, -5.0f};
+    }
+    glm::vec3 eye = target + offset;
+    eye.y = std::max(eye.y, terrain_->heightAt(eye.x, eye.z) + 2.0f);
+    glm::vec3 direction = glm::normalize(target - eye);
+    camera_ = Camera(eye, glm::degrees(std::atan2(direction.z, direction.x)),
+                     glm::degrees(std::asin(direction.y)));
+}
+
 void Application::spawnBoxes() {
     constexpr int kBoxCount = 8;
     constexpr float kEdgeMargin = 6.0f;  // keep boxes off the play-area boundary's wall of light
@@ -845,7 +893,7 @@ void Application::spawnBoxes() {
     constexpr float kMinDistanceBetweenBoxes = 6.0f;
     constexpr int kMaxAttemptsPerBox = 50;
 
-    std::mt19937 rng(std::random_device{}());
+    std::mt19937 rng(worldSeed_ ^ 0x201u);
     float half = boundaryHalfExtent_ - kEdgeMargin;
     std::uniform_real_distribution<float> coordDist(-half, half);
     std::uniform_real_distribution<float> yawDist(0.0f, 6.2831853f);
@@ -881,7 +929,7 @@ void Application::spawnTrees(const WaterGenerator::FloodField& waterField) {
     constexpr float kMinDistanceBetweenTrees = 3.0f;
     constexpr int kMaxAttemptsPerTree = 30;
 
-    std::mt19937 rng(std::random_device{}());
+    std::mt19937 rng(worldSeed_ ^ 0x302u);
     float half = terrain_->worldSize() * 0.5f - kEdgeMargin;
     std::uniform_real_distribution<float> coordDist(-half, half);
     std::uniform_real_distribution<float> yawDist(0.0f, 6.2831853f);
@@ -928,7 +976,7 @@ void Application::spawnRocks(const WaterGenerator::FloodField& waterField) {
     constexpr float kClusterRadius = 2.2f;
     constexpr float kEmbedDepth = 0.15f;  // sinks each rock in slightly so it reads as grounded, not floating
 
-    std::mt19937 rng(std::random_device{}());
+    std::mt19937 rng(worldSeed_ ^ 0x403u);
     float half = terrain_->worldSize() * 0.5f - kEdgeMargin;
     std::uniform_real_distribution<float> coordDist(-half, half);
     std::uniform_real_distribution<float> yawDist(0.0f, 6.2831853f);
@@ -981,7 +1029,7 @@ void Application::spawnSedimentaryCliffs(const WaterGenerator::FloodField& water
     constexpr float kEdgeMargin = 18.0f;
     constexpr float kSpawnClearRadius = 10.0f;
 
-    std::mt19937 rng(std::random_device{}());
+    std::mt19937 rng(worldSeed_ ^ 0x504u);
     std::uniform_real_distribution<float> scaleDist(1.0625f, 1.5f);
     struct CliffCandidate {
         glm::vec2 position;
@@ -1076,7 +1124,7 @@ void Application::spawnShrubs(const WaterGenerator::FloodField& waterField) {
     constexpr float kMinDistanceBetweenShrubs = 2.0f;
     constexpr int kMaxAttemptsPerShrub = 20;
 
-    std::mt19937 rng(std::random_device{}());
+    std::mt19937 rng(worldSeed_ ^ 0x605u);
     float half = terrain_->worldSize() * 0.5f - kEdgeMargin;
     std::uniform_real_distribution<float> coordDist(-half, half);
     std::uniform_real_distribution<float> yawDist(0.0f, 6.2831853f);
@@ -1139,7 +1187,7 @@ void Application::spawnSmallRocks(const WaterGenerator::FloodField& waterField) 
     // rather than a visibly regular grid.
     constexpr float kSpawnChance = 0.72f;
 
-    std::mt19937 rng(std::random_device{}());
+    std::mt19937 rng(worldSeed_ ^ 0x706u);
     std::uniform_real_distribution<float> jitterDist(-kJitter, kJitter);
     std::uniform_real_distribution<float> yawDist(0.0f, 6.2831853f);
     std::uniform_real_distribution<float> scaleDist(0.08f, 0.22f);
@@ -1746,7 +1794,7 @@ void Application::drawFrame() {
     }
     ubo.prevViewProj = prevViewProj_;
     ubo.prevCameraPos = glm::vec4(prevCameraPos_, 0.0f);
-    ubo.lightDir = glm::vec4(glm::normalize(glm::vec3(-0.4f, -1.0f, -0.3f)), 0.0f);
+    ubo.lightDir = glm::vec4(glm::normalize(glm::vec3(-0.45f, -0.55f, -0.8f)), 0.0f);
     // cameraPos.w rides along as a per-frame varying seed for the shadow
     // jitter in basic.frag -- without it, the jitter is a pure function of
     // gl_FragCoord alone, so a static camera+tank gets the IDENTICAL 3
@@ -2021,10 +2069,9 @@ void Application::drawFrame() {
     vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                              pipeline_->layout(), 3, 1, &historySet, 0, nullptr);
 
-    // Sky dome: drawn first and centered on the camera every frame (a fixed
-    // radius comfortably inside the camera's far plane of 200, well beyond
-    // anything else in the scene), so it always surrounds the viewer.
-    // Unlit -- clouds don't need real shading -- and deliberately never
+    // Sky: centered on the camera; the vertex shader places it at far depth
+    // so distant terrain cannot be hidden by the backdrop's authored radius.
+    // Shaded by the shared directional environment and deliberately never
     // added to gatherRayTracingInstances: it's a fake backdrop that moves
     // with the camera, not real scene geometry, and including it would
     // make every shadow/AO/reflection ray falsely register it as an
@@ -2036,6 +2083,7 @@ void Application::drawFrame() {
     skyPc.model = glm::scale(glm::translate(glm::mat4(1.0f), camera_.position()),
                               glm::vec3(kSkyDomeRadius));
     skyPc.unlit = 1.0f;
+    skyPc.materialType = 4.0f;  // shared directional sky, before the general unlit path
     vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(skyPc),
                         &skyPc);

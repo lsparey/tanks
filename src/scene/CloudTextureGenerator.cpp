@@ -83,16 +83,16 @@ std::vector<uint8_t> CloudTextureGenerator::generate(uint32_t size) {
             // Large-scale shapes (few octaves, low frequency) for big cloud
             // masses; a finer layer riding on top gives them a bit of
             // cauliflower-like internal texture rather than a flat blob.
-            float shape = fbm(static_cast<float>(x) * 0.02f, static_cast<float>(y) * 0.02f, 4,
-                               static_cast<float>(size) * 0.02f);
-            float detail = fbm(static_cast<float>(x) * 0.08f + 41.3f, static_cast<float>(y) * 0.08f + 7.1f,
-                                3, static_cast<float>(size) * 0.08f);
+            // Whole lattice periods keep both layers seamless at GL_REPEAT.
+            float u = static_cast<float>(x) / size;
+            float v = static_cast<float>(y) / size;
+            float shape = fbm(u * 5.0f, v * 5.0f, 4, 5.0f);
+            float detail = fbm(u * 20.0f + 41.3f, v * 20.0f + 7.1f, 3, 20.0f);
             float density = shape * 0.75f + detail * 0.25f;
 
-            // Mostly-clear sky with occasional soft-edged raised patches --
-            // the two smoothstep thresholds control how much of the sky is
-            // cloudy and how soft the cloud edges read.
-            float alpha = glm::smoothstep(0.52f, 0.70f, density);
+            // Alpha carries linear density, so sky and reflections apply
+            // the same coverage threshold without sRGB decoding the data.
+            float alpha = density;
             // Slightly darker where density is high (thicker cloud core),
             // brighter at the thin edges -- a cheap stand-in for real
             // self-shadowing/ambient occlusion within the cloud shape.

@@ -93,7 +93,7 @@ public:
                                  glm::vec3 baseColor, uint32_t seed, bool topOnly = false,
                                  std::vector<FootprintCircle>* collisionFootprint = nullptr);
 
-    // A unit-radius upper hemisphere (Y >= 0), meant to be scaled up and
+    // A unit-radius sky sphere, meant to be scaled up and
     // recentered on the camera each frame as a sky backdrop for clouds
     // (see Application's cloud dome). UV is a "project onto a distant
     // horizontal plane" mapping (divide the local XZ direction by Y)

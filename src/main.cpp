@@ -1,5 +1,6 @@
 #include <cstdlib>
 #include <cstring>
+#include <charconv>
 #include <iostream>
 #include <optional>
 #include <stdexcept>
@@ -33,9 +34,27 @@ std::optional<Application::ScreenshotRequest> parseScreenshotRequest(int argc, c
 int main(int argc, char** argv) {
     try {
         bool profile = false;
-        for (int i = 1; i < argc; ++i)
+        std::optional<uint32_t> seed;
+        std::string view;
+        for (int i = 1; i < argc; ++i) {
             if (std::strcmp(argv[i], "--profile") == 0) profile = true;
-        Application app(parseScreenshotRequest(argc, argv), profile);
+            if (std::strcmp(argv[i], "--seed") == 0) {
+                if (++i >= argc) throw std::runtime_error("--seed requires an unsigned integer");
+                uint32_t value;
+                const char* end = argv[i] + std::strlen(argv[i]);
+                auto parsed = std::from_chars(argv[i], end, value);
+                if (parsed.ec != std::errc{} || parsed.ptr != end)
+                    throw std::runtime_error("invalid --seed");
+                seed = value;
+            } else if (std::strcmp(argv[i], "--view") == 0) {
+                if (++i >= argc) throw std::runtime_error("--view requires tank, landscape, water, or cliffs");
+                view = argv[i];
+                if (view != "tank" && view != "landscape" && view != "water" && view != "cliffs")
+                    throw std::runtime_error("unknown reference view");
+            }
+        }
+        if (!view.empty() && !seed) seed = 7331;
+        Application app(parseScreenshotRequest(argc, argv), profile, seed, view);
         app.run();
     } catch (const std::exception& e) {
         std::cerr << "Fatal error: " << e.what() << std::endl;

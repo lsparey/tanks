@@ -57,7 +57,9 @@ public:
     };
 
     explicit Application(std::optional<ScreenshotRequest> screenshotRequest = std::nullopt,
-                         bool performanceReporting = false);
+                         bool performanceReporting = false,
+                         std::optional<uint32_t> worldSeed = std::nullopt,
+                         std::string referenceView = {});
     ~Application();
 
     Application(const Application&) = delete;
@@ -76,10 +78,14 @@ private:
     void mainLoop();
     void drawFrame();
     void reportPerformance();
+    void applyReferenceCamera();
 
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
 
     GLFWwindow* window_ = nullptr;
+    uint32_t worldSeed_ = 0;
+    std::string referenceView_;
+    glm::vec3 waterReferenceTarget_{0.0f};
     bool framebufferResized_ = false;
     size_t currentFrame_ = 0;
     double lastFrameTime_ = 0.0;

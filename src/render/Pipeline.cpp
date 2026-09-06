@@ -68,7 +68,7 @@ void Pipeline::updateInstanceTransforms(const std::vector<glm::mat4>& transforms
 }
 
 void Pipeline::createDescriptorSetLayout() {
-    VkDescriptorSetLayoutBinding bindings[2]{};
+    VkDescriptorSetLayoutBinding bindings[3]{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -77,10 +77,14 @@ void Pipeline::createDescriptorSetLayout() {
     bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[1].descriptorCount = 1;
     bindings[1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    bindings[2].binding = 2;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 2;
+    layoutInfo.bindingCount = 3;
     layoutInfo.pBindings = bindings;
 
     VK_CHECK(
@@ -155,7 +159,7 @@ void Pipeline::createDescriptorPoolAndSet() {
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     // Each material set has four albedo bindings plus the terrain-control
     // lookup (see createMaterialSetLayout).
-    poolSizes[1].descriptorCount = kMaxMaterialSets * 5 + kHistorySets;
+    poolSizes[1].descriptorCount = kMaxMaterialSets * 5 + kHistorySets + 1;
     poolSizes[2].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     poolSizes[2].descriptorCount = kTLASSets;
     poolSizes[3].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -259,6 +263,21 @@ void Pipeline::updateHistoryDescriptor(size_t frameIndex, VkImageView historyVie
     write.descriptorCount = 1;
     write.pImageInfo = &imageInfo;
 
+    vkUpdateDescriptorSets(ctx_.device(), 1, &write, 0, nullptr);
+}
+
+void Pipeline::updateEnvironmentDescriptor(const Texture& clouds) {
+    VkDescriptorImageInfo imageInfo{};
+    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imageInfo.imageView = clouds.view();
+    imageInfo.sampler = clouds.sampler();
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = descriptorSet_;
+    write.dstBinding = 2;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.descriptorCount = 1;
+    write.pImageInfo = &imageInfo;
     vkUpdateDescriptorSets(ctx_.device(), 1, &write, 0, nullptr);
 }
 

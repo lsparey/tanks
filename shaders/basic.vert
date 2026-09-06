@@ -8,8 +8,7 @@ layout(location = 3) in vec2 inUV;
 layout(set = 0, binding = 0) uniform FrameUBO {
     mat4 view;
     mat4 proj;
-    vec4 lightDir;   // xyz, w unused
-    vec4 cameraPos;  // xyz, w unused
+    // Only this common prefix of the C++ FrameUBO is needed by vertices.
 } frame;
 
 layout(std430, set = 0, binding = 1) readonly buffer InstanceTransforms {
@@ -45,6 +44,8 @@ void main() {
     mat4 model = pc.isInstanced > 0.5 ? instanceData.transforms[gl_InstanceIndex] : pc.model;
     vec4 worldPos = model * vec4(inPosition, 1.0);
     gl_Position = frame.proj * frame.view * worldPos;
+    if (pc.materialType > 3.5 && pc.materialType < 4.5)
+        gl_Position.z = gl_Position.w * 0.99999;
 
     // Assumes uniform scale (no non-uniform scaling applied to any mesh in
     // this prototype), so the model matrix itself is fine for normals --

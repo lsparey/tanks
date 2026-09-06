@@ -198,10 +198,15 @@ Use these short scenarios, allowing the sample window to fill after `F4`:
 3. **Driving/effects:** drive a consistent loop to accumulate tread marks and
    dust, then fire at crates to compare recording, draw counts, and GPU effects.
 
-World placement varies between launches, so repeat views within the same
-session and treat comparisons across launches as approximate. Fixed seeds and
-scripted camera replay remain future work. Capture reference screenshots
-outside each measurement interval.
+For static comparisons across launches, use `--seed 7331 --view landscape`.
+The seed fixes terrain, material variants, and prop placement; `--view` also
+accepts `tank`, `water`, and `cliffs` and holds a reference camera until `C` is
+pressed. Without an explicit seed, reference views use 7331; normal gameplay
+still chooses and prints a random seed. Timing, effects, and temporal ray noise
+are not deterministic replay. Capture screenshots outside measurement intervals.
+
+The [visual target and reference board](docs/VISUAL_TARGET.md) describe the
+British countryside daylight palette and show the repeatable camera views.
 
 Run the CPU statistics regression test after building (requires
 `BUILD_TESTING=ON`, the default):

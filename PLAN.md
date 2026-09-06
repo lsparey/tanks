@@ -43,11 +43,11 @@ Unchecked items are options rather than a committed roadmap.
 
 ### Visual candidates
 
-- [ ] [Establish visual targets](#establish-visual-targets)
+- [x] [Establish visual targets](#establish-visual-targets)
 - [ ] [Weapon firing presentation](#weapon-firing-presentation)
 - [ ] [Tank material detail and wear](#tank-material-detail-and-wear)
 - [ ] [Foliage and environmental motion](#foliage-and-environmental-motion)
-- [ ] [Unified sky, sun, and atmosphere](#unified-sky-sun-and-atmosphere)
+- [x] [Unified sky, sun, and atmosphere](#unified-sky-sun-and-atmosphere)
 - [ ] [Shorelines and terrain transitions](#shorelines-and-terrain-transitions)
 - [ ] [Particle and smoke presentation](#particle-and-smoke-presentation)
 - [ ] [Camera presentation](#camera-presentation)
@@ -264,8 +264,9 @@ actual draw calls, visible scenery instances, and TLAS instance counts alongside
 the existing asynchronous GPU timings. F3 (or `--profile`) enables window-title
 and terminal reports; F4 resets the sample window. Startup warmup, screenshot
 capture, and resize handling keep special frames out of ordinary measurements.
-The README describes stationary, scenery, and driving/effects checks; exact
-cross-launch replay still needs fixed world seeds and camera scripting.
+The README describes stationary, scenery, and driving/effects checks. Fixed
+seeds and reference cameras now support static cross-launch comparisons;
+scripted gameplay replay remains future work.
 
 - Value: identifies whether the next limit is CPU submission, ray queries,
   acceleration-structure work, or ordinary rasterization.
@@ -382,15 +383,16 @@ add effects indiscriminately.
 
 ### Establish visual targets
 
-Collect a small reference board and define a few visual pillars, such as
-grounded realism, stylised military diorama, or high-contrast arcade action.
-Capture several fixed in-game viewpoints for repeatable comparisons when
-changing lighting, materials, atmosphere, or post-processing.
+The chosen direction is grounded British countryside daylight: cool sky fill,
+slightly warm sunlight, English greens, broken cloud, and pale distance haze.
+[Visual target and in-game reference board](docs/VISUAL_TARGET.md) record the
+pillars and repeatable tank, landscape, and water/rock views. `--seed` and
+`--view` reproduce static scenes for future material and lighting comparisons.
 
 - Value: keeps otherwise-good effects visually coherent and prevents endless
   local tweaking.
 - Complexity: low.
-- Suggested priority: do before a broad visual-polish pass.
+- Status: completed; use the reference views for future visual changes.
 
 ### Weapon firing presentation
 
@@ -432,16 +434,17 @@ objects. Dust and clouds can follow the same wind direction.
 
 ### Unified sky, sun, and atmosphere
 
-The rasterized cloud dome and analytic reflection sky currently use related but
-separate implementations. Drive both from shared sky parameters or a generated
-environment texture, add a visible sun disk, and tie sky hue, fog colour,
-directional-light colour, and cloud lighting to the same time-of-day state.
-Optional moving cloud shadows would further connect the sky to the terrain.
+The visible sky and reflection misses now use one directional sky function and
+cloud-density texture, with a small sun disk aligned to the direct light.
+Shared daylight colours control sky, horizon haze, ambient fill, direct light,
+cloud shading, and reflection hits. Fog uses the cloud-free horizon gradient.
+This is a fixed daylight preset; moving cloud shadows and time-of-day animation
+remain optional follow-ups.
 
 - Value: improves scene-wide cohesion, particularly in water reflections and
   at the horizon.
 - Complexity: medium; dynamic time of day and cloud shadows increase it.
-- Suggested priority: useful before adding more isolated atmospheric effects.
+- Status: completed for the fixed British daylight preset.
 
 ### Shorelines and terrain transitions
 

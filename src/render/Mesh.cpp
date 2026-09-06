@@ -608,9 +608,8 @@ Mesh Mesh::dome(VulkanContext& ctx, CommandContext& commands, glm::vec3 color, f
     vertices.reserve(static_cast<size_t>(kLatSegments + 1) * (kLonSegments + 1));
 
     for (int lat = 0; lat <= kLatSegments; ++lat) {
-        // theta=0 at the zenith (straight up), kPi/2 at the horizon --
-        // clouds only need the upper hemisphere.
-        float theta = (static_cast<float>(lat) / kLatSegments) * (kPi * 0.5f);
+        // Full sky sphere also covers below-horizon views from hilltops.
+        float theta = (static_cast<float>(lat) / kLatSegments) * kPi;
         float y = std::cos(theta);
         float ringRadius = std::sin(theta);
         for (int lon = 0; lon <= kLonSegments; ++lon) {

@@ -26,7 +26,14 @@ layout(set = 0, binding = 0) uniform FrameUBO {
     // means "inactive, skip" -- see the loop in main().
     vec4 dynamicLightPosRadius[MAX_DYNAMIC_LIGHTS];
     vec4 dynamicLightColorIntensity[MAX_DYNAMIC_LIGHTS];
+    vec4 sunColor;
+    vec4 skyZenith;
+    vec4 skyHorizon;
+    vec4 ambientColor;
+    vec4 cloudColor;
+    vec4 atmosphere;
 } frame;
+layout(set = 0, binding = 2) uniform sampler2D environmentClouds;
 
 // Four material textures: a "high" (grass) pair and a "low" (gravel) pair,
 // each pair patch-blended by a noise mask, with the high/low pair itself
@@ -125,7 +132,8 @@ bool traceReflection(vec3 origin, vec3 direction, float tMax, out vec3 hitColor)
     // modulated by whether the hit face points toward or away from the
     // light reads as "reflecting nearby lit/shadowed geometry" honestly,
     // without guessing a color that might be wrong.
-    hitColor = mix(vec3(0.05), vec3(0.5), diffuse);
+    hitColor = vec3(0.5) * (frame.ambientColor.rgb * frame.ambientColor.w +
+                            frame.sunColor.rgb * frame.sunColor.w * diffuse);
     return true;
 }
 
@@ -135,10 +143,7 @@ float interleavedGradientNoise(vec2 pixel) {
     return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
 }
 
-// A from-scratch (not texture-sampled) value-noise fbm, independent of
-// CloudTextureGenerator's tileable version -- this one is evaluated
-// continuously per-pixel for an arbitrary direction, so it has no need for
-// (and doesn't bother with) exact seamless tiling.
+// Continuous value noise for terrain/material variation.
 float hash21(vec2 p) {
     p = fract(p * vec2(123.34, 456.21));
     p += dot(p, p + 45.32);
@@ -156,19 +161,6 @@ float valueNoise2D(vec2 p) {
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 
-float cloudFbm(vec2 p) {
-    float sum = 0.0;
-    float amplitude = 0.5;
-    float total = 0.0;
-    for (int i = 0; i < 4; ++i) {
-        sum += amplitude * valueNoise2D(p);
-        total += amplitude;
-        p *= 2.0;
-        amplitude *= 0.5;
-    }
-    return sum / total;
-}
-
 // Plain two-tone sky gradient, no clouds -- factored out of skyColor below
 // so distance fog (which tints toward this per-fragment, at every fog-
 // affected pixel on screen) can use just the smooth gradient. Using the
@@ -177,38 +169,36 @@ float cloudFbm(vec2 p) {
 // camera-to-surface direction pointed even slightly upward, since fog
 // blends in this color starting close to the camera.
 vec3 skyGradient(vec3 dir) {
-    vec3 skyTint = vec3(0.55, 0.65, 0.78);
-    vec3 groundTint = vec3(0.12, 0.11, 0.10);
-    return mix(groundTint, skyTint, clamp(dir.y * 0.5 + 0.5, 0.0, 1.0));
+    // Horizon haze stays pale, including for slightly downward fog rays.
+    return mix(frame.skyHorizon.rgb, frame.skyZenith.rgb,
+               pow(clamp(dir.y, 0.0, 1.0), 0.55));
 }
 
-// Analytic sky (two-tone gradient) + clouds for an arbitrary view/reflection
-// direction, evaluated directly rather than sampled from the actual sky
-// dome's texture -- the dome is deliberately kept out of the ray-traced
-// scene (see gatherRayTracingInstances), so a ray that escapes to open sky
-// has nothing to hit; this gives reflections (see traceReflection's miss
-// case) a plausible cloud-textured sky instead of a flat gradient without
-// needing the dome itself to be ray-traceable. Won't look pixel-identical
-// to the actual rendered sky dome (different noise implementation/
-// parameters), but reads as the same kind of sky.
+// One environment evaluation for both visible sky and reflection misses.
+// Colour is linear here; the final surface/sky output is tonemapped once.
 vec3 skyColor(vec3 dir) {
     vec3 color = skyGradient(dir);
-    if (dir.y > 0.02) {
-        // Project onto a distant horizontal plane, same idea as the sky
-        // dome mesh's own UV mapping (see Mesh::dome).
-        vec2 p = dir.xz / dir.y;
-        float density = cloudFbm(p * 0.5) * 0.75 + cloudFbm(p * 2.0 + vec2(41.3, 7.1)) * 0.25;
-        float cloudAlpha = smoothstep(0.52, 0.70, density);
-        vec3 cloudColor = mix(vec3(1.0), vec3(0.72, 0.75, 0.80), smoothstep(0.6, 0.9, density));
-        color = mix(color, cloudColor, cloudAlpha);
-    }
-    return color;
+    // Identical directional mapping and mip choice for raster sky and
+    // reflection misses. Fade clouds into horizon haze before the projection
+    // becomes singular. No per-fragment FBM or additional ray queries.
+    vec2 uv = dir.xz / max(dir.y, 0.08) * frame.atmosphere.z;
+    float density = textureLod(environmentClouds, uv, 1.0).a;
+    float cloudAlpha = smoothstep(frame.cloudColor.w, frame.cloudColor.w + 0.19, density)
+                       * smoothstep(0.08, 0.18, dir.y);
+    vec3 toSun = normalize(-frame.lightDir.xyz);
+    float sunAlignment = max(dot(dir, toSun), 0.0);
+    color += frame.sunColor.rgb * frame.sunColor.w * pow(sunAlignment, 48.0) * 0.10;
+    float disk = smoothstep(cos(frame.atmosphere.w * 1.2), cos(frame.atmosphere.w), sunAlignment);
+    color += frame.sunColor.rgb * frame.sunColor.w * disk * 4.0;
+    vec3 cloudLight = mix(frame.skyHorizon.rgb * 0.70, frame.cloudColor.rgb,
+                          1.0 - smoothstep(0.58, 0.86, density));
+    cloudLight *= mix(vec3(1.0), frame.sunColor.rgb, sunAlignment * 0.4);
+    return mix(color, cloudLight, cloudAlpha);
 }
 
 // Reimplements TrackTextureGenerator's tread-link ridge pattern as a
 // procedural [0,1] height field (not sampled from the actual texture) --
-// same idea as cloudFbm's independent reimplementation of
-// CloudTextureGenerator above. Needed because the real texture's own
+// Needed because the real texture's own
 // brown-on-brown color contrast is too low (~0.07 out of 1.0 in luminance)
 // to give a usable bump signal, and any signal derived from a filtered/
 // mipped/anisotropically-sampled texture read would vary with viewing
@@ -353,15 +343,18 @@ vec3 acesFilmicTonemap(vec3 x) {
 // the terrain's ~255-unit corner-to-corner diagonal (see Camera::
 // projection's far plane) a depth cue and hazes the far edge toward the
 // horizon instead of it staying full-contrast right up to the view's far
-// clip. kFogStartDistance keeps the near/gameplay range (chase cam sits
+// clip. frame.atmosphere.x keeps the near/gameplay range (chase cam sits
 // ~8 units back, see Camera::followTarget) completely clear so fog only
 // ever shows up well beyond the action; density is applied to distance
 // past that start, not total distance, so it ramps in gradually rather
 // than jumping straight to its far-clip value at the start line.
-const float kFogStartDistance = 60.0;
-const float kFogDensity = 0.004;
-
 void main() {
+    if (pc.materialType > 3.5 && pc.materialType < 4.5) {
+        vec3 direction = normalize(fragWorldPos - frame.cameraPos.xyz);
+        outColor = vec4(acesFilmicTonemap(skyColor(direction) * kExposure), 1.0);
+        outShadowHistory = vec4(1.0, 1.0, length(fragWorldPos - frame.cameraPos.xyz), 0.0);
+        return;
+    }
     float currentViewDist = length(frame.cameraPos.xyz - fragWorldPos);
     // Domain-warp the terrain's sample UV with a low-frequency (world-space)
     // noise offset so its many texture repeats (60 across the current
@@ -744,14 +737,16 @@ void main() {
     // tracks, box bases, and tree trunks meet the ground) so those read as
     // grounded rather than floating; faces in shadow still read as dim
     // rather than pure black.
-    float lighting = 0.2 * aoFactor + 0.8 * diffuse;
+    vec3 lighting = frame.ambientColor.rgb * frame.ambientColor.w * aoFactor +
+                    frame.sunColor.rgb * frame.sunColor.w * diffuse;
     if (pc.materialType > 1.5 && pc.materialType < 2.5) {
         // Thin-leaf transmission: sunlight behind the surface produces a
         // warm green lift, while wrap lighting keeps solid canopy blobs from
         // developing unnaturally black hemispheres.
         float wrappedDiffuse = max((dot(litNormal, toLight) + 0.35) / 1.35, 0.0) * shadowFactor;
         float transmission = pow(max(dot(-litNormal, toLight), 0.0), 2.0) * shadowFactor;
-        lighting = 0.18 * aoFactor + 0.68 * wrappedDiffuse + 0.22 * transmission;
+        lighting = frame.ambientColor.rgb * frame.ambientColor.w * aoFactor +
+                   frame.sunColor.rgb * frame.sunColor.w * (0.85 * wrappedDiffuse + 0.22 * transmission);
         albedo *= mix(vec3(0.88, 0.98, 0.82), vec3(1.08, 1.16, 0.72), transmission);
     }
 
@@ -858,7 +853,7 @@ void main() {
         pow(1.0 - max(dot(shadingNormal, viewDir), 0.0), 3.0) * specularStrength * 0.18 * aoFactor;
 
     // Environment reflection. Base case is the analytic sky+cloud function
-    // above sampled along the reflection vector -- cheap (no ray/texture),
+    // above sampled along the reflection vector -- one shared cloud lookup,
     // and correct for the common case of a reflection heading toward open
     // sky (matches what the actual sky dome looks like, since the dome
     // itself is deliberately kept out of the ray-traced scene). Reflective
@@ -949,7 +944,8 @@ void main() {
     // bright sky color, reading as a washed-out pale sheet rather than
     // "mostly transparent, tinted by depth, plus a reflection"). Negligible
     // difference for the tank's own tiny reflectivity (0.06).
-    vec3 result = mix(baseContribution, envColor, effectiveReflectivity) + vec3(specular) + fresnel * vec3(0.6);
+    vec3 result = mix(baseContribution, envColor, effectiveReflectivity) +
+                  specular * frame.sunColor.rgb * frame.sunColor.w + fresnel * vec3(0.6);
 
     // Fogged toward the sky color along the actual camera->fragment
     // direction (not the reflection vector envColor uses above) so it reads
@@ -958,8 +954,8 @@ void main() {
     // disocclusion check.
     vec3 viewToFragDir = normalize(fragWorldPos - frame.cameraPos.xyz);
     vec3 fogColor = skyGradient(viewToFragDir);
-    float fogDist = max(currentViewDist - kFogStartDistance, 0.0);
-    float fogFactor = 1.0 - exp(-fogDist * kFogDensity);
+    float fogDist = max(currentViewDist - frame.atmosphere.x, 0.0);
+    float fogFactor = 1.0 - exp(-fogDist * frame.atmosphere.y);
     result = mix(result, fogColor, fogFactor);
 
     outColor = vec4(acesFilmicTonemap(result * kExposure), finalAlpha);
