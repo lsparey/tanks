@@ -7,6 +7,8 @@
 #include "Vertex.h"
 #include "VulkanContext.h"
 
+namespace TreeGenerator { struct Tree; }
+
 // Owns a device-local vertex + index buffer pair and knows how to bind and
 // draw itself. All meshes in the prototype (terrain, boxes, shells, the
 // loaded tank model) share this one representation.
@@ -49,25 +51,18 @@ public:
     // desired footprint via their world matrix rather than baking a size in.
     static Mesh quad(VulkanContext& ctx, CommandContext& commands, glm::vec3 color);
 
-    // A procedural tree, built as a recursive fractal branching structure
-    // (trunk splits into a few branches, each of which splits again,
-    // several levels deep) rather than a fixed trunk+2-cones shape --
-    // returned as two separate meshes since bark and foliage need
-    // different textures/materials: treeBark is the trunk/branch skeleton
-    // (cylindrical UV for a tiling bark texture), treeLeaves is the small
-    // cone clusters at each branch tip (for a foliage texture). Call both
-    // with the same `seed` to get the matching pair for one tree -- the
-    // branch structure (and therefore where the leaf clusters end up) is
-    // fully determined by seed, so two calls with the same seed reproduce
-    // the identical skeleton.
-    // lod 0/1/2 progressively reduces branch sides, terminal twigs, leaf
-    // blob count, and leaf-blob tessellation while preserving the same
-    // seed-driven branch structure. treeLeaves lod 3 is an inset ray-only
-    // proxy that stays safely inside the visible canopy.
-    static Mesh treeBark(VulkanContext& ctx, CommandContext& commands, glm::vec3 tint,
-                         uint32_t seed, int lod = 0);
-    static Mesh treeLeaves(VulkanContext& ctx, CommandContext& commands, glm::vec3 tint,
-                           uint32_t seed, int lod = 0);
+    // All tree materials and LODs share one species-specific skeleton and
+    // spray layout. Rounded voxel bark is supplemented by thin tapered
+    // twigs; oak has separate lobed laminae, pine/ash retain voxel sprays.
+    // Leaf LOD 3 contains inset, flattened shadow proxies.
+    struct Geometry {
+        std::vector<Vertex> vertices;
+        std::vector<uint32_t> indices;
+    };
+    // CPU-only, independent builds. Upload the returned arrays using the
+    // Mesh constructor on the render thread that owns the command pool.
+    static Geometry treeBarkGeometry(glm::vec3 tint, const TreeGenerator::Tree& tree, int lod = 0);
+    static Geometry treeLeafGeometry(glm::vec3 tint, const TreeGenerator::Tree& tree, int lod = 0);
 
     // A procedural boulder: a subdivided icosahedron with
     // broad, ridged, and fine layers of fractal displacement for an
@@ -107,7 +102,7 @@ public:
                       float uvScale);
 
     // An artillery shell: a short cylindrical body plus a tapered nose,
-    // built from the same oriented-frustum helper tree branches use,
+    // built from an oriented-frustum helper,
     // oriented along local +Z ("forward", matching Tank/fragTangent's
     // convention) with the nose pointing +Z -- see Projectile::worldMatrix,
     // which builds a basis mapping local +Z to the shell's actual flight

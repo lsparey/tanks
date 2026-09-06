@@ -47,7 +47,7 @@ Unchecked items are options rather than a committed roadmap.
 - [x] [Weapon firing presentation](#weapon-firing-presentation)
 - [x] [Tank material detail and wear](#tank-material-detail-and-wear)
 - [x] [Tank model silhouette and running gear](#tank-model-silhouette-and-running-gear)
-- [ ] [Foliage and environmental motion](#foliage-and-environmental-motion)
+- [x] [Foliage and environmental motion](#foliage-and-environmental-motion)
 - [x] [Unified sky, sun, and atmosphere](#unified-sky-sun-and-atmosphere)
 - [ ] [Shorelines and terrain transitions](#shorelines-and-terrain-transitions)
 - [ ] [Particle and smoke presentation](#particle-and-smoke-presentation)
@@ -77,6 +77,34 @@ Unchecked items are options rather than a committed roadmap.
 - A terrain-following play-area boundary and translucent energy wall.
 - Procedurally generated and terrain-aware trees, shrubs, boulders,
   sedimentary cliffs, and decorative scree.
+- Tree bark and pine/ash canopies use rounded voxel boundaries with smooth normals
+  across texture seams. Surface vertices are shared without adding triangles;
+  existing dynamic ray-query lighting and coarse occluder LODs remain in use.
+  Generation skips unused materials and noise outside each boundary shell,
+  with loading progress presented while tree variants build on up to three
+  CPU workers. Geometry arrays remain private to each task; uploads and
+  Vulkan command-pool/queue use stay on the main thread. Outstanding work
+  is bounded to limit both CPU contention and waiting mesh memory.
+- Pine, ash and oak each have two full summer crown variants. A shared generated
+  skeleton drives bark, thin twigs, flattened ragged leaf sprays and every
+  LOD. Crown density varies both between variants and across branches;
+  thinning leaves the branch structure and surviving sprays in place. Leafy
+  side shoots fill the boughs and interior crown, with overlapping small fans
+  based on summer reference photographs rather than isolated terminal tufts.
+  Sub-pixel petiole meshes are omitted and spatial hashing avoids repeated
+  coordinate collisions as crown occupancy grows.
+- Oak has a deep, rounded crown with large boughs staggered along the trunk,
+  visible scaffold gaps and dense terminal shoots. Small, separately shaded
+  lobed leaf surfaces preserve leaf edges instead of merging into a solid
+  voxel mass. Coarser LODs simplify these leaves within each spray.
+- Canopy ray proxies use eight inset triangles per leaf or voxel spray and are flattened
+  to follow the visible foliage. Near-grid occupancy checks keep each proxy
+  inside its voxel leaf group; oak proxies fit inside the thin leaf surfaces.
+  Medium/far raster LODs engage at smaller screen sizes
+  where individual leaves cannot be resolved.
+  Foliage sun shadows retain a wide sampling cone and partial transmission,
+  while solid occluders retain their narrow cone. AO and reflections query
+  both geometry groups. Coarse raster LODs preserve the large crown gaps.
 - Placement rules that account for water, spawn clearance, spacing, slope,
   scale, and reusable visual variants.
 
@@ -471,6 +499,15 @@ objects. Dust and clouds can follow the same wind direction.
   cues when the tank is stationary.
 - Complexity: medium.
 - Suggested priority: high if environmental stillness is noticeable.
+- Status: bark, leaves, and shrubs bend coherently from anchored roots,
+  using one low-frequency wind vector per instance and quadratic trunk
+  bending. Elapsed time drives the motion independently of frame rate;
+  there is no travelling wave across the solid canopy. Bent normals and
+  previous bent positions keep lighting and temporal reprojection aligned.
+  Ray queries retain static coarse proxies to avoid rebuilding tree geometry.
+  Bark has its own opaque material; only leaves use transmission. Terrain
+  has no blade geometry to move and stays static. Individual leaf motion
+  and dust/cloud wind alignment remain future work.
 
 ### Unified sky, sun, and atmosphere
 

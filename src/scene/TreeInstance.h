@@ -4,7 +4,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 // A purely decorative, static tree placement. Geometry is a small shared
-// pool of distinct fractal branch structures (see Mesh::treeBark/
+// pool of pine, ash and oak forms with varied crown density (see Mesh::treeBark/
 // treeLeaves and Application::treeBarkMeshes_/treeLeafMeshes_); each
 // instance just carries a position/yaw/scale/meshVariant and positions the
 // shared mesh pair via worldMatrix().

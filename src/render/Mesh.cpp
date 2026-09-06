@@ -1,5 +1,7 @@
 #include "Mesh.h"
 #include "DrawStatistics.h"
+#include "VoxelSurface.h"
+#include "../scene/TreeGenerator.h"
 
 #include <algorithm>
 #include <array>
@@ -238,6 +240,170 @@ void appendLeafBlob(std::vector<Vertex>& vertices, std::vector<uint32_t>& indice
     }
 }
 
+// Trees use a voxel occupancy field with a rounded boundary mesh.
+using VoxelSet = VoxelSurface::Cells;
+
+// Marks every voxel whose center lies within a tapered capsule from `a`
+// (radius radiusA) to `b` (radius radiusB) -- used for branch segments.
+// Tests each candidate cell directly against the segment (closest-point
+// distance) rather than stepping along it, so the result doesn't depend on
+// step size and adjoining branch segments connect cleanly with no seam at
+// the joint, unlike the flat cross-section where the old frustums met.
+void voxelizeCapsule(VoxelSet& voxels, glm::vec3 a, glm::vec3 b, float radiusA, float radiusB,
+                     float voxelSize, glm::vec3 noiseOffset) {
+    // Bark noise: a perfectly round, linearly-tapered capsule reads as a
+    // smooth pipe even at fine voxel resolution. Perturbing the radius by
+    // the branch's own 3D noise field (rather than anything a-priori
+    // circular) adds knots/ridges/bumps that break that up into something
+    // closer to real bark -- same fractalNoise3D idiom rock's displacement
+    // uses, just applied to a branch radius instead of a boulder's.
+    float maxRadius = std::max(radiusA, radiusB) * 1.35f;
+    glm::vec3 lo = glm::min(a, b) - glm::vec3(maxRadius);
+    glm::vec3 hi = glm::max(a, b) + glm::vec3(maxRadius);
+    glm::ivec3 loCell = glm::ivec3(glm::floor(lo / voxelSize));
+    glm::ivec3 hiCell = glm::ivec3(glm::floor(hi / voxelSize));
+    glm::vec3 ab = b - a;
+    float abLen2 = glm::dot(ab, ab);
+    for (int z = loCell.z; z <= hiCell.z; ++z) {
+        for (int y = loCell.y; y <= hiCell.y; ++y) {
+            for (int x = loCell.x; x <= hiCell.x; ++x) {
+                if (voxels.contains({x, y, z})) continue;
+                glm::vec3 p = (glm::vec3(x, y, z) + 0.5f) * voxelSize;
+                float t = abLen2 > 1e-8f ? glm::clamp(glm::dot(p - a, ab) / abLen2, 0.0f, 1.0f) : 0.0f;
+                glm::vec3 closest = a + ab * t;
+                float r = glm::mix(radiusA, radiusB, t);
+                float dist = glm::length(p - closest);
+                // Noise lies in [0, 1], so only the boundary shell needs it.
+                if (dist > r * 1.31f) continue;
+                if (dist < r * 0.69f) {
+                    voxels.insert({x, y, z});
+                    continue;
+                }
+                float bark = 1.0f + (fractalNoise3D(p * 9.0f + noiseOffset, 3) - 0.5f) * 0.6f;
+                if (dist <= r * bark) voxels.insert({x, y, z});
+            }
+        }
+    }
+}
+
+// A thin, oriented leaf spray with a ragged outline. Shape is evaluated in
+// its own axes so pine needles and broadleaf fans never inflate into balls.
+constexpr float kNearLeafVoxelSize = .036f;
+void voxelizeLeafSpray(VoxelSet& voxels, const TreeGenerator::Spray& spray, float voxelSize) {
+    glm::vec3 radii = spray.radii;
+    // Keep thin foliage represented on coarse grids without widening the
+    // spray or filling the larger gaps between branches.
+    radii.z = std::max(radii.z, voxelSize * .75f);
+    glm::vec3 extent = (glm::abs(spray.axes[0]) * radii.x + glm::abs(spray.axes[1]) * radii.y
+                        + glm::abs(spray.axes[2]) * radii.z) * 1.08f;
+    glm::ivec3 lo = glm::ivec3(glm::floor((spray.center - extent) / voxelSize));
+    glm::ivec3 hi = glm::ivec3(glm::floor((spray.center + extent) / voxelSize));
+    glm::mat3 inverseAxes = glm::transpose(spray.axes);
+    glm::vec3 noiseOffset(float(spray.seed & 1023u), float((spray.seed >> 10) & 1023u),
+                          float((spray.seed >> 20) & 1023u));
+    for (int z = lo.z; z <= hi.z; ++z) for (int y = lo.y; y <= hi.y; ++y)
+        for (int x = lo.x; x <= hi.x; ++x) {
+            glm::vec3 p = (glm::vec3(x,y,z) + .5f) * voxelSize;
+            glm::vec3 local = (inverseAxes * (p - spray.center)) / radii;
+            float distanceSquared = glm::dot(local, local);
+            if (distanceSquared > 1.07f * 1.07f) continue;
+            if (distanceSquared < .77f * .77f) { voxels.insert({x,y,z}); continue; }
+            // Most of an oriented spray's AABB is empty: reject that space
+            // before hashing. Only the boundary needs noise or a square root.
+            if (voxels.contains({x,y,z})) continue;
+            float distance = std::sqrt(distanceSquared);
+            glm::vec3 direction = local / distance;
+            float noise = fractalNoise3D(direction * 3.4f + noiseOffset, 3);
+            float lobes = std::abs(std::sin(std::atan2(direction.y, direction.x) * 5.0f + noiseOffset.x));
+            if (distance <= .78f + noise * .20f + lobes * .08f) voxels.insert({x,y,z});
+        }
+}
+
+// Oak laminae remain separate thin, closed surfaces instead of unioning
+// into a smooth voxel mass. No alpha cutouts or special lighting path are
+// needed; both faces have outward normals for the existing leaf material.
+void appendOakLamina(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices,
+                   const TreeGenerator::Spray& leaf, glm::vec3 tint, int lod) {
+    const bool proxy = lod == 3;
+    int segments = proxy ? 4 : (lod == 0 ? 12 : (lod == 1 ? 6 : 4));
+    glm::vec3 radii = leaf.radii * (proxy ? glm::vec3(.4f, .4f, .3f) : glm::vec3(1));
+    float variation = .94f + float(leaf.seed & 255u) * (.12f / 255.f);
+    for (int sign : {1, -1}) {
+        uint32_t base = static_cast<uint32_t>(vertices.size());
+        vertices.push_back({leaf.center + leaf.axes[2] * (radii.z * sign),
+                            leaf.axes[2] * float(sign), tint * variation, glm::vec2(.5f)});
+        for (int j = 0; j < segments; ++j) {
+            float angle = 2 * kPi * j / segments;
+            float x = std::cos(angle);
+            float y = std::sin(angle) * (proxy ? 1.f : .82f + .18f * std::cos(6 * angle));
+            glm::vec3 normal = glm::normalize(leaf.axes * glm::vec3(x * .06f, y * .12f, float(sign)));
+            vertices.push_back({leaf.center + leaf.axes * (glm::vec3(x,y,0) * radii),
+                                normal, tint * variation, glm::vec2(x,y) * .5f + .5f});
+        }
+        for (int j = 0; j < segments; ++j) {
+            uint32_t a = base + 1 + j, b = base + 1 + (j + 1) % segments;
+            if (sign < 0) std::swap(a, b);
+            indices.insert(indices.end(), {base, a, b});
+        }
+    }
+}
+
+void appendOakLeaf(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices,
+                   const TreeGenerator::Spray& spray, glm::vec3 tint, int lod) {
+    // Fine leaves overlap in projection without sharing their edge normals.
+    // Coarser LODs use their envelope once individual edges are sub-pixel.
+    if (lod == 1 || lod == 2) { appendOakLamina(vertices, indices, spray, tint, lod); return; }
+    constexpr glm::vec3 offsets[] = {{-.43f,-.35f,-.3f}, {.0f,.42f,.3f}, {.43f,-.3f,0}};
+    for (int j=0;j<3;++j) {
+        auto leaf = spray;
+        leaf.center += spray.axes * (offsets[j] * spray.radii);
+        leaf.radii *= glm::vec3(.55f,.62f,.7f);
+        leaf.seed += j * 7919u;
+        appendOakLamina(vertices, indices, leaf, tint, lod);
+    }
+}
+
+// Tiny sprays can be only a few cells thick. Fit their shadow proxy to
+// their actual near-grid occupancy rather than assuming a fixed inset is
+// safe for every sub-voxel offset and orientation.
+void appendLeafSprayProxy(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices,
+                           const TreeGenerator::Spray& spray, glm::vec3 tint) {
+    VoxelSet cells;
+    voxelizeLeafSpray(cells, spray, kNearLeafVoxelSize);
+    // Eight triangles are sufficient for a tiny transmissive occluder.
+    // Keeping all sprays, with simpler proxies, preserves crown coverage.
+    std::array<Vertex, 6> unit{};
+    constexpr glm::vec3 tips[] = {{1,0,0}, {-1,0,0}, {0,1,0}, {0,-1,0}, {0,0,1}, {0,0,-1}};
+    constexpr uint32_t faces[] = {4,0,2, 4,2,1, 4,1,3, 4,3,0,
+                                  5,2,0, 5,1,2, 5,3,1, 5,0,3};
+    for (size_t i = 0; i < unit.size(); ++i) unit[i] = {tips[i], tips[i], tint, glm::vec2(0)};
+    auto inside = [&](glm::vec3 p) { return cells.contains(glm::ivec3(glm::floor(p / kNearLeafVoxelSize))); };
+    auto fitted = unit;
+    for (float inset : {.45f, .35f, .25f, .15f}) {
+        bool contained = true;
+        for (size_t i = 0; i < unit.size(); ++i) {
+            fitted[i].position = spray.center + spray.axes * (unit[i].position * spray.radii * inset);
+            contained = contained && inside(fitted[i].position);
+        }
+        if (!contained) continue;
+        for (size_t i = 0; i < std::size(faces); i += 3) {
+            glm::vec3 center = (fitted[faces[i]].position + fitted[faces[i+1]].position
+                               + fitted[faces[i+2]].position) / 3.0f;
+            contained = contained && inside(center);
+        }
+        if (!contained) continue;
+        uint32_t base = static_cast<uint32_t>(vertices.size());
+        for (auto& vertex : fitted) {
+            vertex.normal = glm::normalize(spray.axes * (vertex.normal / spray.radii));
+            vertices.push_back(vertex);
+        }
+        for (uint32_t index : faces) indices.push_back(base + index);
+        return;
+    }
+    // A marginal spray still renders, but casts no independent proxy if
+    // the rounded grid cannot safely contain one at this resolution.
+}
+
 float calculateHorizontalInscribedRadius(const std::vector<glm::vec3>& positions) {
     // Find the smallest support distance of the XZ projection from the
     // local origin. For the convex, roughly round rock meshes this produces
@@ -385,7 +551,6 @@ Mesh Mesh::rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColo
     glm::vec3 seedOffset(offsetDist(rng), offsetDist(rng), offsetDist(rng));
     std::uniform_real_distribution<float> proportionDist(0.84f, 1.16f);
     glm::vec3 proportions(proportionDist(rng), proportionDist(rng), proportionDist(rng));
-    std::uniform_real_distribution<float> colorJitter(-0.05f, 0.05f);
 
     std::vector<glm::vec3> deformed(verts.size());
     for (size_t i = 0; i < verts.size(); ++i) {
@@ -465,13 +630,10 @@ Mesh Mesh::rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColo
             normal = -normal;
         }
 
-        glm::vec3 color = glm::clamp(baseColor + glm::vec3(colorJitter(rng)), glm::vec3(0.0f),
-                                      glm::vec3(1.0f));
-
         uint32_t base_ = static_cast<uint32_t>(vertices.size());
-        vertices.push_back({p0, n0, color, sphericalUV(dir0)});
-        vertices.push_back({p1, n1, color, sphericalUV(dir1)});
-        vertices.push_back({p2, n2, color, sphericalUV(dir2)});
+        vertices.push_back({p0, n0, baseColor, sphericalUV(dir0)});
+        vertices.push_back({p1, n1, baseColor, sphericalUV(dir1)});
+        vertices.push_back({p2, n2, baseColor, sphericalUV(dir2)});
         indices.insert(indices.end(), {base_ + 0, base_ + 1, base_ + 2});
     }
 
@@ -728,103 +890,46 @@ Mesh Mesh::shrub(VulkanContext& ctx, CommandContext& commands, glm::vec3 color, 
     return Mesh(ctx, commands, vertices, indices);
 }
 
-// Recursively builds one branch (as an oriented frustum) and, at the
-// bottom of the recursion, a small leaf cluster -- the fractal structure
-// that gives the tree its shape: each branch is a smaller, randomly
-// reoriented copy of the same "segment then split" rule applied to its
-// parent. Appends into whichever of barkV/leafV the caller cares about
-// (see the treeBark/treeLeaves split below); the *other* is still fully
-// walked so the RNG sequence -- and therefore the branch structure/leaf
-// placement -- stays identical between the two calls for the same seed.
-void buildTreeBranch(std::vector<Vertex>& barkV, std::vector<uint32_t>& barkI,
-                      std::vector<Vertex>& leafV, std::vector<uint32_t>& leafI,
-                      std::mt19937& structureRng, std::mt19937& foliageRng, glm::vec3 base,
-                      glm::vec3 dir, float length, float radius, int depth, glm::vec3 barkColor,
-                      glm::vec3 leafColor, int lod) {
-    dir = glm::normalize(dir);
-    float tipRadius = std::max(radius * 0.6f, 0.01f);
-    int sides = lod == 0 ? (depth >= 2 ? 10 : 8) : (lod == 1 ? 6 : 5);
-    // At the far LOD the terminal twig is hidden inside its leaf blob and
-    // contributes no useful silhouette, so omit it entirely.
-    if (lod < 2 || depth > 0) {
-        appendOrientedFrustum(barkV, barkI, base, dir, length, radius, tipRadius, barkColor, sides,
-                              1.2f);
-    }
-    glm::vec3 tip = base + dir * length;
-
-    if (depth <= 0) {
-        // Leaf cluster: a big irregular blob at the tip plus a couple of
-        // smaller ones clustered around it, instead of thin cones -- reads
-        // as an actual mass of foliage rather than a pine-tree silhouette.
-        float blobRadius = radius * 16.0f + 0.35f;
-        // Coarser raster LODs collapse the two satellite blobs into the
-        // primary one and enlarge it slightly so canopy volume does not
-        // visibly shrink. LOD 3 instead contracts the ray-only proxy far
-        // enough to remain inside the rendered leaves and avoid self-shadow.
-        float radiusScale = lod == 0 ? 1.0f : (lod == 1 ? 1.08f : (lod == 2 ? 1.15f : 0.64f));
-        float primaryRadius = blobRadius * radiusScale;
-        appendLeafBlob(leafV, leafI, tip, primaryRadius, leafColor, foliageRng,
-                       lod >= 2 ? 0 : 1);
-        std::uniform_real_distribution<float> smallOffsetDist(-blobRadius * 0.5f, blobRadius * 0.5f);
-        // Satellite geometry must not advance the primary-blob RNG: the
-        // next branch tip's primary blob then gets the same displacement in
-        // every LOD, allowing the inset LOD-3 proxy to remain contained by
-        // the corresponding detailed surface.
-        std::mt19937 satelliteRng = foliageRng;
-        for (int i = 0; i < 2; ++i) {
-            // Always consume the structure values so branch/leaf centres are
-            // identical between LODs. Only the near mesh emits these two
-            // satellite blobs.
-            glm::vec3 offset(smallOffsetDist(structureRng), smallOffsetDist(structureRng),
-                             smallOffsetDist(structureRng));
-            if (lod == 0) {
-                appendLeafBlob(leafV, leafI, tip + offset, blobRadius * 0.65f, leafColor,
-                               satelliteRng);
-            }
+Mesh::Geometry Mesh::treeBarkGeometry(glm::vec3 tint,
+                    const TreeGenerator::Tree& tree, int lod) {
+    lod = std::clamp(lod, 0, 2);
+    float voxelSize = lod == 0 ? .04f : (lod == 1 ? .065f : .1f);
+    VoxelSet barkVoxels;
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    for (const auto& branch : tree.branches) {
+        // Petioles sit inside the leaf groups; their sub-pixel cylinders add
+        // substantial upload/draw work in full crowns without useful detail.
+        if (branch.baseRadius < .004f || (lod > 0 && branch.baseRadius < .006f)) continue;
+        if (branch.baseRadius >= .045f) {
+            voxelizeCapsule(barkVoxels, branch.base, branch.tip, branch.baseRadius,
+                             branch.tipRadius, voxelSize, branch.base * 17.0f);
+        } else {
+            // Thin twigs stay connected even when narrower than a voxel.
+            appendOrientedFrustum(vertices, indices, branch.base, branch.tip - branch.base,
+                                   glm::length(branch.tip - branch.base), branch.baseRadius,
+                                   branch.tipRadius, tint, lod == 0 ? 5 : 3, 2.2f);
         }
-        return;
     }
-
-    std::uniform_int_distribution<int> branchCountDist(2, 3);
-    std::uniform_real_distribution<float> azimuthDist(0.0f, 2.0f * kPi);
-    std::uniform_real_distribution<float> deviationDist(0.5f, 0.85f);  // radians, ~29-49 degrees
-
-    glm::vec3 up = std::abs(dir.y) < 0.999f ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
-    glm::vec3 perp1 = glm::normalize(glm::cross(up, dir));
-    glm::vec3 perp2 = glm::cross(dir, perp1);
-
-    int branchCount = branchCountDist(structureRng);
-    for (int i = 0; i < branchCount; ++i) {
-        float azimuth = azimuthDist(structureRng);
-        glm::vec3 axis = glm::normalize(std::cos(azimuth) * perp1 + std::sin(azimuth) * perp2);
-        float deviation = deviationDist(structureRng);
-        glm::vec3 newDir = glm::vec3(
-            glm::rotate(glm::mat4(1.0f), deviation, axis) * glm::vec4(dir, 0.0f));
-        buildTreeBranch(barkV, barkI, leafV, leafI, structureRng, foliageRng, tip, newDir,
-                        length * 0.68f, radius * 0.62f, depth - 1, barkColor, leafColor, lod);
-    }
+    VoxelSurface::appendMesh(vertices, indices, barkVoxels, voxelSize, tint, 2.2f);
+    return {std::move(vertices), std::move(indices)};
 }
 
-Mesh Mesh::treeBark(VulkanContext& ctx, CommandContext& commands, glm::vec3 tint, uint32_t seed,
-                    int lod) {
-    std::vector<Vertex> barkV, leafV;
-    std::vector<uint32_t> barkI, leafI;
-    std::mt19937 structureRng(seed);
-    std::mt19937 foliageRng(seed ^ 0x9e3779b9u);
-    buildTreeBranch(barkV, barkI, leafV, leafI, structureRng, foliageRng, glm::vec3(0.0f),
-                    glm::vec3(0.0f, 1.0f, 0.0f), 1.1f, 0.14f, 3, tint, glm::vec3(0.0f),
-                    std::clamp(lod, 0, 2));
-    return Mesh(ctx, commands, barkV, barkI);
-}
-
-Mesh Mesh::treeLeaves(VulkanContext& ctx, CommandContext& commands, glm::vec3 tint, uint32_t seed,
-                      int lod) {
-    std::vector<Vertex> barkV, leafV;
-    std::vector<uint32_t> barkI, leafI;
-    std::mt19937 structureRng(seed);
-    std::mt19937 foliageRng(seed ^ 0x9e3779b9u);
-    buildTreeBranch(barkV, barkI, leafV, leafI, structureRng, foliageRng, glm::vec3(0.0f),
-                    glm::vec3(0.0f, 1.0f, 0.0f), 1.1f, 0.14f, 3, glm::vec3(0.0f), tint,
-                    std::clamp(lod, 0, 3));
-    return Mesh(ctx, commands, leafV, leafI);
+Mesh::Geometry Mesh::treeLeafGeometry(glm::vec3 tint,
+                      const TreeGenerator::Tree& tree, int lod) {
+    lod = std::clamp(lod, 0, 3);
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    if (tree.species == TreeGenerator::Species::Oak) {
+        for (const auto& leaf : tree.sprays) appendOakLeaf(vertices, indices, leaf, tint, lod);
+    } else if (lod == 3) {
+        for (const auto& spray : tree.sprays)
+            appendLeafSprayProxy(vertices, indices, spray, tint);
+    } else {
+        VoxelSet cells;
+        float voxelSize = lod == 0 ? kNearLeafVoxelSize : (lod == 1 ? .05f : .075f);
+        for (const auto& spray : tree.sprays) voxelizeLeafSpray(cells, spray, voxelSize);
+        VoxelSurface::appendMesh(vertices, indices, cells, voxelSize, tint, 1.4f);
+    }
+    return {std::move(vertices), std::move(indices)};
 }

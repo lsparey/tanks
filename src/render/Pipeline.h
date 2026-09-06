@@ -47,6 +47,7 @@ public:
         glm::vec4 lightDir;
         glm::vec4 cameraPos;
         glm::vec4 prevCameraPos;  // for basic.frag's depth-based disocclusion rejection
+        glm::vec4 windTime{0.0f}; // x: current seconds, y: previous rendered seconds (128s period)
         // Muzzle-flash/explosion point lights -- see DynamicLight.h. xyz is
         // world position, w is the falloff radius (0 means "inactive slot,
         // skip" -- see basic.frag). rgb is color, w is peak intensity.
@@ -66,6 +67,8 @@ public:
         std::array<glm::vec4, 16> scorchPositionRadius{};
         std::array<glm::vec4, 16> scorchParameters{}; // x: opacity
     };
+
+    static_assert(offsetof(FrameUBO, windTime) == 240);
 
     struct PushConstants {
         glm::mat4 model;
@@ -114,7 +117,8 @@ public:
         float isDynamicObject = 0.0f;
         // Material-specific shading without another descriptor set. Values
         // must match basic.frag: 0 generic, 1 terrain, 2 foliage, 3 rock,
-        // 4 sky, 5 armour, 6 tracks, 7 barrel.
+        // 4 sky, 5 armour, 6 tracks, 7 barrel, 8 flash, 9 smoke,
+        // 10 opaque bark.
         float materialType = 0.0f;
         // Nonzero selects instanceTransforms[gl_InstanceIndex] in basic.vert
         // instead of model, allowing repeated static meshes to batch.

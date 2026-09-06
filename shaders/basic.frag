@@ -8,6 +8,9 @@ layout(location = 2) in vec2 fragUV;
 layout(location = 3) in vec3 fragWorldPos;
 layout(location = 4) in vec3 fragTangent;
 layout(location = 5) in vec3 fragModelPos;
+layout(location = 6) in vec3 fragPrevWorldPos;
+layout(location = 7) in vec3 fragRayWorldPos;
+layout(location = 8) in vec3 fragRayNormal;
 
 // Must match DynamicLight.h's kMaxDynamicLights -- GLSL can't share that
 // constant with the C++ side, so the array size here is a plain literal.
@@ -20,6 +23,7 @@ layout(set = 0, binding = 0) uniform FrameUBO {
     vec4 lightDir;   // direction the light travels, xyz
     vec4 cameraPos;
     vec4 prevCameraPos;
+    vec4 windTime;
     // Muzzle-flash/explosion point lights -- see DynamicLight.h and
     // Application::drawFrame, which fills these each frame. xyz position,
     // w radius; rgb color, w intensity. A radius/intensity of 0 (the
@@ -92,10 +96,10 @@ layout(location = 1) out vec4 outShadowHistory;
 // path from `origin` toward `direction`, 0.0 if something does.
 // TerminateOnFirstHit since this is a boolean visibility test, not a
 // closest-hit lookup -- any hit at all means occluded.
-float traceShadow(vec3 origin, vec3 direction, float tMax) {
+float traceShadow(vec3 origin, vec3 direction, float tMax, uint mask) {
     rayQueryEXT rayQuery;
     rayQueryInitializeEXT(rayQuery, sceneTLAS, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
-                           0xFF, origin, 0.001, direction, tMax);
+                           mask, origin, 0.001, direction, tMax);
     while (rayQueryProceedEXT(rayQuery)) {}
     return rayQueryGetIntersectionTypeEXT(rayQuery, true) == gl_RayQueryCommittedIntersectionNoneEXT
                ? 1.0
@@ -249,7 +253,11 @@ const int kShadowSamples = 3;
 // overall cost while cleaning up exactly the noisy region.
 const int kShadowEdgeExtraSamples = 5;
 const float kConeAngle = 0.05;
+const float kFoliageConeAngle = 0.16;
+const float kFoliageTransmission = 0.4;
 
+// Match AccelerationStructure::Instance masks. Solid occluders keep their
+// narrow sun cone. Foliage has a separate, wider cone and partial transmission.
 float traceSoftShadow(vec3 origin, vec3 lightDir, float tMax, float noiseSeed,
                       int sampleCount, int edgeExtraSamples) {
     vec3 t, b;
@@ -257,27 +265,40 @@ float traceSoftShadow(vec3 origin, vec3 lightDir, float tMax, float noiseSeed,
 
     float sum = 0.0;
     for (int i = 0; i < sampleCount; ++i) {
-        float u1 = fract(noiseSeed + float(i) * 0.6180339887);   // golden-ratio jitter
-        float u2 = fract(noiseSeed * 1.618 + float(i) * 0.3819660113);
-        float angle = u1 * 6.2831853;
-        float radius = kConeAngle * sqrt(u2);
-        vec3 jitteredDir = normalize(lightDir + radius * (cos(angle) * t + sin(angle) * b));
-        sum += traceShadow(origin, jitteredDir, tMax);
-    }
-
-    float coarseAvg = sum / float(sampleCount);
-    if (coarseAvg < 0.001 || coarseAvg > 0.999) return coarseAvg;
-
-    int totalSamples = sampleCount + edgeExtraSamples;
-    for (int i = sampleCount; i < totalSamples; ++i) {
         float u1 = fract(noiseSeed + float(i) * 0.6180339887);
         float u2 = fract(noiseSeed * 1.618 + float(i) * 0.3819660113);
         float angle = u1 * 6.2831853;
         float radius = kConeAngle * sqrt(u2);
-        vec3 jitteredDir = normalize(lightDir + radius * (cos(angle) * t + sin(angle) * b));
-        sum += traceShadow(origin, jitteredDir, tMax);
+        vec3 direction = normalize(lightDir + radius * (cos(angle) * t + sin(angle) * b));
+        sum += traceShadow(origin, direction, tMax, 0x01u);
     }
-    return sum / float(totalSamples);
+    float solidVisibility = sum / float(sampleCount);
+    if (solidVisibility > 0.001 && solidVisibility < 0.999) {
+        int totalSamples = sampleCount + edgeExtraSamples;
+        for (int i = sampleCount; i < totalSamples; ++i) {
+            float u1 = fract(noiseSeed + float(i) * 0.6180339887);
+            float u2 = fract(noiseSeed * 1.618 + float(i) * 0.3819660113);
+            float angle = u1 * 6.2831853;
+            float radius = kConeAngle * sqrt(u2);
+            vec3 direction = normalize(lightDir + radius * (cos(angle) * t + sin(angle) * b));
+            sum += traceShadow(origin, direction, tMax, 0x01u);
+        }
+        solidVisibility = sum / float(totalSamples);
+    }
+    if (solidVisibility < 0.001) return 0.0;
+
+    // Two canopy samples keep the broad penumbra from becoming stippled;
+    // temporal accumulation fills in the remaining coverage. Don't duplicate
+    // these for every solid edge ray.
+    float leafVisibility = 0.0;
+    for (int i = 0; i < 2; ++i) {
+        float leafAngle = fract(noiseSeed + 0.37 + float(i) * 0.5) * 6.2831853;
+        float leafRadius = kFoliageConeAngle * sqrt(fract(noiseSeed * 1.618 + 0.71 + float(i) * 0.5));
+        vec3 leafDir = normalize(lightDir + leafRadius * (cos(leafAngle) * t + sin(leafAngle) * b));
+        leafVisibility += traceShadow(origin, leafDir, tMax, 0x02u);
+    }
+    // Multiplication preserves full shadow from any solid object behind leaves.
+    return solidVisibility * mix(kFoliageTransmission, 1.0, leafVisibility * 0.5);
 }
 
 const int kAOSamples = 4;
@@ -292,7 +313,6 @@ const float kAOStrength = 0.55; // how much a fully-occluded point can darken am
                                  // back up (0.35 read as barely-there); the extra samples above
                                  // keep the per-frame noise-only swing small enough for the
                                  // dead-zone blend below to still tell it apart from a real change
-
 // Cosine-weighted hemisphere sample around `n` -- standard importance
 // sampling for a diffuse (Lambertian) AO/GI estimate, so more samples land
 // near the normal (where they matter most) than near the horizon.
@@ -307,7 +327,7 @@ vec3 cosineSampleHemisphere(vec3 n, float u1, float u2) {
     return normalize(x * t + y * b + z * n);
 }
 
-float traceAO(vec3 origin, vec3 normal, float seedBase, int sampleCount) {
+float traceAO(vec3 origin, vec3 normal, float seedBase, int sampleCount, float radius, float strength) {
     if (sampleCount <= 0) return 1.0;
     float occlusion = 0.0;
     for (int i = 0; i < sampleCount; ++i) {
@@ -316,9 +336,9 @@ float traceAO(vec3 origin, vec3 normal, float seedBase, int sampleCount) {
         float u1 = fract(seedBase + float(i) * 0.7548776662);
         float u2 = fract(seedBase * 1.3247179572 + float(i) * 0.5698402910);
         vec3 sampleDir = cosineSampleHemisphere(normal, u1, u2);
-        occlusion += 1.0 - traceShadow(origin, sampleDir, kAORadius);
+        occlusion += 1.0 - traceShadow(origin, sampleDir, radius, 0xFFu);
     }
-    return 1.0 - kAOStrength * (occlusion / float(sampleCount));
+    return 1.0 - strength * (occlusion / float(sampleCount));
 }
 
 // The swapchain's attachment format is sRGB (see Swapchain::imageFormat_),
@@ -498,6 +518,23 @@ void main() {
         terrainRockiness = rockiness;
         texColor = mix(grassColor, gravelColor, rockiness);
 
+        // Damp, low-lying ground: distinct from the low+steep gravel switch
+        // above -- flat valley floors keep their grass/gravel texture but
+        // darken and green slightly where they're both low and sheltered
+        // (flat), the same height/noise-jittered-threshold idiom as the
+        // terrain's existing rocky threshold, applied to its own materials.
+        if (currentViewDist < 45.0) {
+            float dampFlatness = 1.0 - smoothstep(0.12, 0.32, steepness);
+            float dampThreshold =
+                -1.7 + (valueNoise2D(fragWorldPos.xz * 0.07 + vec2(203.4, 61.8)) - 0.5) * 1.2;
+            float dampHeightBias =
+                1.0 - smoothstep(dampThreshold - 0.4, dampThreshold + 1.0, fragWorldPos.y);
+            float dampPattern = valueNoise2D(fragWorldPos.xz * 1.6 + vec2(12.9, 88.4));
+            float damp = dampFlatness * dampHeightBias * smoothstep(0.3, 0.7, dampPattern) * 0.35
+                       * (1.0 - smoothstep(30.0, 45.0, currentViewDist));
+            texColor = mix(texColor, texColor * vec3(0.75, 0.88, 0.72), damp);
+        }
+
         const float kTerrainBumpTexelStep = 1.0 / 512.0;  // matches kTerrainTextureRes in Application.cpp
         vec3 luminanceWeights = vec3(0.299, 0.587, 0.114);
         // Follow the material visible at this point. Previously every pixel,
@@ -553,8 +590,22 @@ void main() {
         }
     }
     bool tankMaterial = pc.materialType > 4.5 && pc.materialType < 7.5;
-    // Tank colour channels carry feature-edge distances baked at load time.
+    bool rockMaterial = pc.materialType > 2.5 && pc.materialType < 3.5;
+    bool barkMaterial = pc.materialType > 9.5 && pc.materialType < 10.5;
+    // Only tank colour channels carry baked edge distances. Natural stone
+    // retains its authored tint, independently of geometric feature masks.
     vec3 albedo = tankMaterial ? texColor * 0.95 : fragColor * texColor;
+    if (((pc.materialType > 1.5 && pc.materialType < 2.5) || barkMaterial) && currentViewDist < 45.0) {
+        // Bark/leaf/shrub meshes are all authored with their ground contact
+        // point at local y=0 (see Mesh::shrub/buildTreeBranch's comments),
+        // so the raw model-space height doubles as "how close to the
+        // ground" -- same idiom as the tank's own tankDust term below
+        // (fragModelPos.y), just without a per-instance bounds push
+        // constant like the tank's tankSurface to normalize against.
+        float groundDirt = (1.0 - smoothstep(0.05, 0.55, fragModelPos.y)) * 0.35
+                         * (1.0 - smoothstep(30.0, 45.0, currentViewDist));
+        albedo = mix(albedo, albedo * vec3(0.62, 0.58, 0.48), groundDirt);
+    }
     float tankWear = 0.0;
     float tankDust = 0.0;
     float tankSoot = 0.0;
@@ -640,7 +691,8 @@ void main() {
     // over time (see the comment on cameraPos.w in Application::drawFrame).
     float noiseSeed =
         fract(interleavedGradientNoise(gl_FragCoord.xy) + frame.cameraPos.w * 0.6180339887);
-    vec3 rayOrigin = fragWorldPos + normal * kShadowBias;
+    vec3 rayNormal = normalize(fragRayNormal);
+    vec3 rayOrigin = fragRayWorldPos + rayNormal * kShadowBias;
     // Spend rays where their detail is resolvable. Temporal accumulation
     // converges the reduced medium/far samples over successive frames, while
     // the near gameplay area keeps the original quality. AO's 0.35-unit
@@ -656,13 +708,13 @@ void main() {
                                       shadowSamples, shadowEdgeSamples);
     // A different derived seed so AO's samples aren't identical to shadow's.
     float aoSeed = fract(noiseSeed * 2.718281828 + 0.31415926);
-    float rawAO = traceAO(rayOrigin, normal, aoSeed, aoSamples);
+    float rawAO = traceAO(rayOrigin, rayNormal, aoSeed, aoSamples, kAORadius, kAOStrength);
 
     // Temporal accumulation: blend this frame's noisy few-sample estimates
     // with history reprojected from last frame, so both terms converge
     // toward a stable, much-higher-effective-sample-count result over a
     // few frames instead of showing raw per-frame noise.
-    vec4 prevClip = frame.prevViewProj * vec4(fragWorldPos, 1.0);
+    vec4 prevClip = frame.prevViewProj * vec4(fragPrevWorldPos, 1.0);
     float shadowFactor = rawShadow;
     float aoFactor = rawAO;
     float shadowDisagreementHistory = 0.0;
@@ -686,7 +738,7 @@ void main() {
             // hidden underneath it), so the stored value belongs to that
             // other surface and must not be blended in here. Shared by both
             // shadow and AO since they're read from the same pixel.
-            float expectedPrevDist = length(frame.prevCameraPos.xyz - fragWorldPos);
+            float expectedPrevDist = length(frame.prevCameraPos.xyz - fragPrevWorldPos);
             float distDiff = abs(historySample.z - expectedPrevDist);
             float tolerance = max(0.05 * expectedPrevDist, 0.15);
             if (distDiff < tolerance) {
@@ -807,10 +859,10 @@ void main() {
         vec2 trackBump = vec2(heightU - heightCenter, heightV - heightCenter) * pc.bumpStrength;
         litNormal = normalize(normal - tangent * trackBump.x - bitangent * trackBump.y);
     }
-    // Opaque foliage blobs and rocks still need fine surface relief. Build a
+    // Opaque foliage blobs, bark and rocks still need fine surface relief. Build a
     // derivative tangent frame from their real UV mapping, then treat albedo
     // luminance as a compact height channel. Rock is intentionally stronger.
-    if (pc.materialType > 1.5 && pc.materialType < 3.5) {
+    if ((pc.materialType > 1.5 && pc.materialType < 3.5) || barkMaterial) {
         vec3 dpdx = dFdx(fragWorldPos), dpdy = dFdy(fragWorldPos);
         vec2 duvdx = dFdx(sampleUV), duvdy = dFdy(sampleUV);
         float det = duvdx.x * duvdy.y - duvdx.y * duvdy.x;
@@ -822,7 +874,7 @@ void main() {
             float h = dot(texColor, lw);
             float hu = dot(texture(materialTexHighA, sampleUV + vec2(texel.x, 0.0)).rgb, lw);
             float hv = dot(texture(materialTexHighA, sampleUV + vec2(0.0, texel.y)).rgb, lw);
-            float strength = pc.materialType > 2.5 ? 7.0 : 2.5;
+            float strength = rockMaterial ? 7.0 : 2.5;
             litNormal = normalize(litNormal - tangent * (hu - h) * strength -
                                   bitangent * (hv - h) * strength);
         }
@@ -899,6 +951,7 @@ void main() {
     // Stone has a broad, faint mineral response; foliage only a tiny waxy
     // sheen. Both remain much rougher than painted metal.
     if (pc.materialType > 2.5 && pc.materialType < 3.5) specularStrength = 0.055;
+    else if (barkMaterial) specularStrength = 0.01;
     else if (pc.materialType > 1.5 && pc.materialType < 2.5) specularStrength = 0.025;
 
     // Everything below is gated by specularStrength (0 for terrain/other

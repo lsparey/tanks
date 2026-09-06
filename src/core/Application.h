@@ -91,6 +91,8 @@ private:
     bool framebufferResized_ = false;
     size_t currentFrame_ = 0;
     double lastFrameTime_ = 0.0;
+    double windTime_ = 0.0;
+    float prevWindTime_ = 0.0f;
     float fpsSmoothed_ = 60.0f;
     FrameProfiler profiler_;
     FrameProfiler::Sample performanceSample_{};

@@ -25,7 +25,7 @@ VkAccelerationStructureInstanceKHR toVkInstance(const AccelerationStructure::Ins
     VkAccelerationStructureInstanceKHR inst{};
     inst.transform = toVkTransform(instance.transform);
     inst.instanceCustomIndex = index;
-    inst.mask = 0xFF;
+    inst.mask = instance.mask;
     inst.instanceShaderBindingTableRecordOffset = 0;
     inst.flags = 0;
     inst.accelerationStructureReference = instance.blasAddress;

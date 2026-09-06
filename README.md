@@ -16,7 +16,10 @@ runtime/build libraries.
   obstacle sliding, and four-point visual suspension.
 - Independent tread marks and contact-, speed-, and slip-driven track dust.
 - Procedural terrain, river water, English temperate grass, trees, shrubs,
-  rocks, cliffs, scree, clouds, and play-area boundary.
+  rocks, cliffs, scree, clouds, and play-area boundary. Pine, ash and oak
+  forms have full summer crowns, overlapping thin leaf sprays, varied density
+  and coherent wind sway. Oaks use separate lobed leaves and a deep branching
+  crown; CPU tree builds run concurrently while the loading screen stays active.
 - Multipart tank model with independent turret and barrel transforms.
 - Editable Challenger-2-inspired mesh with sloped armour, road wheels, hubs,
   track belts and tread shoes; the original model remains selectable.
@@ -226,7 +229,7 @@ Handling is unchanged; individual wheel suspension is not implemented. See the
 [model editing notes](assets/models/README.md) for editable assets, regeneration,
 material groups, and current limitations.
 
-Run the CPU statistics, tank-surface, model-asset, running-gear and weapon-effect regression tests after building (requires
+Run the voxel-surface, CPU statistics, tank-surface, model-asset, running-gear and weapon-effect regression tests after building (requires
 `BUILD_TESTING=ON`, the default):
 
 ```bash

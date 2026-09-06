@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <future>
+#include <thread>
 #include <cstdio>
 #include <iomanip>
 #include <iostream>
@@ -26,6 +28,7 @@
 #include "../scene/CrateTextureGenerator.h"
 #include "../scene/GrassTextureGenerator.h"
 #include "../scene/LeafTextureGenerator.h"
+#include "../scene/TreeGenerator.h"
 #include "../scene/MetalTextureGenerator.h"
 #include "../scene/RockTextureGenerator.h"
 #include "../scene/TrackTextureGenerator.h"
@@ -522,43 +525,68 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
         &sedimentaryCliffCollisionFootprint_));
     sedimentaryCliffGrassMesh_ = std::make_unique<Mesh>(Mesh::sedimentaryCliff(
         *context_, *commands_, glm::vec3(1.0f), 7331, /*topOnly=*/true));
-    // A small pool of distinct fractal branch structures (see
-    // Mesh::treeBark/treeLeaves) -- matching seeds so each variant's bark
-    // and leaves share the same branch skeleton. Tints kept close to white
-    // since bark/leaf color comes from a different BarkTextureGenerator/
-    // LeafTextureGenerator palette per variant instead (barkMaterialSets_/
-    // leafMaterialSets_), so the pool reads as genuinely different trees.
-    constexpr int kTreeVariantCount = 4;
+    // Pine, ash and oak each have two full summer crown variants. Generate
+    // each skeleton once so bark, foliage and every LOD share its layout.
+    constexpr int kTreeVariantCount = 6;
     const glm::vec3 barkTint(0.95f, 0.92f, 0.88f);
     const glm::vec3 leafTint(0.92f, 1.0f, 0.88f);
+    presentLoadingProgress(0.65f);
+    using TreeGeometry = std::array<Mesh::Geometry, 7>;
+    std::array<std::future<TreeGeometry>, kTreeVariantCount> treeJobs;
+    // Bound both CPU contention and completed geometry waiting for upload.
+    // Workers own only CPU arrays: command pools, queues and descriptors
+    // remain on this thread. Futures join workers if loading throws.
+    unsigned cores = std::thread::hardware_concurrency();
+    int workers = static_cast<int>(std::clamp(cores > 1 ? cores - 1 : 1u, 1u, 3u));
+    auto launchTree = [barkTint, leafTint](int i) {
+        return std::async(std::launch::async, [i, barkTint, leafTint] {
+            auto species = static_cast<TreeGenerator::Species>(i / 2);
+            auto tree = TreeGenerator::generate(static_cast<uint32_t>(i) + 1, species,
+                                                i % 2 == 0 ? .88f : 1.0f);
+            TreeGeometry geometry;
+            for (int lod = 0; lod < 3; ++lod) {
+                geometry[lod * 2] = Mesh::treeBarkGeometry(barkTint, tree, lod);
+                geometry[lod * 2 + 1] = Mesh::treeLeafGeometry(leafTint, tree, lod);
+            }
+            geometry[6] = Mesh::treeLeafGeometry(leafTint, tree, 3);
+            return geometry;
+        });
+    };
+    for (int i = 0; i < workers; ++i) treeJobs[i] = launchTree(i);
     for (int i = 0; i < kTreeVariantCount; ++i) {
-        uint32_t seed = static_cast<uint32_t>(i) + 1;
-        treeBarkMeshes_.push_back(
-            std::make_unique<Mesh>(Mesh::treeBark(*context_, *commands_, barkTint, seed)));
-        treeLeafMeshes_.push_back(
-            std::make_unique<Mesh>(Mesh::treeLeaves(*context_, *commands_, leafTint, seed)));
-        mediumTreeBarkMeshes_.push_back(
-            std::make_unique<Mesh>(Mesh::treeBark(*context_, *commands_, barkTint, seed, 1)));
-        mediumTreeLeafMeshes_.push_back(
-            std::make_unique<Mesh>(Mesh::treeLeaves(*context_, *commands_, leafTint, seed, 1)));
-        farTreeBarkMeshes_.push_back(
-            std::make_unique<Mesh>(Mesh::treeBark(*context_, *commands_, barkTint, seed, 2)));
-        farTreeLeafMeshes_.push_back(
-            std::make_unique<Mesh>(Mesh::treeLeaves(*context_, *commands_, leafTint, seed, 2)));
-        treeLeafProxyMeshes_.push_back(
-            std::make_unique<Mesh>(Mesh::treeLeaves(*context_, *commands_, leafTint, seed, 3)));
+        auto species = static_cast<TreeGenerator::Species>(i / 2);
+        while (treeJobs[i].wait_for(std::chrono::milliseconds(20)) != std::future_status::ready)
+            presentLoadingProgress(.65f + i * (.20f / kTreeVariantCount));
+        {
+            auto geometry = treeJobs[i].get();
+            auto upload = [&](int index) {
+                return std::make_unique<Mesh>(*context_, *commands_,
+                                              geometry[index].vertices, geometry[index].indices);
+            };
+            treeBarkMeshes_.push_back(upload(0));
+            treeLeafMeshes_.push_back(upload(1));
+            mediumTreeBarkMeshes_.push_back(upload(2));
+            mediumTreeLeafMeshes_.push_back(upload(3));
+            farTreeBarkMeshes_.push_back(upload(4));
+            farTreeLeafMeshes_.push_back(upload(5));
+            treeLeafProxyMeshes_.push_back(upload(6));
+        }
+        if (i + workers < kTreeVariantCount) treeJobs[i + workers] = launchTree(i + workers);
 
-        std::vector<uint8_t> barkPixels = BarkTextureGenerator::generate(128, static_cast<uint32_t>(i));
+        uint32_t barkPalette = species == TreeGenerator::Species::Ash ? 1u : 0u;
+        std::vector<uint8_t> barkPixels = BarkTextureGenerator::generate(128, i * 4u + barkPalette);
         barkTextures_.push_back(std::make_unique<Texture>(
             Texture::fromPixels(*context_, *commands_, 128, 128, barkPixels, /*repeat=*/true)));
         barkMaterialSets_.push_back(pipeline_->allocateMaterialDescriptorSet(
             *barkTextures_.back(), *barkTextures_.back(), *barkTextures_.back(), *barkTextures_.back()));
 
-        std::vector<uint8_t> leafPixels = LeafTextureGenerator::generate(128, static_cast<uint32_t>(i));
+        uint32_t leafPalette = species == TreeGenerator::Species::Pine ? 2u : 0u;
+        std::vector<uint8_t> leafPixels = LeafTextureGenerator::generate(128, i * 4u + leafPalette);
         leafTextures_.push_back(std::make_unique<Texture>(
             Texture::fromPixels(*context_, *commands_, 128, 128, leafPixels, /*repeat=*/true)));
         leafMaterialSets_.push_back(pipeline_->allocateMaterialDescriptorSet(
             *leafTextures_.back(), *leafTextures_.back(), *leafTextures_.back(), *leafTextures_.back()));
+        presentLoadingProgress(0.65f + static_cast<float>(i + 1) * (0.20f / kTreeVariantCount));
     }
     // Small bushes -- reuse the same leaf textures/material sets as tree
     // foliage (leafMaterialSets_ above) rather than a texture pool of their
@@ -887,6 +915,9 @@ void Application::mainLoop() {
         double now = glfwGetTime();
         float deltaTime = weaponPreview_ ? 1.0f/60.0f : static_cast<float>(now - lastFrameTime_);
         lastFrameTime_ = now;
+        // Bound float phase precision without a discontinuity: every wind
+        // frequency completes an integer number of cycles in 128 seconds.
+        windTime_ = std::fmod(windTime_ + static_cast<double>(deltaTime), 128.0);
         // Exponential moving average rather than the raw instantaneous
         // value, which jitters wildly frame to frame and is unreadable as
         // an on-screen counter.
@@ -1659,7 +1690,8 @@ std::vector<AccelerationStructure::Instance> Application::gatherRayTracingInstan
     instances.push_back({terrain_->blasAddress(), glm::mat4(1.0f)});
     for (const auto& tree : trees_) {
         instances.push_back({treeBarkBLAS_[tree.meshVariant]->deviceAddress(), tree.worldMatrix()});
-        instances.push_back({treeLeafBLAS_[tree.meshVariant]->deviceAddress(), tree.worldMatrix()});
+        instances.push_back({treeLeafBLAS_[tree.meshVariant]->deviceAddress(), tree.worldMatrix(),
+                             AccelerationStructure::Instance::kFoliageMask});
     }
     for (const auto& rock : rocks_) {
         instances.push_back({rockBLAS_[rock.meshVariant]->deviceAddress(), rock.worldMatrix()});
@@ -1999,10 +2031,12 @@ void Application::drawFrame() {
     if (firstFrame_) {
         prevViewProj_ = ubo.proj * ubo.view;
         prevCameraPos_ = camera_.position();
+        prevWindTime_ = static_cast<float>(windTime_);
         firstFrame_ = false;
     }
     ubo.prevViewProj = prevViewProj_;
     ubo.prevCameraPos = glm::vec4(prevCameraPos_, 0.0f);
+    ubo.windTime = glm::vec4(static_cast<float>(windTime_), prevWindTime_, 0.0f, 0.0f);
     ubo.lightDir = glm::vec4(glm::normalize(glm::vec3(-0.45f, -0.55f, -0.8f)), 0.0f);
     // cameraPos.w rides along as a per-frame varying seed for the shadow
     // jitter in basic.frag -- without it, the jitter is a pure function of
@@ -2056,8 +2090,11 @@ void Application::drawFrame() {
         float projectedRadius =
             projectedRadiusPixels(ubo.view, ubo.proj, viewportHeight, center, radius);
         tree.lod = selectLodWithHysteresis(tree.lod, projectedRadius,
-                                           /*nearThreshold=*/60.0f,
-                                           /*farThreshold=*/32.0f);
+                                           // Fine leaf voxels are sub-pixel on
+                                           // smaller crowns; preserve coverage
+                                           // with the shared coarser leaf LODs.
+                                           /*nearThreshold=*/120.0f,
+                                           /*farThreshold=*/60.0f);
         size_t group = static_cast<size_t>(tree.lod) * treeVariantCount + tree.meshVariant;
         treeGroups[group].push_back(tree.worldMatrix());
     }
@@ -2119,6 +2156,7 @@ void Application::drawFrame() {
     performanceSample_.ms[FrameProfiler::Visibility] = FrameProfiler::elapsedMs(phaseStart);
     prevViewProj_ = ubo.proj * ubo.view;
     prevCameraPos_ = camera_.position();
+    prevWindTime_ = ubo.windTime.x;
     ++frameCounter_;
 
     // See ScreenshotRequest's comment: read straight from GPU memory later
@@ -2453,6 +2491,9 @@ void Application::drawFrame() {
                                  1, 1, &barkMaterialSets_[variant], 0, nullptr);
         Pipeline::PushConstants treePc{};
         treePc.isInstanced = 1.0f;
+        // Shares the tree deformation, but wood stays opaque and does not
+        // receive thin-leaf transmission or foliage colour tinting.
+        treePc.materialType = 10.0f;
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(treePc), &treePc);

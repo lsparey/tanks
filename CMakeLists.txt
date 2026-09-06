@@ -10,6 +10,7 @@ find_package(glfw3 CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
 find_package(assimp CONFIG REQUIRED)
 find_package(Stb REQUIRED)
+find_package(Threads REQUIRED)
 
 add_executable(tanks
     src/main.cpp
@@ -19,6 +20,7 @@ add_executable(tanks
     src/render/CommandContext.cpp
     src/render/Buffer.cpp
     src/render/Mesh.cpp
+    src/render/VoxelSurface.cpp
     src/render/Pipeline.cpp
     src/render/HudRenderer.cpp
     src/render/Texture.cpp
@@ -39,6 +41,7 @@ add_executable(tanks
     src/scene/BoundaryTextureGenerator.cpp
     src/scene/CloudTextureGenerator.cpp
     src/scene/BarkTextureGenerator.cpp
+    src/scene/TreeGenerator.cpp
     src/scene/LeafTextureGenerator.cpp
     src/scene/CrateTextureGenerator.cpp
     src/scene/CamoTextureGenerator.cpp
@@ -63,6 +66,7 @@ target_link_libraries(tanks PRIVATE
     glfw
     glm::glm
     assimp::assimp
+    Threads::Threads
 )
 
 include(cmake/CompileShaders.cmake)
@@ -70,6 +74,20 @@ compile_shaders(tanks basic.vert basic.frag hud.vert hud.frag)
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(tree_mesh_test tests/TreeMeshTest.cpp src/render/Mesh.cpp
+        src/render/VoxelSurface.cpp src/render/Buffer.cpp src/render/SingleTimeCommands.cpp
+        src/scene/TreeGenerator.cpp)
+    target_include_directories(tree_mesh_test PRIVATE src)
+    target_link_libraries(tree_mesh_test PRIVATE glm::glm Vulkan::Vulkan glfw Threads::Threads)
+    add_test(NAME tree_mesh COMMAND tree_mesh_test)
+    add_executable(tree_generator_test tests/TreeGeneratorTest.cpp src/scene/TreeGenerator.cpp)
+    target_include_directories(tree_generator_test PRIVATE src)
+    target_link_libraries(tree_generator_test PRIVATE glm::glm)
+    add_test(NAME tree_generator COMMAND tree_generator_test)
+    add_executable(voxel_surface_test tests/VoxelSurfaceTest.cpp src/render/VoxelSurface.cpp)
+    target_include_directories(voxel_surface_test PRIVATE src)
+    target_link_libraries(voxel_surface_test PRIVATE glm::glm Vulkan::Vulkan)
+    add_test(NAME voxel_surface COMMAND voxel_surface_test)
     add_executable(frame_profiler_test tests/FrameProfilerTest.cpp)
     target_include_directories(frame_profiler_test PRIVATE src)
     add_test(NAME frame_profiler COMMAND frame_profiler_test)
