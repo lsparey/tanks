@@ -32,7 +32,7 @@ Unchecked items are options rather than a committed roadmap.
 
 ### Performance candidates
 
-- [ ] [Extend performance instrumentation](#extend-performance-instrumentation)
+- [x] [Extend performance instrumentation](#extend-performance-instrumentation)
 - [ ] [Instance decals and short-lived effects](#instance-decals-and-short-lived-effects)
 - [ ] [Remove the cross-frame CPU history wait](#remove-the-cross-frame-cpu-history-wait)
 - [ ] [Refit the ray-tracing TLAS](#refit-the-ray-tracing-tlas)
@@ -257,15 +257,20 @@ foundation:
 
 ### Extend performance instrumentation
 
-Add CPU timings for simulation, visibility grouping, TLAS instance gathering,
-command recording, fence waits, and presentation. Record visible-instance and
-draw-call counts, plus rolling average and worst-frame percentiles. Keep a
-small set of repeatable camera/gameplay scenarios for before-and-after checks.
+CPU timings now cover simulation, visibility/grouping and upload, TLAS instance
+gathering, command recording, submission, both fence waits, acquisition, and
+presentation. A 240-frame rolling window reports mean, p95, p99, worst frame,
+actual draw calls, visible scenery instances, and TLAS instance counts alongside
+the existing asynchronous GPU timings. F3 (or `--profile`) enables window-title
+and terminal reports; F4 resets the sample window. Startup warmup, screenshot
+capture, and resize handling keep special frames out of ordinary measurements.
+The README describes stationary, scenery, and driving/effects checks; exact
+cross-launch replay still needs fixed world seeds and camera scripting.
 
 - Value: identifies whether the next limit is CPU submission, ray queries,
   acceleration-structure work, or ordinary rasterization.
 - Complexity: low.
-- Suggested priority: always measure before selecting a larger optimization.
+- Status: completed. Use these measurements before selecting a larger optimization.
 
 ### Instance decals and short-lived effects
 

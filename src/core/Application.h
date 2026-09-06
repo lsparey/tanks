@@ -7,6 +7,8 @@
 
 #include <vector>
 
+#include "FrameProfiler.h"
+
 #include "../render/AccelerationStructure.h"
 #include "../render/CommandContext.h"
 #include "../render/HistoryBuffer.h"
@@ -54,7 +56,8 @@ public:
         bool exitAfter = true;
     };
 
-    explicit Application(std::optional<ScreenshotRequest> screenshotRequest = std::nullopt);
+    explicit Application(std::optional<ScreenshotRequest> screenshotRequest = std::nullopt,
+                         bool performanceReporting = false);
     ~Application();
 
     Application(const Application&) = delete;
@@ -72,6 +75,7 @@ private:
     void initWindow();
     void mainLoop();
     void drawFrame();
+    void reportPerformance();
 
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
 
@@ -80,6 +84,14 @@ private:
     size_t currentFrame_ = 0;
     double lastFrameTime_ = 0.0;
     float fpsSmoothed_ = 60.0f;
+    FrameProfiler profiler_;
+    FrameProfiler::Sample performanceSample_{};
+    bool performanceReporting_ = false;
+    bool prevPerformanceKeyDown_ = false;
+    bool prevPerformanceResetKeyDown_ = false;
+    bool performanceFrameValid_ = false;
+    uint32_t performanceWarmup_ = 60;
+    double lastPerformanceReport_ = 0.0;
     CameraMode cameraMode_ = CameraMode::HullFollow;
     bool prevCameraToggleKeyDown_ = false;
     bool prevFireDown_ = false;

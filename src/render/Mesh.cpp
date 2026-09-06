@@ -1,4 +1,5 @@
 #include "Mesh.h"
+#include "DrawStatistics.h"
 
 #include <algorithm>
 #include <array>
@@ -276,6 +277,7 @@ void Mesh::bindAndDraw(VkCommandBuffer cmd) const {
     vkCmdBindVertexBuffers(cmd, 0, 1, buffers, offsets);
     vkCmdBindIndexBuffer(cmd, indexBuffer_.handle(), 0, VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexed(cmd, indexCount_, 1, 0, 0, 0);
+    ++DrawStatistics::calls;
 }
 
 void Mesh::bindAndDrawInstanced(VkCommandBuffer cmd, uint32_t instanceCount,
@@ -285,6 +287,7 @@ void Mesh::bindAndDrawInstanced(VkCommandBuffer cmd, uint32_t instanceCount,
     vkCmdBindVertexBuffers(cmd, 0, 1, buffers, offsets);
     vkCmdBindIndexBuffer(cmd, indexBuffer_.handle(), 0, VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexed(cmd, indexCount_, instanceCount, 0, 0, firstInstance);
+    ++DrawStatistics::calls;
 }
 
 Mesh Mesh::cube(VulkanContext& ctx, CommandContext& commands, glm::vec3 color, float size) {

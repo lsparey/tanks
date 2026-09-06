@@ -1,4 +1,5 @@
 #include "HudRenderer.h"
+#include "DrawStatistics.h"
 
 #include <array>
 #include <fstream>
@@ -183,4 +184,5 @@ void HudRenderer::render(VkCommandBuffer cmd) {
     VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(cmd, 0, 1, buffers, offsets);
     vkCmdDraw(cmd, static_cast<uint32_t>(pending_.size()), 1, 0, 0);
+    ++DrawStatistics::calls;
 }

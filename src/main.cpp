@@ -32,7 +32,10 @@ std::optional<Application::ScreenshotRequest> parseScreenshotRequest(int argc, c
 
 int main(int argc, char** argv) {
     try {
-        Application app(parseScreenshotRequest(argc, argv));
+        bool profile = false;
+        for (int i = 1; i < argc; ++i)
+            if (std::strcmp(argv[i], "--profile") == 0) profile = true;
+        Application app(parseScreenshotRequest(argc, argv), profile);
         app.run();
     } catch (const std::exception& e) {
         std::cerr << "Fatal error: " << e.what() << std::endl;

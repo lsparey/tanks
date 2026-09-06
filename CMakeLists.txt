@@ -66,3 +66,10 @@ target_link_libraries(tanks PRIVATE
 
 include(cmake/CompileShaders.cmake)
 compile_shaders(tanks basic.vert basic.frag hud.vert hud.frag)
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(frame_profiler_test tests/FrameProfilerTest.cpp)
+    target_include_directories(frame_profiler_test PRIVATE src)
+    add_test(NAME frame_profiler COMMAND frame_profiler_test)
+endif()

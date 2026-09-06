@@ -149,11 +149,66 @@ the swapchain and dependent render targets are recreated automatically.
 | Mouse | Look around in free-camera mode |
 | Arrow keys | Move horizontally in free-camera mode |
 | `Space` / Left `Ctrl` | Move up / down in free-camera mode |
+| `F3` | Toggle performance summary in the window title and detailed terminal reports |
+| `F4` | Reset performance samples for a new measurement |
 | `F12` | Save a PNG under `screenshots/` |
 | `Esc` | Quit |
 
 The mouse cursor is captured while the application is running. In free-camera
 mode, `Space` both raises the camera and fires because firing remains active.
+
+## Performance measurements
+
+Press `F3`, or start with `./build/tanks --profile`. The window title shows
+average frame time, p99, combined wait/API time, GPU time, and draw calls.
+The terminal prints a detailed report once per second and on exit. To save
+reports, run `./build/tanks --profile | tee /tmp/tanks-performance.log`.
+
+CPU statistics cover the last 240 measured frames: mean, p95, p99, and worst
+frame time, plus simulation, visibility/grouping and instance upload, TLAS
+instance gathering, command recording, and queue submission. The slot fence,
+cross-frame history fence, swapchain acquisition, and presentation calls are
+timed separately. `other` covers remaining loop work such as events and UBO
+updates. These phases partition CPU wall time; they are not CPU utilization.
+Frame timing covers the game loop through presentation, excluding report
+printing and title updates, and does not measure when pixels reach the screen.
+
+GPU stage timings remain asynchronous exponential moving averages, read only
+after an existing fence wait. They describe older submissions and overlap CPU
+work: do not add them to CPU timings. The renderer uses FIFO (vsync), so time
+in acquire/present or a fence can reflect frame pacing as well as GPU work.
+A long wait alone does not establish that ray tracing is the bottleneck.
+
+Counts are averages over the same CPU window. Draw calls are counted at the
+actual Vulkan draw sites, including the HUD; an instanced batch counts once.
+Visible props count unique scenery instances accepted by culling (trees,
+rocks, scree, shrubs, and cliff sections), not their separate material passes
+or every object in the scene. TLAS instances count the ray-query scene.
+
+The first 60 successfully rendered frames are warmup. Screenshot frames and
+swapchain-recreation frames are excluded; resizing clears the window and
+restarts warmup. `F4` clears CPU samples and pending GPU timing results. Use
+the same optimized build, window size, camera, and power settings when
+comparing results; Debug timings are not representative of release speed.
+
+Use these short scenarios, allowing the sample window to fill after `F4`:
+
+1. **Stationary:** leave the tank and hull camera at spawn for an idle baseline.
+2. **Scenery:** park at a dense cluster of trees/rocks and measure a fixed view.
+3. **Driving/effects:** drive a consistent loop to accumulate tread marks and
+   dust, then fire at crates to compare recording, draw counts, and GPU effects.
+
+World placement varies between launches, so repeat views within the same
+session and treat comparisons across launches as approximate. Fixed seeds and
+scripted camera replay remain future work. Capture reference screenshots
+outside each measurement interval.
+
+Run the CPU statistics regression test after building (requires
+`BUILD_TESTING=ON`, the default):
+
+```bash
+ctest --test-dir build --output-on-failure
+```
 
 ## Automated screenshot capture
 

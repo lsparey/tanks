@@ -7,12 +7,14 @@
 #include <iostream>
 #include <limits>
 #include <random>
+#include <sstream>
 #include <string>
 #include <utility>
 
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "../render/Buffer.h"
+#include "../render/DrawStatistics.h"
 #include "../render/ScreenshotWriter.h"
 #include "../render/VulkanCheck.h"
 #include "../scene/BarkTextureGenerator.h"
@@ -266,8 +268,8 @@ VkImageMemoryBarrier2 imageBarrier(VkImage image, VkImageAspectFlags aspect,
 
 }  // namespace
 
-Application::Application(std::optional<ScreenshotRequest> screenshotRequest)
-    : screenshotRequest_(std::move(screenshotRequest)) {
+Application::Application(std::optional<ScreenshotRequest> screenshotRequest, bool performanceReporting)
+    : performanceReporting_(performanceReporting), screenshotRequest_(std::move(screenshotRequest)) {
     initWindow();
     context_ = std::make_unique<VulkanContext>(window_);
 
@@ -686,6 +688,9 @@ void Application::run() { mainLoop(); }
 
 void Application::mainLoop() {
     while (!glfwWindowShouldClose(window_)) {
+        const auto frameStart = FrameProfiler::Clock::now();
+        performanceSample_ = {};
+        performanceFrameValid_ = false;
         glfwPollEvents();
 
         if (glfwGetKey(window_, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
@@ -701,6 +706,26 @@ void Application::mainLoop() {
         if (deltaTime > 0.0f) fpsSmoothed_ = glm::mix(fpsSmoothed_, 1.0f / deltaTime, 0.1f);
 
         input_->update();
+
+        bool performanceKeyDown = glfwGetKey(window_, GLFW_KEY_F3) == GLFW_PRESS;
+        if (performanceKeyDown && !prevPerformanceKeyDown_) {
+            performanceReporting_ = !performanceReporting_;
+            lastPerformanceReport_ = 0.0;
+            if (!performanceReporting_) glfwSetWindowTitle(window_, "tanks");
+            std::cout << "Performance reporting " << (performanceReporting_ ? "on" : "off")
+                      << " (F3 toggles, F4 resets samples)\n";
+        }
+        prevPerformanceKeyDown_ = performanceKeyDown;
+        bool resetKeyDown = glfwGetKey(window_, GLFW_KEY_F4) == GLFW_PRESS;
+        if (resetKeyDown && !prevPerformanceResetKeyDown_) {
+            profiler_.clear();
+            gpuTimingInitialized_ = false;
+            // Discard asynchronous results belonging to the previous window.
+            gpuTimestampsReady_.fill(false);
+            lastPerformanceReport_ = 0.0;
+            std::cout << "Performance sample window reset\n";
+        }
+        prevPerformanceResetKeyDown_ = resetKeyDown;
 
         bool cameraToggleDown = glfwGetKey(window_, GLFW_KEY_C) == GLFW_PRESS;
         if (cameraToggleDown && !prevCameraToggleKeyDown_) {
@@ -723,6 +748,7 @@ void Application::mainLoop() {
         }
         prevScreenshotKeyDown_ = screenshotKeyDown;
 
+        const auto simulationStart = FrameProfiler::Clock::now();
         tank_->update(*input_, deltaTime, *terrain_, obstacles_, boundaryHalfExtent_);
         updateTrackMarks(deltaTime);
 
@@ -748,8 +774,68 @@ void Application::mainLoop() {
                 break;
         }
 
+        performanceSample_.ms[FrameProfiler::Simulation] = FrameProfiler::elapsedMs(simulationStart);
         drawFrame();
+        performanceSample_.ms[FrameProfiler::Frame] = FrameProfiler::elapsedMs(frameStart);
+        if (performanceFrameValid_) {
+            if (performanceWarmup_) --performanceWarmup_;
+            else profiler_.add(performanceSample_);
+        }
+        // Reports and title updates are deliberately outside the measured
+        // frame. This is CPU loop wall time, not display/presentation latency.
+        if (performanceReporting_ && !glfwWindowShouldClose(window_) &&
+            glfwGetTime() - lastPerformanceReport_ >= 1.0) {
+            reportPerformance();
+            lastPerformanceReport_ = glfwGetTime();
+        }
     }
+    if (performanceReporting_) reportPerformance();
+}
+
+void Application::reportPerformance() {
+    const auto stats = profiler_.summary();
+    if (!stats.count) {
+        glfwSetWindowTitle(window_, "tanks | performance warming up (60 frames)");
+        return;
+    }
+    const auto& ms = stats.mean.ms;
+    double waits = ms[FrameProfiler::FrameFence] + ms[FrameProfiler::HistoryFence] +
+                   ms[FrameProfiler::Acquire] + ms[FrameProfiler::Present];
+    double measured = 0.0;
+    for (size_t phase = 1; phase < FrameProfiler::PhaseCount; ++phase) measured += ms[phase];
+    std::ostringstream title;
+    title << std::fixed << std::setprecision(1) << "tanks | " << 1000.0 / ms[FrameProfiler::Frame]
+          << " FPS | avg " << ms[FrameProfiler::Frame] << " ms | p99 " << stats.p99
+          << " | wait " << waits;
+    if (gpuTimingInitialized_) title << " | GPU " << gpuTotalMs_;
+    title << " | draws " << std::setprecision(0) << stats.mean.draws;
+    glfwSetWindowTitle(window_, title.str().c_str());
+
+    std::ostringstream report;
+    report << std::fixed << std::setprecision(2)
+           << "PERF (last " << stats.count << " frames, " << swapchain_->extent().width << 'x'
+           << swapchain_->extent().height << ") frame ms: avg " << ms[FrameProfiler::Frame]
+           << ", p95 " << stats.p95 << ", p99 " << stats.p99 << ", worst " << stats.worst
+           << "\n  CPU ms: simulation " << ms[FrameProfiler::Simulation]
+           << ", visibility/upload " << ms[FrameProfiler::Visibility]
+           << ", TLAS gather " << ms[FrameProfiler::TlasGather]
+           << ", recording " << ms[FrameProfiler::Recording]
+           << ", submit " << ms[FrameProfiler::Submit]
+           << ", other " << std::max(0.0, ms[FrameProfiler::Frame] - measured)
+           << "\n  wait/API ms: slot fence " << ms[FrameProfiler::FrameFence]
+           << ", history fence " << ms[FrameProfiler::HistoryFence]
+           << ", acquire " << ms[FrameProfiler::Acquire]
+           << ", present " << ms[FrameProfiler::Present];
+    if (gpuTimingInitialized_) {
+        report << "\n  GPU ms (async EMA): total " << gpuTotalMs_ << ", TLAS " << gpuTlasMs_
+               << ", terrain/sky " << gpuTerrainMs_ << ", foreground " << gpuForegroundMs_
+               << ", scenery " << gpuSceneryMs_ << ", effects " << gpuEffectsMs_
+               << ", HUD/end " << gpuHudMs_;
+    }
+    report << "\n  counts (window mean): draws " << stats.mean.draws
+           << ", visible props " << stats.mean.visibleProps
+           << ", TLAS instances " << stats.mean.tlasInstances << '\n';
+    std::cout << report.str() << std::flush;
 }
 
 void Application::spawnBoxes() {
@@ -1564,7 +1650,9 @@ void Application::updateProjectilesAndCollisions(float deltaTime) {
 void Application::drawFrame() {
     auto& frame = commands_->frame(currentFrame_);
 
+    auto phaseStart = FrameProfiler::Clock::now();
     VK_CHECK(vkWaitForFences(context_->device(), 1, &frame.inFlight, VK_TRUE, UINT64_MAX));
+    performanceSample_.ms[FrameProfiler::FrameFence] = FrameProfiler::elapsedMs(phaseStart);
 
     // Also wait on the OTHER frame-in-flight slot's fence before touching
     // the history buffer. This slot's write target (historyBuffer_->image
@@ -1575,11 +1663,13 @@ void Application::drawFrame() {
     // this same image) has completed yet. Without this, that read can race
     // with this frame's write to the same image -- a real write-after-read
     // hazard that showed up as unstable, noisy shadow accumulation even
-    // while the camera/tank were both stationary. Two frames-in-flight
-    // means this costs little (it's rarely still pending by the time we get
-    // here) while making the history ping-pong actually safe.
+    // while the camera/tank were both stationary. This serializes CPU scene
+    // preparation behind the preceding submission; the history-fence timing
+    // measures that cost before a future GPU-side synchronization change.
     auto& otherFrame = commands_->frame(1 - currentFrame_);
+    phaseStart = FrameProfiler::Clock::now();
     VK_CHECK(vkWaitForFences(context_->device(), 1, &otherFrame.inFlight, VK_TRUE, UINT64_MAX));
+    performanceSample_.ms[FrameProfiler::HistoryFence] = FrameProfiler::elapsedMs(phaseStart);
 
     // This slot's fence guarantees its previous timestamps are complete.
     // Read them before resetting/reusing the same query range below; no GPU
@@ -1612,22 +1702,20 @@ void Application::drawFrame() {
             gpuTotalMs_ = glm::mix(gpuTotalMs_, totalMs, blend);
             gpuTimingInitialized_ = true;
 
-            if (frameCounter_ > 0 && frameCounter_ % 120 == 0) {
-                std::cout << std::fixed << std::setprecision(2)
-                          << "GPU: " << gpuTotalMs_ << " ms total (TLAS " << gpuTlasMs_
-                          << ", terrain " << gpuTerrainMs_ << ", foreground " << gpuForegroundMs_
-                          << ", scenery " << gpuSceneryMs_ << ", effects " << gpuEffectsMs_
-                          << ", HUD " << gpuHudMs_ << " ms)"
-                          << std::defaultfloat << std::endl;
-            }
         }
     }
 
     uint32_t imageIndex = 0;
+    phaseStart = FrameProfiler::Clock::now();
     VkResult acquireResult =
         vkAcquireNextImageKHR(context_->device(), swapchain_->handle(), UINT64_MAX,
                                frame.imageAvailable, VK_NULL_HANDLE, &imageIndex);
+    performanceSample_.ms[FrameProfiler::Acquire] = FrameProfiler::elapsedMs(phaseStart);
     if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
+        profiler_.clear();
+        performanceWarmup_ = 60;
+        gpuTimingInitialized_ = false;
+        gpuTimestampsReady_.fill(false);
         recreateSwapchainDependentResources();
         return;
     }
@@ -1686,6 +1774,7 @@ void Application::drawFrame() {
     // still one instanced draw; adding LODs does not regress to per-object
     // draw calls. Hysteresis stored on each instance prevents threshold
     // flicker while the camera or tank moves slowly.
+    phaseStart = FrameProfiler::Clock::now();
     glm::mat4 viewProjection = ubo.proj * ubo.view;
     constexpr size_t kLodCount = 3;
     const size_t treeVariantCount = treeBarkMeshes_.size();
@@ -1762,6 +1851,8 @@ void Application::drawFrame() {
     std::vector<InstanceBatch> shrubBatches = appendGroups(shrubGroups);
     std::vector<InstanceBatch> cliffBatches = appendGroups(cliffGroups);
     pipeline_->updateInstanceTransforms(rasterInstanceTransforms);
+    performanceSample_.visibleProps = static_cast<double>(rasterInstanceTransforms.size());
+    performanceSample_.ms[FrameProfiler::Visibility] = FrameProfiler::elapsedMs(phaseStart);
     prevViewProj_ = ubo.proj * ubo.view;
     prevCameraPos_ = camera_.position();
     ++frameCounter_;
@@ -1772,6 +1863,13 @@ void Application::drawFrame() {
     // relying on any OS-level screenshot tool.
     bool captureScreenshot = screenshotRequest_.has_value() && frameCounter_ == screenshotRequest_->atFrame;
     std::unique_ptr<Buffer> screenshotBuffer;
+
+    phaseStart = FrameProfiler::Clock::now();
+    auto rayInstances = gatherRayTracingInstances();
+    performanceSample_.tlasInstances = static_cast<double>(rayInstances.size());
+    performanceSample_.ms[FrameProfiler::TlasGather] = FrameProfiler::elapsedMs(phaseStart);
+    phaseStart = FrameProfiler::Clock::now();
+    DrawStatistics::calls = 0;
 
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1786,7 +1884,7 @@ void Application::drawFrame() {
     // (acceleration structure builds can't happen inside a dynamic
     // rendering scope, so this must be before vkCmdBeginRendering). Read by
     // basic.frag via ray query for shadow tracing.
-    sceneAS_->rebuild(frame.commandBuffer, currentFrame_, gatherRayTracingInstances());
+    sceneAS_->rebuild(frame.commandBuffer, currentFrame_, rayInstances);
     vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                          gpuTimestampPool_, timestampBase + 1);
 
@@ -2394,6 +2492,8 @@ void Application::drawFrame() {
                          gpuTimestampPool_, timestampBase + 7);
 
     VK_CHECK(vkEndCommandBuffer(frame.commandBuffer));
+    performanceSample_.ms[FrameProfiler::Recording] = FrameProfiler::elapsedMs(phaseStart);
+    performanceSample_.draws = DrawStatistics::calls;
 
     VkSemaphoreSubmitInfo waitSemaphoreInfo{};
     waitSemaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
@@ -2420,8 +2520,10 @@ void Application::drawFrame() {
     submitInfo.signalSemaphoreInfoCount = 1;
     submitInfo.pSignalSemaphoreInfos = &signalSemaphoreInfo;
 
+    phaseStart = FrameProfiler::Clock::now();
     VK_CHECK(vkQueueSubmit2(context_->graphicsQueue(), 1, &submitInfo, frame.inFlight));
-    gpuTimestampsReady_[currentFrame_] = true;
+    performanceSample_.ms[FrameProfiler::Submit] = FrameProfiler::elapsedMs(phaseStart);
+    gpuTimestampsReady_[currentFrame_] = !captureScreenshot && performanceWarmup_ == 0;
 
     if (captureScreenshot) {
         // Screenshots are rare, explicit (CLI- or key-triggered) events, not
@@ -2451,9 +2553,17 @@ void Application::drawFrame() {
     presentInfo.pSwapchains = swapchains;
     presentInfo.pImageIndices = &imageIndex;
 
+    phaseStart = FrameProfiler::Clock::now();
     VkResult presentResult = vkQueuePresentKHR(context_->presentQueue(), &presentInfo);
+    performanceSample_.ms[FrameProfiler::Present] = FrameProfiler::elapsedMs(phaseStart);
+    performanceFrameValid_ = !captureScreenshot;
     if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR ||
         framebufferResized_) {
+        performanceFrameValid_ = false;
+        profiler_.clear();
+        performanceWarmup_ = 60;
+        gpuTimingInitialized_ = false;
+        gpuTimestampsReady_.fill(false);
         framebufferResized_ = false;
         recreateSwapchainDependentResources();
     } else if (presentResult != VK_SUCCESS) {
