@@ -42,7 +42,9 @@ namespace {
 
 constexpr uint32_t kWindowWidth = 1280;
 constexpr uint32_t kWindowHeight = 720;
-constexpr uint32_t kGpuTimestampsPerFrame = 8;
+// Slots 0–7 retain the broad frame phases. Slots 8–10 subdivide scenery
+// chronologically as 3 -> 8 (bark) -> 9 (depth) -> 10 (leaves) -> 4 (props).
+constexpr uint32_t kGpuTimestampsPerFrame = 11;
 constexpr float kAimProjectionDistance = 25.0f;
 
 std::array<glm::vec4,6> frustumPlanes(const glm::mat4& viewProjection) {
@@ -1149,7 +1151,10 @@ void Application::reportPerformance() {
         report << "\n  GPU ms (async EMA): total " << gpuTotalMs_ << ", TLAS " << gpuTlasMs_
                << ", terrain/sky " << gpuTerrainMs_ << ", foreground " << gpuForegroundMs_
                << ", scenery " << gpuSceneryMs_ << ", effects " << gpuEffectsMs_
-               << ", HUD/end " << gpuHudMs_;
+               << ", HUD/end " << gpuHudMs_
+               << "\n  scenery GPU ms (async EMA, subsets): bark " << gpuTreeBarkMs_
+               << ", foliage depth " << gpuFoliageDepthMs_ << ", foliage lighting " << gpuFoliageLightingMs_
+               << ", other props " << gpuOtherSceneryMs_;
     }
     report << "\n  counts (window mean): draws " << stats.mean.draws
            << ", visible props " << stats.mean.visibleProps
@@ -2124,6 +2129,10 @@ void Application::drawFrame() {
             gpuTerrainMs_ = glm::mix(gpuTerrainMs_, terrainMs, blend);
             gpuForegroundMs_ = glm::mix(gpuForegroundMs_, foregroundMs, blend);
             gpuSceneryMs_ = glm::mix(gpuSceneryMs_, sceneryMs, blend);
+            gpuTreeBarkMs_ = glm::mix(gpuTreeBarkMs_, elapsedMs(3, 8), blend);
+            gpuFoliageDepthMs_ = glm::mix(gpuFoliageDepthMs_, elapsedMs(8, 9), blend);
+            gpuFoliageLightingMs_ = glm::mix(gpuFoliageLightingMs_, elapsedMs(9, 10), blend);
+            gpuOtherSceneryMs_ = glm::mix(gpuOtherSceneryMs_, elapsedMs(10, 4), blend);
             gpuEffectsMs_ = glm::mix(gpuEffectsMs_, effectsMs, blend);
             gpuHudMs_ = glm::mix(gpuHudMs_, hudMs, blend);
             gpuTotalMs_ = glm::mix(gpuTotalMs_, totalMs, blend);
@@ -2686,8 +2695,11 @@ void Application::drawFrame() {
         barkMesh->bindAndDrawInstanced(frame.commandBuffer, batch.count, batch.first);
     }
 
+    vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                         gpuTimestampPool_, timestampBase + 8);
     // A cheap masked depth pass resolves foliage coverage before ray queries.
     // The lighting pass uses equal-depth testing and can reject hidden leaves early.
+    uint32_t foliageTimestamp = 9;
     for (VkPipeline foliagePass : {pipeline_->foliageDepthHandle(), pipeline_->foliageHandle()}) {
         vkCmdBindPipeline(frame.commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,foliagePass);
         for (size_t variant=0;variant<treeVariantCount;++variant) {
@@ -2712,6 +2724,8 @@ void Application::drawFrame() {
                     treeFoliageMeshes_[variant]->bindAndDrawRange(frame.commandBuffer,foliageDraws[batch.first+i]);
             }
         }
+        vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                             gpuTimestampPool_, timestampBase + foliageTimestamp++);
     }
     vkCmdBindPipeline(frame.commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline_->handle());
 

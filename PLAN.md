@@ -55,9 +55,9 @@ planned in this order:
   ground sampling to mesh triangles; add fixtures and 16 fixed regression seeds.
 - [x] Add a standalone terrain probe, neutral exports and a measured CPU
   baseline ([results and commands](docs/TERRAIN_BASELINE.md)).
-- [ ] Finish Stage 0: target-hardware Release runtime/startup, GPU-memory
-  headroom/cap and in-engine visual/gameplay checks. These require a working GPU;
-  the CPU baseline does not satisfy the full stage gate.
+- [ ] Finish Stage 0: expand target-hardware Release measurements to driving
+  and sustained effects, establish/enforce a memory cap and complete in-engine
+  gameplay checks. The initial stationary Release baseline is recorded below.
 - [x] Generate broad landforms, material resistance and soil with explicit
   drainage boundaries in the selectable rolling-valley CPU prototype
   ([preview, tests and timings](docs/TERRAIN_MACRO.md)). No game default change;
@@ -65,9 +65,9 @@ planned in this order:
 - [x] Prototype hydraulic erosion, conservative sediment transport/deposition,
   limited soil relaxation and deterministic 1–4-worker CPU passes
   ([results and limitations](docs/TERRAIN_EROSION_PROTOTYPE.md)).
-- [ ] Finish Stage 2 quality/performance gates: integrated cold-start cost,
-  backend decision and further grid-bias/convergence checks. The measured
-  24-second simulation takes about 3 seconds on four CPU workers by itself.
+- [ ] Finish Stage 2 quality/performance gates: broaden startup coverage and
+  complete grid-bias/convergence checks. Initial integrated Release runs fit the
+  startup target with the current four-worker CPU backend.
 - [x] Settle remaining sediment, account for temporary water removal, and
   analyse final drainage, basin outlets and potential runoff over the full apron
   ([CPU diagnostics and checks](docs/TERRAIN_DRAINAGE.md)).
@@ -104,6 +104,9 @@ planned in this order:
   ([runtime integration](docs/TERRAIN_RUNTIME.md)).
 - [x] Make valley terrain the in-game default after the landscape review, with
   `--terrain legacy` retained for comparison during further refinement.
+- [x] Measure Release startup/frame/memory costs against legacy across three
+  seeds, add a repeatable runtime benchmark and isolate scenery GPU phases
+  ([results and remaining validation](docs/TERRAIN_RUNTIME_PERFORMANCE.md)).
 - [ ] Validate actual driving and complete Stage 3 water/playability acceptance.
 - [ ] Rebuild ground materials and non-tree scenery; place existing trees.
 - [ ] Integrate and validate loading, gameplay, dynamic lighting, performance

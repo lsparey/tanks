@@ -228,6 +228,12 @@ work: do not add them to CPU timings. The renderer uses FIFO (vsync), so time
 in acquire/present or a fence can reflect frame pacing as well as GPU work.
 A long wait alone does not establish that ray tracing is the bottleneck.
 
+The scenery breakdown separates tree bark, foliage depth, foliage lighting and
+other props. These are subsets of the reported scenery GPU time, not extra work
+to add to the total. For repeatable Release comparisons, use
+[`tools/benchmark_runtime.py`](tools/benchmark_runtime.py); see the
+[recorded terrain performance results](docs/TERRAIN_RUNTIME_PERFORMANCE.md).
+
 Counts are averages over the same CPU window. Draw calls are counted at the
 actual Vulkan draw sites, including the HUD; an instanced batch counts once.
 A multi-draw foliage batch also counts once per pass, even though it contains

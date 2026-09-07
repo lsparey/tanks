@@ -129,6 +129,10 @@ private:
     float gpuTerrainMs_ = 0.0f;
     float gpuForegroundMs_ = 0.0f;
     float gpuSceneryMs_ = 0.0f;
+    float gpuTreeBarkMs_ = 0.0f;
+    float gpuFoliageDepthMs_ = 0.0f;
+    float gpuFoliageLightingMs_ = 0.0f;
+    float gpuOtherSceneryMs_ = 0.0f;
     float gpuEffectsMs_ = 0.0f;
     float gpuHudMs_ = 0.0f;
     float gpuTotalMs_ = 0.0f;
