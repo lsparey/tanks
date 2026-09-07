@@ -15,16 +15,6 @@ namespace TreeGenerator { struct Tree; }
 // loaded tank model) share this one representation.
 class Mesh {
 public:
-    // Conservative circular footprint for one solid part of a procedural
-    // mesh. Cliff generation exposes its individual ground-level plates so
-    // gameplay collision can match the visible broken outline instead of
-    // approximating the whole section with one broad invisible barrier.
-    struct FootprintCircle {
-        glm::vec2 center{0.0f};
-        float radius = 0.0f;
-        float topHeight = 0.0f;
-    };
-
     Mesh(VulkanContext& ctx, CommandContext& commands, const std::vector<Vertex>& vertices,
          const std::vector<uint32_t>& indices, float horizontalInscribedRadius = 0.0f);
 
@@ -98,13 +88,6 @@ public:
     // their coarse triangles remain inside the rendered surface.
     static Mesh rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColor,
                       uint32_t seed, int subdivisions = 3, float radiusScale = 1.0f);
-
-    // A long, low chain of overlapping sedimentary plates with shallow
-    // strata, an uneven top, and fractured ends. Intended to emerge from
-    // hillsides as one extended outcrop rather than isolated stones.
-    static Mesh sedimentaryCliff(VulkanContext& ctx, CommandContext& commands,
-                                 glm::vec3 baseColor, uint32_t seed, bool topOnly = false,
-                                 std::vector<FootprintCircle>* collisionFootprint = nullptr);
 
     // A unit-radius sky sphere, meant to be scaled up and
     // recentered on the camera each frame as a sky backdrop for clouds

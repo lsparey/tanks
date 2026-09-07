@@ -19,8 +19,8 @@ using Flux = std::array<double, 4>;
 bool range(double x, double low, double high) { return std::isfinite(x) && x >= low && x <= high; }
 
 // One bounded team for all passes. Each job owns complete rows; barriers
-// separate neighbour reads from the next mutation. This is probe-only today;
-// game integration must schedule it under the same CPU budget as tree builds.
+// separate neighbour reads from the next mutation. Runtime generation finishes
+// before the tree jobs start, keeping both under the same CPU budget.
 class Rows {
 public:
     Rows(int rows, int workers) : rows_(rows), workers_(workers), barrier_(workers) {
@@ -162,6 +162,10 @@ static Result simulate(MacroTerrain::Fields& fields, const Settings& s, const In
             result.sediment[i] -= settle;
             soil[i] += settle;
             result.deposition[i] += settle;
+            // The old water field is dead after rainfall/losses. Reuse it for
+            // donor concentration until transport finishes; nextWater owns
+            // the new depths. Neighbours then share one division per donor.
+            result.water[i] = remaining > 0 ? result.sediment[i] / remaining : 0;
             rows[z].rain += rain * area[i];
             rows[z].infiltration += infiltration * area[i];
             rows[z].evaporation += evaporation * area[i];
@@ -184,20 +188,27 @@ static Result simulate(MacroTerrain::Fields& fields, const Settings& s, const In
                 }
                 double scale = sum > 0 ? std::min(1.0, available[i] * area[i] / (dt * sum)) : 0;
                 for (double& q : nextFlux[i]) q *= scale;
+                // Old discharges are no longer needed. Cache each donor's
+                // face velocities in that buffer, after applying the limiter.
+                // A shared face has the same width on either side.
+                for (int d = 0; d < 4; ++d) {
+                    double width = dx * ((d < 2 ? z == 0 || z == n - 1 : x == 0 || x == n - 1) ? .5 : 1);
+                    flux[i][d] = available[i] > kDryDepth ? nextFlux[i][d] / (available[i] * width) : 0;
+                }
             }
         });
         executor.run([&](int z) {
             for (int x = 0; x < n; ++x) {
                 size_t i = size_t(z) * n + x;
                 double out = 0, in = 0, sedimentIn = 0;
-                double concentration = available[i] > 0 ? result.sediment[i] / available[i] : 0;
+                double concentration = result.water[i];
                 for (int d = 0; d < 4; ++d) {
                     int j = neighbour(x, z, d);
                     out += nextFlux[i][d];
                     if (j >= 0) {
                         double q = nextFlux[j][kOpposite[d]];
                         in += q;
-                        if (available[j] > 0) sedimentIn += q * (result.sediment[j] / available[j]);
+                        if (available[j] > 0) sedimentIn += q * result.water[j];
                     } else {
                         rows[z].waterExport += nextFlux[i][d] * dt;
                         rows[z].sedimentExport += nextFlux[i][d] * concentration * dt;
@@ -221,11 +232,8 @@ static Result simulate(MacroTerrain::Fields& fields, const Settings& s, const In
                 Flux incomingVelocity{}, outgoingVelocity{};
                 for (int d = 0; d < 4; ++d) {
                     int j = neighbour(x, z, d);
-                    double width = dx * ((d < 2 ? z == 0 || z == n - 1 : x == 0 || x == n - 1) ? .5 : 1);
-                    if (j >= 0 && available[j] > kDryDepth)
-                        incomingVelocity[d] = nextFlux[j][kOpposite[d]] / (available[j] * width);
-                    if (available[i] > kDryDepth)
-                        outgoingVelocity[d] = nextFlux[i][d] / (available[i] * width);
+                    if (j >= 0) incomingVelocity[d] = flux[j][kOpposite[d]];
+                    outgoingVelocity[d] = flux[i][d];
                     rows[z].speed = std::max(rows[z].speed, outgoingVelocity[d]);
                 }
                 // Use the donating wet cross-section for each face velocity.
@@ -271,16 +279,17 @@ static Result simulate(MacroTerrain::Fields& fields, const Settings& s, const In
                 result.erosion[i] += eroded + rockEroded;
                 result.deposition[i] += deposited;
                 result.waterExposure[i] += nextWater[i] * dt;
-                // Reuse the old flux buffer for material deltas; nextFlux is
-                // still the sole source of flow during this entire pass.
-                flux[i][0] = deposited - eroded;
-                flux[i][1] = -rockEroded;
+                // Transport has finished reading concentrations and old
+                // sediment. Reuse those buffers for material deltas, keeping
+                // cached velocities and old ground intact for neighbours.
+                result.water[i] = deposited - eroded;
+                result.sediment[i] = -rockEroded;
             }
         });
         executor.run([&](int z) {
             for (size_t i = size_t(z) * n; i < size_t(z + 1) * n; ++i) {
-                soil[i] += flux[i][0];
-                rock[i] += flux[i][1];
+                soil[i] += result.water[i];
+                rock[i] += result.sediment[i];
             }
         });
         for (const auto& row : rows) {

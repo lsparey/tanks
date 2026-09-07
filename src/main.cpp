@@ -40,6 +40,7 @@ int main(int argc, char** argv) {
         bool animateTracks = true;
         bool weaponPreview = false;
         bool valleyTerrain = true;
+        std::optional<MacroTerrain::Landform> landform;
         uint32_t terrainAttempts = 1;
         for (int i = 1; i < argc; ++i) {
             if (std::strcmp(argv[i], "--profile") == 0) profile = true;
@@ -57,6 +58,9 @@ int main(int argc, char** argv) {
                 if (++i >= argc || (std::strcmp(argv[i], "legacy") != 0 && std::strcmp(argv[i], "drained-valley") != 0))
                     throw std::runtime_error("--terrain requires legacy or drained-valley");
                 valleyTerrain = std::strcmp(argv[i], "drained-valley") == 0;
+            } else if (std::strcmp(argv[i], "--landform") == 0) {
+                if (++i >= argc) throw std::runtime_error("--landform requires a name");
+                landform = MacroTerrain::parseLandform(argv[i]);
             } else if (std::strcmp(argv[i], "--terrain-attempts") == 0) {
                 if (++i >= argc) throw std::runtime_error("--terrain-attempts requires an integer from 1 to 8");
                 const char* end = argv[i] + std::strlen(argv[i]);
@@ -69,18 +73,21 @@ int main(int argc, char** argv) {
                     throw std::runtime_error("--model requires original or refined");
                 originalTankModel = std::strcmp(argv[i], "original") == 0;
             } else if (std::strcmp(argv[i], "--view") == 0) {
-                if (++i >= argc) throw std::runtime_error("--view requires tank, tank-side, tank-front, tank-rear, tank-top, landscape, water, or cliffs");
+                if (++i >= argc) throw std::runtime_error("--view requires tank, tank-side, tank-front, tank-rear, tank-top, landscape, or water");
                 view = argv[i];
                 if (view != "tank" && view != "tank-side" && view != "tank-front" &&
                     view != "tank-rear" && view != "tank-top" &&
-                    view != "landscape" && view != "water" && view != "cliffs")
+                    view != "landscape" && view != "water")
                     throw std::runtime_error("unknown reference view");
             }
         }
         if (!valleyTerrain && terrainAttempts != 1)
             throw std::runtime_error("--terrain-attempts above 1 cannot be used with --terrain legacy");
+        if (!valleyTerrain && landform)
+            throw std::runtime_error("--landform cannot be used with --terrain legacy");
         if (!view.empty() && !seed) seed = 7331;
-        Application app(parseScreenshotRequest(argc, argv), profile, seed, view, originalTankModel, animateTracks, weaponPreview, valleyTerrain, terrainAttempts);
+        Application app(parseScreenshotRequest(argc, argv), profile, seed, view, originalTankModel, animateTracks, weaponPreview, valleyTerrain, terrainAttempts,
+                        landform.value_or(MacroTerrain::Landform::Mixed));
         app.run();
     } catch (const std::exception& e) {
         std::cerr << "Fatal error: " << e.what() << std::endl;

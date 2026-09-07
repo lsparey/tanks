@@ -279,12 +279,12 @@ VkImageMemoryBarrier2 imageBarrier(VkImage image, VkImageAspectFlags aspect,
 Application::Application(std::optional<ScreenshotRequest> screenshotRequest, bool performanceReporting,
                          std::optional<uint32_t> worldSeed, std::string referenceView,
                          bool originalTankModel, bool animateTracks, bool weaponPreview,
-                         bool valleyTerrain, uint32_t terrainAttempts)
+                         bool valleyTerrain, uint32_t terrainAttempts, MacroTerrain::Landform landform)
     : worldSeed_(worldSeed ? *worldSeed : std::random_device{}()),
       referenceView_(std::move(referenceView)), performanceReporting_(performanceReporting),
       screenshotRequest_(std::move(screenshotRequest)) {
     try {
-        initialize(originalTankModel, animateTracks, weaponPreview, valleyTerrain, terrainAttempts);
+        initialize(originalTankModel, animateTracks, weaponPreview, valleyTerrain, terrainAttempts, landform);
     } catch (...) {
         cleanup();
         throw;
@@ -292,7 +292,7 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
 }
 
 void Application::initialize(bool originalTankModel, bool animateTracks, bool weaponPreview,
-                             bool valleyTerrain, uint32_t terrainAttempts) {
+                             bool valleyTerrain, uint32_t terrainAttempts, MacroTerrain::Landform landform) {
     auto loadingStart = std::chrono::steady_clock::now();
     weaponPreview_ = weaponPreview;
     std::cout << "World seed: " << worldSeed_ << '\n';
@@ -337,7 +337,7 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
                                         ? "/assets/models/tank.x" : "/assets/models/challenger2.obj"), animateTracks);
     TerrainGenerator::Settings terrainSettings;
     terrainSettings.seed = worldSeed_;
-    if (valleyTerrain) terrainSettings = TerrainRuntime::recipe(worldSeed_, tank_->hullWidth(), tank_->hullLength());
+    if (valleyTerrain) terrainSettings = TerrainRuntime::recipe(worldSeed_, tank_->hullWidth(), tank_->hullLength(), landform);
     auto terrainBuild = [&] {
         if (!valleyTerrain) return TerrainGenerator::build(terrainSettings);
         std::stop_source stop;
@@ -367,6 +367,9 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
             throw std::runtime_error("terrain selection exhausted " + std::to_string(terrainAttempts) +
                                      " attempt(s); choose another --seed or increase --terrain-attempts (maximum 8)");
         worldSeed_ = selected.accepted->settings.seed;
+        std::cout << "Terrain landform v" << MacroTerrain::kLandformVersion << ": requested "
+                  << MacroTerrain::landformName(landform) << ", selected "
+                  << MacroTerrain::landformName(MacroTerrain::resolveLandform(landform, worldSeed_)) << '\n';
         std::cout << "Terrain requested seed " << selected.requestedSeed << ", selected seed " << worldSeed_
                   << ", total selection " << selected.elapsedMs << " ms\n";
         return std::move(*selected.accepted);
@@ -588,11 +591,6 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
             *rockStandaloneTextures_.back(), *rockStandaloneTextures_.back(),
             *rockStandaloneTextures_.back(), *rockStandaloneTextures_.back()));
     }
-    sedimentaryCliffMesh_ = std::make_unique<Mesh>(Mesh::sedimentaryCliff(
-        *context_, *commands_, glm::vec3(1.0f, 1.0f, 1.0f), 7331, /*topOnly=*/false,
-        &sedimentaryCliffCollisionFootprint_));
-    sedimentaryCliffGrassMesh_ = std::make_unique<Mesh>(Mesh::sedimentaryCliff(
-        *context_, *commands_, glm::vec3(1.0f), 7331, /*topOnly=*/true));
     // Pine, ash and oak each have two full summer crown variants. Generate
     // each skeleton once so bark, foliage and every LOD share its layout.
     constexpr int kTreeVariantCount = 6;
@@ -676,9 +674,6 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
     spawnBoxes();
     spawnTrees();
     spawnRocks();
-    spawnSedimentaryCliffs();
-    if (referenceView_ == "cliffs" && sedimentaryCliffs_.empty())
-        throw std::runtime_error("reference seed has no cliffs; choose another --seed");
     spawnShrubs();
     spawnSmallRocks();
 
@@ -701,33 +696,6 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
         obstacles_.push_back({glm::vec2(rock.position.x, rock.position.z),
                               mesh.horizontalInscribedRadius() * kRockCollisionInset * rock.scale});
     }
-    for (const auto& cliff : sedimentaryCliffs_) {
-        // The procedural mesh reports the actual center, radius, and height
-        // of each visible base plate. Transform those same authored pieces
-        // into world space instead of laying an unrelated broad chain over
-        // the section (the source of the old invisible end caps and gaps).
-        constexpr float kMinimumBlockingExposure = 0.18f;
-        constexpr float kFullBlockingExposure = 0.48f;
-        glm::vec2 localXAxis(std::cos(cliff.yaw), -std::sin(cliff.yaw));
-        glm::vec2 localZAxis(std::sin(cliff.yaw), std::cos(cliff.yaw));
-        glm::vec2 cliffCenter(cliff.position.x, cliff.position.z);
-        for (const Mesh::FootprintCircle& piece : sedimentaryCliffCollisionFootprint_) {
-            glm::vec2 localOffset = localXAxis * piece.center.x + localZAxis * piece.center.y;
-            glm::vec2 center = cliffCenter + localOffset * cliff.scale;
-            float visibleTop = cliff.position.y + piece.topHeight * cliff.scale;
-            float exposedHeight = visibleTop - terrain_->heightAt(center.x, center.y);
-            if (exposedHeight <= kMinimumBlockingExposure) continue;
-
-            float exposure = glm::smoothstep(kMinimumBlockingExposure,
-                                             kFullBlockingExposure, exposedHeight);
-            // A barely exposed ledge gets only a partial footprint; a fully
-            // visible plate uses the conservative circle generated from its
-            // exact polygon.
-            float radius = piece.radius * cliff.scale * glm::mix(0.45f, 1.0f, exposure);
-            obstacles_.push_back({center, radius});
-        }
-    }
-
     if (terrain_->state().reservation) {
         auto allObstacles = obstacles_;
         // Boxes use separate destructive AABB contact during play. Include a
@@ -754,7 +722,7 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
 // there's no frame pacing to preserve and no risk of racing normal
 // rendering. context_/swapchain_/commands_/hud_ are all built before the
 // first call site (see the constructor above); everything after them
-// (terrain, water, tank model, tree/rock/cliff meshes, acceleration
+// (terrain, water, tank model, tree/rock meshes, acceleration
 // structures) can take several seconds, during which the window would
 // otherwise show undefined content and read as hung to the window manager.
 void Application::presentLoadingProgress(float fraction) {
@@ -910,7 +878,6 @@ void Application::cleanup() noexcept {
     // Destroy in dependency order before the GLFW window disappears.
     historyBuffer_.reset();
     sceneAS_.reset();
-    sedimentaryCliffBLAS_.reset();
     treeLeafBLAS_.clear();
     treeBarkBLAS_.clear();
     rockBLAS_.clear();
@@ -937,8 +904,6 @@ void Application::cleanup() noexcept {
     boundaryWallMesh_.reset();
     boundaryLineMesh_.reset();
     waterMesh_.reset();
-    sedimentaryCliffGrassMesh_.reset();
-    sedimentaryCliffMesh_.reset();
     rockProxyMeshes_.clear();
     smallRockMeshes_.clear();
     mediumRockMeshes_.clear();
@@ -1185,9 +1150,6 @@ void Application::applyReferenceCamera() {
         glm::vec2 at = spawnXZ_ + glm::vec2(0, 25);
         target = {at.x, terrain_->heightAt(at.x, at.y) + 3.0f, at.y};
         offset = {-14.0f, 6.0f, -30.0f};
-    } else if (referenceView_ == "cliffs" && !sedimentaryCliffs_.empty()) {
-        target = sedimentaryCliffs_.front().position;
-        offset = {7.0f, 3.0f, -11.0f};
     } else {
         target = waterReferenceTarget_;
         offset = {3.0f, 6.0f, -5.0f};
@@ -1366,110 +1328,6 @@ void Application::spawnRocks() {
                 glm::length(pos - spawnXZ_) < kMinDistanceFromSpawn + radius)) continue;
             rocks_.push_back(rock);
         }
-    }
-}
-
-void Application::spawnSedimentaryCliffs() {
-    constexpr int kMaxFormations = 5;
-    constexpr int kSectionsPerFormation = 5;
-    constexpr float kSectionSpacing = 5.0f;
-    constexpr float kGridStep = 3.0f;
-    constexpr float kMinSeparation = 22.0f;
-    constexpr float kEdgeMargin = 18.0f;
-    constexpr float kSpawnClearRadius = 10.0f;
-
-    std::mt19937 rng(worldSeed_ ^ 0x504u);
-    std::uniform_real_distribution<float> scaleDist(1.0625f, 1.5f);
-    struct CliffCandidate {
-        glm::vec2 position;
-        float steepness;
-    };
-    std::vector<CliffCandidate> candidates;
-    float half = terrain_->worldSize() * 0.5f - kEdgeMargin;
-    for (float x = -half; x <= half; x += kGridStep) {
-        for (float z = -half; z <= half; z += kGridStep) {
-            glm::vec2 position(x, z);
-            if (glm::length(position - spawnXZ_) < kSpawnClearRadius) continue;
-            if (isUnderwater(x, z)) continue;
-            float steepness = 1.0f - terrain_->normalAt(x, z).y;
-            candidates.push_back({position, steepness});
-        }
-    }
-    // The terrain seed changes its absolute slope range considerably, and
-    // the deliberately flatter terrain can have no samples above a fixed
-    // threshold. Ranking candidates makes these formations reliably follow
-    // the steepest ground available on every generated map.
-    std::shuffle(candidates.begin(), candidates.end(), rng);  // random tie-breaking
-    std::stable_sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) {
-        return a.steepness > b.steepness;
-    });
-
-    float sectionRadius = sedimentaryCliffMesh_->horizontalBoundingRadius();
-    for (const auto& piece : sedimentaryCliffCollisionFootprint_)
-        sectionRadius = std::max(sectionRadius, glm::length(piece.center) + piece.radius);
-    std::vector<glm::vec2> placed;
-    int formationsPlaced = 0;
-    for (const CliffCandidate& candidate : candidates) {
-        if (formationsPlaced >= kMaxFormations) break;
-        glm::vec2 position = candidate.position;
-        bool tooClose = std::any_of(placed.begin(), placed.end(), [&](glm::vec2 other) {
-            return glm::length(position - other) < kMinSeparation;
-        });
-        if (tooClose) continue;
-
-        float formationScale = scaleDist(rng);
-
-        // Walk outward in both directions along the local contour. At every
-        // step the tangent is recomputed from the terrain normal, allowing
-        // the chain to bend with the hillside instead of remaining a rigid
-        // straight slab. Preserve tangent direction from step to step so a
-        // changing normal cannot suddenly reverse the walk.
-        std::vector<glm::vec2> sectionPositions(kSectionsPerFormation);
-        int middle = kSectionsPerFormation / 2;
-        sectionPositions[middle] = position;
-        auto contourTangent = [&](glm::vec2 p, glm::vec2 preferredDirection) {
-            glm::vec3 n = terrain_->normalAt(p.x, p.y);
-            glm::vec2 tangent(n.z, -n.x);
-            float length = glm::length(tangent);
-            if (length < 0.001f) tangent = preferredDirection;
-            else tangent /= length;
-            if (glm::dot(tangent, preferredDirection) < 0.0f) tangent = -tangent;
-            return tangent;
-        };
-
-        glm::vec3 centerNormal = terrain_->normalAt(position.x, position.y);
-        glm::vec2 initialTangent(centerNormal.z, -centerNormal.x);
-        if (glm::length(initialTangent) < 0.001f) initialTangent = glm::vec2(1.0f, 0.0f);
-        else initialTangent = glm::normalize(initialTangent);
-        glm::vec2 direction = initialTangent;
-        for (int section = middle + 1; section < kSectionsPerFormation; ++section) {
-            direction = contourTangent(sectionPositions[section - 1], direction);
-            sectionPositions[section] =
-                sectionPositions[section - 1] + direction * (kSectionSpacing * formationScale);
-        }
-        direction = -initialTangent;
-        for (int section = middle - 1; section >= 0; --section) {
-            direction = contourTangent(sectionPositions[section + 1], direction);
-            sectionPositions[section] =
-                sectionPositions[section + 1] + direction * (kSectionSpacing * formationScale);
-        }
-
-        if (terrain_->state().reservation && std::any_of(sectionPositions.begin(), sectionPositions.end(), [&](glm::vec2 at) {
-                float radius = sectionRadius * formationScale;
-                return glm::length(at - spawnXZ_) < kSpawnClearRadius + radius || !allowsScenery(at, radius);
-            })) continue;
-        for (glm::vec2 sectionPosition : sectionPositions) {
-            glm::vec3 normal = terrain_->normalAt(sectionPosition.x, sectionPosition.y);
-            RockInstance cliff;
-            cliff.position = {sectionPosition.x,
-                              terrain_->heightAt(sectionPosition.x, sectionPosition.y) - 0.08f,
-                              sectionPosition.y};
-            cliff.yaw = std::atan2(normal.x, normal.z);
-            cliff.scale = formationScale;
-            sedimentaryCliffs_.push_back(cliff);
-        }
-        ++formationsPlaced;
-        placed.push_back(position);
     }
 }
 
@@ -1800,8 +1658,6 @@ void Application::buildAccelerationStructures() {
         rockBLAS_.push_back(std::make_unique<AccelerationStructure>(
             AccelerationStructure::buildBLAS(*context_, *commands_, *mesh)));
     }
-    sedimentaryCliffBLAS_ = std::make_unique<AccelerationStructure>(
-        AccelerationStructure::buildBLAS(*context_, *commands_, *sedimentaryCliffMesh_));
     for (const auto& mesh : farTreeBarkMeshes_) {
         treeBarkBLAS_.push_back(std::make_unique<AccelerationStructure>(
             AccelerationStructure::buildBLAS(*context_, *commands_, *mesh)));
@@ -1838,9 +1694,6 @@ std::vector<AccelerationStructure::Instance> Application::gatherRayTracingInstan
     }
     for (const auto& rock : rocks_) {
         instances.push_back({rockBLAS_[rock.meshVariant]->deviceAddress(), rock.worldMatrix()});
-    }
-    for (const auto& cliff : sedimentaryCliffs_) {
-        instances.push_back({sedimentaryCliffBLAS_->deviceAddress(), cliff.worldMatrix()});
     }
     for (const auto& part : tank_->drawParts()) {
         instances.push_back({part.blasAddress, part.worldMatrix});
@@ -2230,7 +2083,6 @@ void Application::drawFrame() {
     std::vector<std::vector<glm::mat4>> rockGroups(rockVariantCount * kLodCount);
     std::vector<std::vector<glm::mat4>> smallRockGroups(smallRockMeshes_.size());
     std::vector<std::vector<glm::mat4>> shrubGroups(shrubMeshes_.size());
-    std::vector<std::vector<glm::mat4>> cliffGroups(1);
     float viewportHeight = static_cast<float>(swapchain_->extent().height);
 
     for (TreeInstance& tree : trees_) {
@@ -2297,19 +2149,13 @@ void Application::drawFrame() {
         if (sphereIntersectsFrustum(planes, center, 0.8f * shrub.scale))
             shrubGroups[shrub.meshVariant].push_back(shrub.worldMatrix());
     }
-    for (const RockInstance& cliff : sedimentaryCliffs_) {
-        glm::vec3 center = cliff.position + glm::vec3(0.0f, 0.25f * cliff.scale, 0.0f);
-        if (sphereIntersectsFrustum(planes, center, 5.0f * cliff.scale))
-            cliffGroups[0].push_back(cliff.worldMatrix());
-    }
-
     struct InstanceBatch {
         uint32_t first = 0;
         uint32_t count = 0;
     };
     std::vector<RasterInstance> rasterInstances;
     rasterInstances.reserve(trees_.size()*64 + rocks_.size() + smallRocks_.size() +
-                                     shrubs_.size() + sedimentaryCliffs_.size());
+                                     shrubs_.size());
     auto appendGroups = [&](const auto& groups, bool wind = false) {
         std::vector<InstanceBatch> batches(groups.size());
         for (size_t variant = 0; variant < groups.size(); ++variant) {
@@ -2329,7 +2175,6 @@ void Application::drawFrame() {
     std::vector<InstanceBatch> rockBatches = appendGroups(rockGroups);
     std::vector<InstanceBatch> smallRockBatches = appendGroups(smallRockGroups);
     std::vector<InstanceBatch> shrubBatches = appendGroups(shrubGroups, true);
-    std::vector<InstanceBatch> cliffBatches = appendGroups(cliffGroups);
     performanceSample_.visibleProps = static_cast<double>(rasterInstances.size());
     auto gearBatches = appendGroups(tank_->gearTransforms());
     std::vector<VkDrawIndexedIndirectCommand> foliageDraws;
@@ -2708,6 +2553,9 @@ void Application::drawFrame() {
             vkCmdBindDescriptorSets(frame.commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline_->layout(),
                 1,1,&leafMaterialSets_[variant],0,nullptr);
             Pipeline::PushConstants leafPc{};
+            // The foliage lighting pipeline specializes these material flags
+            // (type 2; unlit/height blend/bump/waves/reflection/dynamic all zero).
+            // Keep its basic.frag specialization in sync if this draw changes.
             leafPc.materialType=2;
             leafPc.isInstanced=1;
             vkCmdPushConstants(frame.commandBuffer,pipeline_->layout(),
@@ -2763,39 +2611,6 @@ void Application::drawFrame() {
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(rockPc), &rockPc);
         smallRockMeshes_[variant]->bindAndDrawInstanced(frame.commandBuffer, batch.count, batch.first);
-    }
-
-    // Layered cliff outcrops use a warm gravel variant, but distinct
-    // geometry and placement from the ordinary boulder pool.
-    vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                             pipeline_->layout(), 1, 1, &rockMaterialSets_[1], 0, nullptr);
-    const InstanceBatch& cliffBatch = cliffBatches[0];
-    if (cliffBatch.count > 0) {
-        Pipeline::PushConstants cliffPc{};
-        cliffPc.materialType = 3.0f;
-        cliffPc.isInstanced = 1.0f;
-        vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
-                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                            sizeof(cliffPc), &cliffPc);
-        sedimentaryCliffMesh_->bindAndDrawInstanced(frame.commandBuffer, cliffBatch.count,
-                                                     cliffBatch.first);
-    }
-
-    // A matching cap covers the stone tops and extends down around their
-    // edges as a substantial turf layer, while the deeper fractured faces
-    // remain exposed rock.
-    vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                             pipeline_->layout(), 1, 1, &terrainMaterialSet_, 0, nullptr);
-    if (cliffBatch.count > 0) {
-        Pipeline::PushConstants grassPc{};
-        grassPc.materialType = 1.0f;
-        grassPc.heightBlend = 1.0f;
-        grassPc.isInstanced = 1.0f;
-        vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
-                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                            sizeof(grassPc), &grassPc);
-        sedimentaryCliffGrassMesh_->bindAndDrawInstanced(frame.commandBuffer, cliffBatch.count,
-                                                          cliffBatch.first);
     }
 
     // Shrubs -- reuse leafMaterialSets_ (see their mesh creation comment).

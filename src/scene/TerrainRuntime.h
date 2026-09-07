@@ -5,7 +5,8 @@
 
 // CPU-owned runtime data, independently testable without a window or uploads.
 namespace TerrainRuntime {
-TerrainGenerator::Settings recipe(uint32_t seed, float hullWidth, float hullLength);
+TerrainGenerator::Settings recipe(uint32_t seed, float hullWidth, float hullLength,
+                                  MacroTerrain::Landform = MacroTerrain::Landform::Mixed);
 
 class Reservation {
 public:

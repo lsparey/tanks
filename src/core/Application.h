@@ -62,7 +62,8 @@ public:
                          std::optional<uint32_t> worldSeed = std::nullopt,
                          std::string referenceView = {}, bool originalTankModel = false,
                          bool animateTracks = true, bool weaponPreview = false,
-                         bool valleyTerrain = true, uint32_t terrainAttempts = 1);
+                         bool valleyTerrain = true, uint32_t terrainAttempts = 1,
+                         MacroTerrain::Landform landform = MacroTerrain::Landform::Mixed);
     ~Application();
 
     Application(const Application&) = delete;
@@ -78,7 +79,7 @@ private:
     };
 
     void initialize(bool originalTankModel, bool animateTracks, bool weaponPreview,
-                    bool valleyTerrain, uint32_t terrainAttempts);
+                    bool valleyTerrain, uint32_t terrainAttempts, MacroTerrain::Landform landform);
     void initWindow();
     void cleanup() noexcept;
     void mainLoop();
@@ -193,9 +194,6 @@ private:
     std::unique_ptr<Mesh> waterMesh_;  // null if no qualifying low-lying basin exists this run
     std::unique_ptr<Mesh> boundaryLineMesh_;
     std::unique_ptr<Mesh> boundaryWallMesh_;
-    std::unique_ptr<Mesh> sedimentaryCliffMesh_;
-    std::unique_ptr<Mesh> sedimentaryCliffGrassMesh_;
-    std::vector<Mesh::FootprintCircle> sedimentaryCliffCollisionFootprint_;
     // Half-extent of the square play-area boundary (see BoundaryGenerator)
     // -- also used by Tank::update to keep the hull from driving through
     // the boundary's wall of light.
@@ -245,7 +243,6 @@ private:
     std::array<TrackTrailState, 2> trackTrails_;
     std::vector<TreeInstance> trees_;
     std::vector<RockInstance> rocks_;
-    std::vector<RockInstance> sedimentaryCliffs_;
     std::vector<ShrubInstance> shrubs_;
     // Small decorative scree/pebbles, biased toward the terrain's visible
     // gravel areas -- see spawnSmallRocks. Reuses RockInstance
@@ -264,7 +261,6 @@ private:
     std::unique_ptr<AccelerationStructure> boxBLAS_;
     std::unique_ptr<AccelerationStructure> shellBLAS_;
     std::vector<std::unique_ptr<AccelerationStructure>> rockBLAS_;  // one inset proxy per rock variant
-    std::unique_ptr<AccelerationStructure> sedimentaryCliffBLAS_;
     std::vector<std::unique_ptr<AccelerationStructure>> treeBarkBLAS_;  // one per treeBarkMeshes_ variant
     std::vector<std::unique_ptr<AccelerationStructure>> treeLeafBLAS_;  // one per treeFoliageMeshes_ variant
     std::unique_ptr<SceneAccelerationStructure> sceneAS_;
@@ -275,7 +271,6 @@ private:
     void spawnBoxes();
     void spawnTrees();
     void spawnRocks();
-    void spawnSedimentaryCliffs();
     void spawnShrubs();
     void spawnSmallRocks();
     void spawnExplosion(glm::vec3 position);

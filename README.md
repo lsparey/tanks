@@ -16,7 +16,7 @@ runtime/build libraries.
   obstacle sliding, and four-point visual suspension.
 - Independent tread marks and contact-, speed-, and slip-driven track dust.
 - Procedural terrain, river water, English temperate grass, trees, shrubs,
-  rocks, cliffs, scree, clouds, and play-area boundary. Pine, ash and oak
+  rocks, scree, clouds, and play-area boundary. Pine, ash and oak
   forms have full summer crowns, overlapping thin leaf sprays, varied density
   and coherent wind sway. Oaks use separate lobed leaves and a deep branching
   crown; CPU tree builds run concurrently while the loading screen stays active.
@@ -240,7 +240,7 @@ A multi-draw foliage batch also counts once per pass, even though it contains
 several indexed commands. Trees use a masked depth pass followed by lighting;
 draw-call counts alone do not describe their geometry or shading cost.
 Visible props count unique scenery instances accepted by culling (trees,
-rocks, scree, shrubs, and cliff sections), not their separate material passes
+rocks, scree, and shrubs), not their separate material passes
 or every object in the scene. TLAS instances count the ray-query scene.
 
 The first 60 successfully rendered frames are warmup. Screenshot frames and
@@ -258,19 +258,28 @@ Use these short scenarios, allowing the sample window to fill after `F4`:
 
 For static comparisons across launches, use `--seed 7331 --view landscape`.
 The seed fixes terrain, material variants, and prop placement; `--view` also
-accepts `tank`, `tank-side`, `tank-front`, `tank-rear`, `tank-top`, `water`, and `cliffs` and holds a reference camera until `C` is
+accepts `tank`, `tank-side`, `tank-front`, `tank-rear`, `tank-top`, and `water` and holds a reference camera until `C` is
 pressed. Without an explicit seed, reference views use 7331; normal gameplay
 still chooses and prints a random seed. Timing, effects, and temporal ray noise
 are not deterministic replay. Capture screenshots outside measurement intervals.
 
-The upgraded valley terrain is now the default: run `./build/tanks` or use
-`./build/tanks --seed 7331` for a repeatable map. Use `--terrain legacy` to compare
+The upgraded British summertime terrain is the default. `--landform mixed`
+(the default) chooses hills, ridges, plains, basins or a valley from the seed.
+Use `--landform hills` (or `ridges`, `plain`, `basin`, `valley`) to choose a family.
+`./out/runtime-release/tanks --seed 7331` runs the optimized build when configured;
+`./build/tanks` is the default Debug build and generates terrain substantially
+more slowly. Use `--terrain legacy` to compare
 with the previous generator, or `--terrain drained-valley` to select the new path
-explicitly. The new path uses the loaded tank's dimensions to select a dry spawn and route,
+explicitly; that historical pipeline name no longer forces a valley. To replay
+the previous valley default, add `--landform valley`. Landform overrides cannot
+be combined with `--terrain legacy`. The new path uses the loaded tank's dimensions to select a dry spawn and route,
 then preserves that route during scenery placement. `--terrain-attempts 1..8`
 explicitly bounds seed selection (default 1); logs record both requested and
 selected seeds. See [terrain runtime notes](docs/TERRAIN_RUNTIME.md) for status,
 replay instructions and remaining acceptance work.
+See [British landforms](docs/BRITISH_LANDFORMS.md) for shape previews, measurements
+and Release build instructions. Biomes are deferred; the current palette,
+lighting and vegetation remain British summertime.
 
 The [visual target and reference board](docs/VISUAL_TARGET.md) describe the
 British countryside daylight palette and show the repeatable camera views.

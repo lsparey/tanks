@@ -191,6 +191,9 @@ void exportDiagnostics(const TerrainGenerator::BuildResult& build, const std::fi
     std::string stem = std::string(TerrainGenerator::presetName(build.settings.preset)) + "-v" +
                        std::to_string(build.settings.version) + "-seed-" +
                        std::to_string(build.settings.seed) + "-" + std::to_string(hm.resolution);
+    if (build.generationFields && build.settings.macro.landform != MacroTerrain::Landform::Valley)
+        stem += "-" + std::string(MacroTerrain::landformName(build.settings.macro.landform)) +
+                "-landform-v" + std::to_string(MacroTerrain::kLandformVersion);
     if (build.water) stem += "-lakes-v" + std::to_string(LakeWater::kVersion);
     if (build.streams) stem += "-streams-v" + std::to_string(StreamNetwork::kVersion);
     if (build.streamSections) stem += "-sections-v" + std::to_string(StreamSections::kVersion);
@@ -283,7 +286,11 @@ void exportDiagnostics(const TerrainGenerator::BuildResult& build, const std::fi
         outlets << "P5\n" << fields.heightmap.resolution << ' ' << fields.heightmap.resolution << "\n255\n";
         for (uint8_t value : fields.openFaces) outlets.put(static_cast<char>(value));
         outlets.close();
-        metadata << "relief=" << build.settings.macro.relief << "\nvalley_width=" << build.settings.macro.valleyWidth
+        metadata << "landform_version=" << MacroTerrain::kLandformVersion
+                 << "\nlandform_requested=" << MacroTerrain::landformName(build.settings.macro.landform)
+                 << "\nlandform_resolved=" << MacroTerrain::landformName(MacroTerrain::resolveLandform(build.settings.macro.landform, build.settings.seed))
+                 << "\nwarp_strength=" << build.settings.macro.warpStrength
+                 << "\nrelief=" << build.settings.macro.relief << "\nvalley_width=" << build.settings.macro.valleyWidth
                  << "\nfeature_scale=" << build.settings.macro.featureScale << "\nsoil_depth=" << build.settings.macro.soilDepth
                  << "\napron_requested=" << build.settings.macro.apronWidth << "\napron_cells=" << fields.apronCells
                  << "\napron_actual=" << fields.apronCells * fields.spacing
@@ -686,6 +693,7 @@ int main(int argc, char** argv) {
                              "  [--world-size N] [--repeats N] [--output-dir PATH]\n"
                              "  Rolling valley: [--relief N] [--valley-width N] [--feature-scale N]\n"
                              "                  [--soil-depth N] [--apron-width N]\n"
+                             "  Landforms: [--landform mixed|valley|hills|ridges|plain|basin] [--warp-strength N]\n"
                              "  Erosion: [--erosion-seconds N] [--rain-seconds N] [--max-timestep N] [--talus-passes N]\n"
                              "           [--erosion-workers 1..4]\n"
                              "  Drained valley: [--lake-water on|off] [--lake-evaporation N] [--lake-seepage N]\n"
@@ -713,6 +721,8 @@ int main(int argc, char** argv) {
             }
             else if (option == "--resolution") { settings.resolution = number<int>(argv[i]); explicitResolution = true; }
             else if (option == "--world-size") settings.worldSize = number<float>(argv[i]);
+            else if (option == "--landform") { settings.macro.landform = MacroTerrain::parseLandform(argv[i]); macroOptions = true; }
+            else if (option == "--warp-strength") { settings.macro.warpStrength = number<float>(argv[i]); macroOptions = true; }
             else if (option == "--relief") { settings.macro.relief = number<float>(argv[i]); macroOptions = true; }
             else if (option == "--valley-width") { settings.macro.valleyWidth = number<float>(argv[i]); macroOptions = true; }
             else if (option == "--feature-scale") { settings.macro.featureScale = number<float>(argv[i]); macroOptions = true; }
@@ -790,7 +800,7 @@ int main(int argc, char** argv) {
         std::vector<uint32_t> seeds(TerrainGenerator::kRegressionSeeds.begin(), TerrainGenerator::kRegressionSeeds.end());
         if (seed) seeds = {*seed};
         std::vector<double> times;
-        std::cout << "preset,version,seed,resolution,repeat,heightfield_ms,surface_ms,mesh_ms,total_ms,surface_bytes,mesh_bytes,field_bytes,mesh_fnv1a64,field_fnv1a64,erosion_ms,erosion_steps,erosion_field_bytes,erosion_working_bytes,water_residual,solid_residual,solid_rounding_delta,settlement_ms,drainage_ms,drainage_field_bytes,drainage_working_bytes,basins,runoff_residual,removed_transient_water,settled_sediment,lake_version,water_ms,water_bytes,lakes_present,water_triangles,lake_runoff_residual,stream_version,stream_ms,stream_bytes,stream_nodes,stream_reaches,stream_confluences,stream_deficient_nodes,stream_max_deficit,section_version,sections_ms,sections_bytes,sections,bounded_sections,dry_sections,domain_limited_sections,search_limited_sections,spill_controls,carving_version,channel_preparation_ms,carving_ms,carving_bytes,carved_cells,exported_soil,exported_bedrock,removed_ground,carving_residual,carving_rounding_delta,combined_water_version,combined_water_ms,combined_water_bytes,combined_stream_triangles,combined_lake_triangles,combined_stream_area,combined_lake_area,playability_version,playability_status,playability_ms,playability_bytes,playability_working_bytes,playability_components,spawn_x,spawn_y,spawn_z,spawn_connected_area,route_length,route_span\n";
+        std::cout << "preset,version,seed,resolution,repeat,heightfield_ms,surface_ms,mesh_ms,total_ms,surface_bytes,mesh_bytes,field_bytes,mesh_fnv1a64,field_fnv1a64,erosion_ms,erosion_steps,erosion_field_bytes,erosion_working_bytes,water_residual,solid_residual,solid_rounding_delta,settlement_ms,drainage_ms,drainage_field_bytes,drainage_working_bytes,basins,runoff_residual,removed_transient_water,settled_sediment,lake_version,water_ms,water_bytes,lakes_present,water_triangles,lake_runoff_residual,stream_version,stream_ms,stream_bytes,stream_nodes,stream_reaches,stream_confluences,stream_deficient_nodes,stream_max_deficit,section_version,sections_ms,sections_bytes,sections,bounded_sections,dry_sections,domain_limited_sections,search_limited_sections,spill_controls,carving_version,channel_preparation_ms,carving_ms,carving_bytes,carved_cells,exported_soil,exported_bedrock,removed_ground,carving_residual,carving_rounding_delta,combined_water_version,combined_water_ms,combined_water_bytes,combined_stream_triangles,combined_lake_triangles,combined_stream_area,combined_lake_area,playability_version,playability_status,playability_ms,playability_bytes,playability_working_bytes,playability_components,spawn_x,spawn_y,spawn_z,spawn_connected_area,route_length,route_span,landform_version,landform_requested,landform_resolved,warp_strength\n";
         for (uint32_t value : seeds) {
             settings.seed = value;
             std::optional<uint64_t> expected;
@@ -864,7 +874,10 @@ int main(int argc, char** argv) {
                     std::cout << std::setprecision(9) << r.spawn->position.x << ',' << r.spawn->position.y << ',' << r.spawn->position.z << ','
                               << r.components[r.spawn->component].area << ',' << r.routeLength << ',' << r.routeSpan;
                 } else std::cout << ",,,0,0,0";
-                std::cout << '\n';
+                std::cout << ',' << MacroTerrain::kLandformVersion << ','
+                          << MacroTerrain::landformName(settings.macro.landform) << ','
+                          << MacroTerrain::landformName(MacroTerrain::resolveLandform(settings.macro.landform, value))
+                          << ',' << settings.macro.warpStrength << '\n';
                 if (repeat == 0 && !directory.empty()) exportDiagnostics(build, directory);
             }
         }

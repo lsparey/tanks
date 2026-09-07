@@ -83,6 +83,13 @@ def parse_report(log):
     result["loading_ms"] = float(last(r"Loading complete: ([\d.]+) ms")[1])
     terrain = last(r"Terrain ([\w-]+) v\d+: generation ([\d.]+) ms, upload/BLAS ([\d.]+) ms")
     result.update(preset=terrain[1], generation_ms=float(terrain[2]), terrain_upload_ms=float(terrain[3]))
+    landforms = list(re.finditer(r"Terrain landform v(\d+): requested (\S+), selected (\S+)", log))
+    # Keep columns consistent for paired legacy runs and older reports that
+    # predate explicit landform selection. An absent label is not inferred.
+    result.update(landform_version=0, landform_requested="", landform_resolved="")
+    if landforms:
+        form = landforms[-1]
+        result.update(landform_version=int(form[1]), landform_requested=form[2], landform_resolved=form[3])
     result["placement_ms"] = float(last(r"Scenery placement/verification: ([\d.]+) ms")[1])
     frame = last(r"PERF \(last (\d+) frames, (\d+)x(\d+)\) frame ms: avg ([\d.]+), p95 ([\d.]+), p99 ([\d.]+), worst ([\d.]+)")
     result.update(samples=int(frame[1]), width=int(frame[2]), height=int(frame[3]))
@@ -118,8 +125,10 @@ def main():
     parser.add_argument("--seeds", type=int, nargs="+", default=[7331, 0, 42])
     parser.add_argument("--presets", choices=["legacy", "drained-valley"], nargs="+", default=["legacy", "drained-valley"])
     parser.add_argument("--repeats", type=int, default=3)
-    parser.add_argument("--view", choices=["landscape", "tank-side", "water", "cliffs"], default="landscape")
+    parser.add_argument("--view", choices=["landscape", "tank-side", "water"], default="landscape")
     parser.add_argument("--weapon-preview", action="store_true", help="existing one-shot muzzle/explosion preview; not sustained combat")
+    parser.add_argument("--landform", choices=["mixed", "valley", "hills", "ridges", "plain", "basin"],
+                        help="override the new terrain's landform; legacy comparisons retain legacy geometry")
     parser.add_argument("--frames", type=int, default=420)
     parser.add_argument("--timeout", type=float, default=180)
     args = parser.parse_args()
@@ -139,6 +148,15 @@ def main():
     cache = read(binary.parent / "CMakeCache.txt")
     build_type = re.search(r"^CMAKE_BUILD_TYPE:[^=]+=(.*)$", cache, re.M)
     metadata["build_type"] = build_type[1] if build_type else "unknown"
+    # Shaders are loaded from ASSET_ROOT at runtime, independently of the
+    # executable. Record their compiled bytes so shader-only A/B runs can be
+    # distinguished even when the binary hash stays the same.
+    source_root = re.search(r"^CMAKE_HOME_DIRECTORY:[^=]+=(.*)$", cache, re.M)
+    metadata["shader_sha256"] = None
+    if source_root:
+        shader_dir = Path(source_root[1]) / "shaders"
+        metadata["shader_sha256"] = {str(path): hashlib.sha256(path.read_bytes()).hexdigest()
+                                     for path in sorted(shader_dir.glob("*.spv"))}
     metadata["cpu_models"] = sorted(set(re.findall(r"^model name\s*:\s*(.+)$", read("/proc/cpuinfo"), re.M)))
     (args.output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     rows = []
@@ -158,6 +176,8 @@ def main():
                            "--profile", "--screenshot", str(screenshot), "--screenshot-frame", str(args.frames)]
                 if args.weapon_preview:
                     command.append("--weapon-preview")
+                if args.landform and preset != "legacy":
+                    command.extend(["--landform", args.landform])
                 print("Starting", name, flush=True)
                 started = time.monotonic()
                 peak_rss = None

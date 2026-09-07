@@ -15,7 +15,7 @@ template<class F> void rejects(F fn) {
     require(rejected, "invalid runtime input accepted");
 }
 auto smallRecipe(uint32_t seed = 2654443100u) {
-    auto s = TerrainRuntime::recipe(seed, 2.222f, 4.48f);
+    auto s = TerrainRuntime::recipe(seed, 2.222f, 4.48f, MacroTerrain::Landform::Valley);
     s.resolution = 33; s.erosion.duration = .25; s.erosion.rainDuration = .15; s.erosion.talusPasses = 1;
     return s;
 }
@@ -35,7 +35,7 @@ TerrainRuntime::State retained(TerrainGenerator::Settings s) {
         require(build.mesh.vertices[i].position.y == heights[i], "upload mesh differs from runtime ground");
     return state; // build and ALL generation scratch destroyed before queries
 }
-void stress(const TerrainRuntime::State& state, uint32_t seed) {
+size_t stress(const TerrainRuntime::State& state, uint32_t seed) {
     require(state.reservation->protectedArea() >= state.playabilitySettings->minimumConnectedArea,
             "reservation shrank the minimum connected area");
     std::mt19937 rng(seed);
@@ -74,10 +74,10 @@ void stress(const TerrainRuntime::State& state, uint32_t seed) {
             require(!state.allowsScenery({at.x, at.z}, 0), "rendered water accepted as dry scenery ground");
         }
     }
-    require(wet > 0, "fixture has no wet water interiors");
     require(!state.allowsScenery({half - .1f, 0}, 1), "scenery crosses terrain edge");
     rejects([&] { state.allowsScenery({0, 0}, -1); });
     rejects([&] { state.allowsScenery({std::numeric_limits<float>::quiet_NaN(), 0}, 1); });
+    return wet;
 }
 }
 
@@ -87,11 +87,12 @@ int main(int argc, char**) {
             s.lakes && s.streams && s.playability && !s.streamSections,
             "runtime recipe omits a required stage or retains optional surveys");
     auto otherHull = TerrainRuntime::recipe(0, 3, 7);
+    require(otherHull.macro.landform == MacroTerrain::Landform::Mixed, "runtime still forces a valley");
     require(otherHull.playability->hullWidth == 3 && otherHull.playability->hullLength == 7,
             "runtime ignored loaded hull dimensions");
     rejects([] { TerrainRuntime::recipe(0, 0, 4); });
     auto state = retained(s);
-    stress(state, s.seed);
+    require(stress(state, s.seed) > 0, "wet fixture lost its water coverage");
     auto trees = TerrainRuntime::placeTrees(state, s.seed, 6, 4);
     require(trees.size() == 100, "runtime did not preserve tree count");
     rejects([&] { TerrainRuntime::placeTrees(state, s.seed, 6, 180); });

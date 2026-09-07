@@ -51,6 +51,23 @@ The default direction remains a temperate British landscape, with erosion,
 drainage, soil/rock exposure and placement derived from shared data. Work is
 planned in this order:
 
+Current scope is **British summertime**. Broader landforms are implemented;
+lower new-map generation time and terrain/water quality remain the priorities.
+Biome distribution and climate fields are deferred until the user returns to
+them; they are not prerequisites for this work.
+
+- [x] Replace the mandatory valley composition with seeded hills, ridges,
+  plains and basins, including configurable domain warping and a mixed default
+  ([implementation, previews and checks](docs/BRITISH_LANDFORMS.md)).
+- [x] Reuse donor calculations in the erosion solver without changing generated
+  fields or scratch-memory size; median paired CPU generation time fell 12.4%
+  across 26 comparisons ([evidence](docs/EROSION_PERFORMANCE.md)).
+- [ ] Compare shorter/coarser erosion against the current visual reference;
+  measure quality and startup cost before choosing further CPU/GPU work.
+- [ ] Deferred: add regional temperature/precipitation fields and blended
+  Whittaker-style biome classification, shared by materials and vegetation
+  ([design and rollout](docs/TERRAIN_EROSION_PLAN.md#climate-and-biome-distribution)).
+
 - [x] Separate CPU terrain generation/meshing from Vulkan upload and match
   ground sampling to mesh triangles; add fixtures and 16 fixed regression seeds.
 - [x] Add a standalone terrain probe, neutral exports and a measured CPU
@@ -107,6 +124,9 @@ planned in this order:
 - [x] Measure Release startup/frame/memory costs against legacy across three
   seeds, add a repeatable runtime benchmark and isolate scenery GPU phases
   ([results and remaining validation](docs/TERRAIN_RUNTIME_PERFORMANCE.md)).
+- [x] Specialize the foliage lighting shader without reducing tree fidelity;
+  validate matched captures and record the initial modest GPU improvement
+  ([measurements and comparison limits](docs/FOLIAGE_LIGHTING.md)).
 - [ ] Validate actual driving and complete Stage 3 water/playability acceptance.
 - [ ] Rebuild ground materials and non-tree scenery; place existing trees.
 - [ ] Integrate and validate loading, gameplay, dynamic lighting, performance
@@ -196,7 +216,7 @@ as history, including terrain components this goal may replace.
 - Connected low-basin water generation with varied water levels.
 - A terrain-following play-area boundary and translucent energy wall.
 - Procedurally generated and terrain-aware trees, shrubs, boulders,
-  sedimentary cliffs, and decorative scree.
+  and decorative scree. The old sedimentary cliff props have been removed.
 - Tree bark and pine/ash canopies use rounded voxel boundaries with smooth normals
   across texture seams. Surface vertices are shared without adding triangles;
   existing dynamic ray-query lighting and coarse occluder LODs remain in use.
@@ -327,8 +347,7 @@ footprint. It resolves against existing tree and rock proxies while preserving
 tangential velocity for smooth scraping and sliding. Boundary clearance also
 accounts for the capsule's changing X/Z extent as the tank rotates. Static
 obstacle proxies now stay inside visible geometry: trees use their trunk base,
-rocks use each procedural variant's silhouette, and cliffs use the actual
-terrain-exposed footprint of each broken stone plate.
+rocks use each procedural variant's silhouette.
 
 - Value: high if current obstacle contacts feel awkward; otherwise modest.
 - Complexity: medium.
@@ -418,7 +437,7 @@ foundation:
 
 - GPU timestamps split each frame into TLAS, terrain, foreground, scenery,
   effects, and HUD regions without stalling the active submission.
-- Trees, rocks, shrubs, scree, and cliffs are CPU-frustum-culled and submitted
+- Trees, rocks, shrubs, and scree are CPU-frustum-culled and submitted
   in instanced mesh/material groups.
 - Tree bark and rocks use three projected-size LODs with hysteresis;
   foliage uses progressive per-bough selection and batched indexed draws.
@@ -762,7 +781,7 @@ should not become individual ray-tracing instances. Existing tree assets stay in
 Deliver this within the P0 terrain overhaul: persistent water and final ground
 must share shoreline intersections, water depth and wetness. Derive bank
 materials, deposits and exposed stone from the generated fields. Rework the
-old absolute-height rules and cliff strips where necessary.
+old absolute-height rules. The old cliff strips have been removed.
 
 Use flow-directed surface detail and restrained shoreline foam only where
 flow/depth supports it. Small normal detail is preferable to displacement
@@ -810,7 +829,7 @@ lighting range demands it and adaptation does not fight aiming/readability.
 
 ### Environmental variety and composition
 
-Replace rocks, cliffs, scree, shrubs and their placement as needed during the
+Replace rocks, scree, shrubs and their placement as needed during the
 P0 terrain overhaul. Use erosion, resistance, slope and moisture fields for
 coherent formations and distribution. Preserve trees, adapting placement only.
 

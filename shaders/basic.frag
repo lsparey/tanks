@@ -2,6 +2,11 @@
 #extension GL_EXT_ray_query : require
 #extension GL_EXT_ray_tracing_position_fetch : require
 
+// Enabled only by the tree foliage lighting pipeline. Its material contract
+// lets the driver remove terrain, tank, water and effect paths at pipeline
+// creation; the leaf lighting, ray budgets and history remain shared below.
+layout(constant_id = 0) const bool kTreeFoliage = false;
+
 layout(location = 0) in vec3 fragNormal;
 layout(location = 1) in vec3 fragColor;
 layout(location = 2) in vec2 fragUV;
@@ -375,13 +380,22 @@ vec3 acesFilmicTonemap(vec3 x) {
 // past that start, not total distance, so it ramps in gradually rather
 // than jumping straight to its far-clip value at the start line.
 void main() {
+    // Matches Application's leafPc defaults; opacity remains per draw.
+    float materialType = kTreeFoliage ? 2.0 : pc.materialType;
+    float heightBlend = kTreeFoliage ? 0.0 : pc.heightBlend;
+    float unlit = kTreeFoliage ? 0.0 : pc.unlit;
+    float isDynamicObject = kTreeFoliage ? 0.0 : pc.isDynamicObject;
+    float bumpStrength = kTreeFoliage ? 0.0 : pc.bumpStrength;
+    float waveStrength = kTreeFoliage ? 0.0 : pc.waveStrength;
+    float reflectivity = kTreeFoliage ? 0.0 : pc.reflectivity;
+
     // Soft procedural weapon cards; all edges reach zero inside the quad.
     // The effects pipeline disables depth and history writes, but tests depth.
-    if (pc.materialType > 7.5 && pc.materialType < 9.5) {
+    if (materialType > 7.5 && materialType < 9.5) {
         vec2 p = fragUV * 2.0 - 1.0;
         float alpha;
         vec3 color;
-        if (pc.materialType < 8.5) {
+        if (materialType < 8.5) {
             float t = fragUV.y;
             float width = mix(.48, .025, t) + .13*sin(t*3.14159);
             float lobe = 1.0-smoothstep(width*.3,width,abs(p.x));
@@ -408,7 +422,7 @@ void main() {
         outShadowHistory = vec4(0);
         return;
     }
-    if (pc.materialType > 3.5 && pc.materialType < 4.5) {
+    if (materialType > 3.5 && materialType < 4.5) {
         vec3 direction = normalize(fragWorldPos - frame.cameraPos.xyz);
         outColor = vec4(acesFilmicTonemap(skyColor(direction) * kExposure), 1.0);
         outShadowHistory = vec4(1.0, 1.0, length(fragWorldPos - frame.cameraPos.xyz), 0.0);
@@ -425,14 +439,12 @@ void main() {
     // else's UVs are meaningful exact mappings (e.g. the crate's one UV
     // island per face) that warping would visibly distort.
     vec2 sampleUV = fragUV;
-    // Terrain and turf caps share one continuous world-space projection.
-    // The cap meshes have independent polygon-local UV islands, which used
-    // to make each plate show a conspicuous circular/radial texture pattern.
-    if (pc.materialType > 0.5 && pc.materialType < 1.5) {
+    // Keep the terrain texture projection continuous in world space.
+    if (materialType > 0.5 && materialType < 1.5) {
         sampleUV = fragWorldPos.xz / 3.0;  // matches Terrain.cpp
     }
     vec4 terrainControl = vec4(0.0);
-    if (pc.heightBlend > 0.5) {
+    if (heightBlend > 0.5) {
         // The control map covers the whole 180-unit terrain. Half-texel
         // inset maps its world-space edges to texel centres, preserving the
         // CPU-baked noise without sampling beyond the clamped texture edge.
@@ -458,7 +470,7 @@ void main() {
     // not to exactly track the grass/gravel blend.
     vec2 terrainBump = vec2(0.0);
     float terrainRockiness = 0.0;
-    if (pc.heightBlend > 0.5) {
+    if (heightBlend > 0.5) {
         // Terrain: within each zone (grass, gravel), patch-blend between two
         // texture variants using a large-scale noise mask, so the ground
         // reads as naturally varied -- patches of lusher/drier grass,
@@ -590,13 +602,13 @@ void main() {
             terrainBump = mix(grassBump, gravelBump, bumpBlend);
         }
     }
-    bool tankMaterial = pc.materialType > 4.5 && pc.materialType < 7.5;
-    bool rockMaterial = pc.materialType > 2.5 && pc.materialType < 3.5;
-    bool barkMaterial = pc.materialType > 9.5 && pc.materialType < 10.5;
+    bool tankMaterial = materialType > 4.5 && materialType < 7.5;
+    bool rockMaterial = materialType > 2.5 && materialType < 3.5;
+    bool barkMaterial = materialType > 9.5 && materialType < 10.5;
     // Only tank colour channels carry baked edge distances. Natural stone
     // retains its authored tint, independently of geometric feature masks.
     vec3 albedo = tankMaterial ? texColor * 0.95 : fragColor * texColor;
-    if (((pc.materialType > 1.5 && pc.materialType < 2.5) || barkMaterial) && currentViewDist < 45.0) {
+    if (((materialType > 1.5 && materialType < 2.5) || barkMaterial) && currentViewDist < 45.0) {
         // Bark/leaf/shrub meshes are all authored with their ground contact
         // point at local y=0 (see Mesh::shrub/buildTreeBranch's comments),
         // so the raw model-space height doubles as "how close to the
@@ -612,8 +624,8 @@ void main() {
     float tankSoot = 0.0;
     float tankRoughness = 0.78;
     if (tankMaterial) {
-        bool tracks = pc.materialType > 5.5 && pc.materialType < 6.5;
-        bool barrel = pc.materialType > 6.5;
+        bool tracks = materialType > 5.5 && materialType < 6.5;
+        bool barrel = materialType > 6.5;
         // Object-space noise stays attached during hull, turret and gun motion.
         float patches = valueNoise2D(fragModelPos.xz * 5.0 + fragModelPos.y * vec2(1.7, 2.3));
         float edgeDistance = min(fragColor.x, min(fragColor.y, fragColor.z));
@@ -653,7 +665,7 @@ void main() {
 
     // Ground scorch is part of the terrain material, not a hovering plane.
     // This follows every terrain triangle and adds no geometry or RT instances.
-    if (pc.materialType > .5 && pc.materialType < 1.5 && pc.isInstanced < .5) {
+    if (materialType > .5 && materialType < 1.5 && pc.isInstanced < .5) {
         float burn = 0.0;
         for (int i=0; i<int(frame.weaponEffects.x); ++i) {
             vec4 mark = frame.scorchPositionRadius[i];
@@ -668,7 +680,7 @@ void main() {
         albedo *= mix(vec3(1),vec3(.12,.095,.07),burn);
     }
 
-    if (pc.unlit > 0.5) {
+    if (unlit > 0.5) {
         outColor = vec4(acesFilmicTonemap(albedo * kExposure), finalAlpha);
         outShadowHistory = vec4(1.0, 1.0, 50000.0, 0.0);
         return;
@@ -804,7 +816,7 @@ void main() {
                 // shadow entirely; isDynamicObject is a dedicated tag for
                 // this rather than inferred from specularStrength (which
                 // now varies between the tank's own camo/metal parts).
-                bool isTank = pc.isDynamicObject > 0.5;
+                bool isTank = isDynamicObject > 0.5;
                 float shadowAlpha;
                 if (isTank) {
                     shadowAlpha = 1.0;
@@ -838,9 +850,9 @@ void main() {
     // before the diffuse term, which is exactly where a flat-lit decal look
     // comes from.
     vec3 litNormal = normal;
-    if (pc.heightBlend > 0.5) {
+    if (heightBlend > 0.5) {
         litNormal = normalize(normal - vec3(terrainBump.x, 0.0, terrainBump.y));
-    } else if (pc.bumpStrength > 0.001) {
+    } else if (bumpStrength > 0.001) {
         // Track marks: same idea as terrain's bump above (fake heightfield
         // perturbing the normal), but using trackHeightField's procedural
         // ridge signal instead of terrain's texture-luminance approach --
@@ -859,13 +871,13 @@ void main() {
         float heightCenter = trackHeightField(sampleUV);
         float heightU = trackHeightField(sampleUV + vec2(kTrackBumpStep, 0.0));
         float heightV = trackHeightField(sampleUV + vec2(0.0, kTrackBumpStep));
-        vec2 trackBump = vec2(heightU - heightCenter, heightV - heightCenter) * pc.bumpStrength;
+        vec2 trackBump = vec2(heightU - heightCenter, heightV - heightCenter) * bumpStrength;
         litNormal = normalize(normal - tangent * trackBump.x - bitangent * trackBump.y);
     }
     // Opaque foliage blobs, bark and rocks still need fine surface relief. Build a
     // derivative tangent frame from their real UV mapping, then treat albedo
     // luminance as a compact height channel. Rock is intentionally stronger.
-    if ((pc.materialType > 1.5 && pc.materialType < 3.5) || barkMaterial) {
+    if ((materialType > 1.5 && materialType < 3.5) || barkMaterial) {
         vec3 dpdx = dFdx(fragWorldPos), dpdy = dFdy(fragWorldPos);
         vec2 duvdx = dFdx(sampleUV), duvdy = dFdy(sampleUV);
         float det = duvdx.x * duvdy.y - duvdx.y * duvdy.x;
@@ -889,7 +901,7 @@ void main() {
     // rather than pure black.
     vec3 lighting = frame.ambientColor.rgb * frame.ambientColor.w * aoFactor +
                     frame.sunColor.rgb * frame.sunColor.w * diffuse;
-    if (pc.materialType > 1.5 && pc.materialType < 2.5) {
+    if (materialType > 1.5 && materialType < 2.5) {
         // Thin-leaf transmission: sunlight behind the surface produces a
         // warm green lift, while wrap lighting keeps solid canopy blobs from
         // developing unnaturally black hemispheres.
@@ -941,7 +953,7 @@ void main() {
     // of like paneling). Left as plain pc.specularStrength for everything
     // else (terrain, water, etc.), same as before.
     float specularStrength = pc.specularStrength;
-    if (pc.isDynamicObject > 0.5 && !tankMaterial) {
+    if (isDynamicObject > 0.5 && !tankMaterial) {
         specularStrength = pc.specularStrength * mix(0.5, 1.5, tankSpecularGrain(fragUV));
     }
     if (tankMaterial) {
@@ -953,9 +965,9 @@ void main() {
     }
     // Stone has a broad, faint mineral response; foliage only a tiny waxy
     // sheen. Both remain much rougher than painted metal.
-    if (pc.materialType > 2.5 && pc.materialType < 3.5) specularStrength = 0.055;
+    if (materialType > 2.5 && materialType < 3.5) specularStrength = 0.055;
     else if (barkMaterial) specularStrength = 0.01;
-    else if (pc.materialType > 1.5 && pc.materialType < 2.5) specularStrength = 0.025;
+    else if (materialType > 1.5 && materialType < 2.5) specularStrength = 0.025;
 
     // Everything below is gated by specularStrength (0 for terrain/other
     // matte objects), so only opted-in draws (the tank) get these. Real
@@ -977,12 +989,12 @@ void main() {
     // per-frame counter already reused for shadow/AO jitter, just repurposed
     // here as an animation phase.
     vec3 shadingNormal = normal;
-    bool isWater = pc.waveStrength > 0.001;
+    bool isWater = waveStrength > 0.001;
     if (isWater) {
         float t = frame.cameraPos.w;
         float wave1 = sin(fragWorldPos.x * 1.3 + t * 0.035) * cos(fragWorldPos.z * 1.7 - t * 0.025);
         float wave2 = sin(fragWorldPos.x * 3.1 - t * 0.065 + 1.7) * cos(fragWorldPos.z * 2.3 + t * 0.045);
-        vec2 bump = vec2(wave1, wave2) * pc.waveStrength;
+        vec2 bump = vec2(wave1, wave2) * waveStrength;
         shadingNormal = normalize(normal + vec3(bump.x, 0.0, bump.y));
     }
 
@@ -993,7 +1005,7 @@ void main() {
     // small, sharp highlight, not a broad sheen.
     vec3 halfDir = normalize(toLight + viewDir);
     float specAngle = max(dot(shadingNormal, halfDir), 0.0);
-    float specExponent = isWater ? 150.0 : (pc.materialType > 2.5 ? 9.0 : 20.0);
+    float specExponent = isWater ? 150.0 : (materialType > 2.5 ? 9.0 : 20.0);
     if (tankMaterial) specExponent = clamp(2.0 / pow(tankRoughness, 4.0) - 2.0, 6.0, 96.0);
     float specular = pow(specAngle, specExponent) * specularStrength * 0.6 * shadowFactor;
 
@@ -1038,7 +1050,7 @@ void main() {
     // water absorbs/scatters away the light that would otherwise reach the
     // bottom and return, so you don't see the lakebed there regardless of
     // viewing angle.
-    float effectiveReflectivity = pc.reflectivity;
+    float effectiveReflectivity = reflectivity;
     // Recovers the depth fraction WaterGenerator.cpp baked into fragColor
     // (mix(shallowColor, deepColor, depthT), see buildMesh) by projecting
     // back onto that known line -- avoids needing a dedicated depth vertex
@@ -1061,7 +1073,7 @@ void main() {
         // grazing angles, so the tinted/depth-darkened water color
         // (baseContribution below) always shows through at least a little.
         float waterFresnel = mix(0.03, 0.45, pow(1.0 - cosTheta, 8.0));
-        effectiveReflectivity = mix(pc.reflectivity * 0.25, 0.45, waterFresnel);
+        effectiveReflectivity = mix(reflectivity * 0.25, 0.45, waterFresnel);
         // Fresnel alone floors alpha low for a straight-down view regardless
         // of depth, which reads as "always see the bottom" -- fine for a
         // shallow puddle, wrong for a deep lake. depthAlphaFloor raises that

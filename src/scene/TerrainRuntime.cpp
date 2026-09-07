@@ -16,10 +16,12 @@ auto range(const std::vector<double>& coordinates, double low, double high) {
 }
 }
 
-TerrainGenerator::Settings recipe(uint32_t seed, float hullWidth, float hullLength) {
+TerrainGenerator::Settings recipe(uint32_t seed, float hullWidth, float hullLength, MacroTerrain::Landform landform) {
     TerrainGenerator::Settings s;
     s.preset = TerrainGenerator::Preset::DrainedValley;
     s.seed = seed; s.resolution = 257; s.erosion.workers = 4;
+    MacroTerrain::landformName(landform); // fail invalid input before generation
+    s.macro.landform = landform;
     s.lakes.emplace(); s.streams.emplace(); s.channelCarving.emplace();
     s.combinedWater = true; s.playability.emplace();
     s.playability->hullWidth = hullWidth; s.playability->hullLength = hullLength;

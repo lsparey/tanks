@@ -1,9 +1,18 @@
 #pragma once
 
 #include <cstddef>
+#include <string_view>
 #include "HeightmapGenerator.h"
 
 namespace MacroTerrain {
+
+// Mixed selects a family per seed; the original Valley recipe stays available
+// unchanged for comparison. These describe geometry, not climate or biomes.
+enum class Landform { Valley, Hills, Ridges, Plain, Basin, Mixed };
+const char* landformName(Landform);
+Landform parseLandform(std::string_view);
+Landform resolveLandform(Landform, uint32_t seed);
+inline constexpr uint32_t kLandformVersion = 1;
 
 struct Settings {
     // All lengths are world units, independent of sampling resolution.
@@ -12,6 +21,8 @@ struct Settings {
     float featureScale = 64.0f;
     float soilDepth = 0.9f;
     float apronWidth = 12.0f; // rounded UP to a whole number of sample intervals
+    Landform landform = Landform::Valley;
+    float warpStrength = 18.0f; // world units; new families only, zero disables
 };
 
 enum OpenFace : uint8_t { NegativeX = 1, PositiveX = 2, NegativeZ = 4, PositiveZ = 8 };

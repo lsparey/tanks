@@ -40,9 +40,8 @@ public:
     // plane. Any velocity pointing into a contact is removed while the
     // tangential component is preserved, so the object slides along a rock
     // or tree instead of repeatedly driving into it. Several inexpensive
-    // solver passes make chains of cliff proxy circles behave as one solid
-    // formation rather than allowing one correction to create an overlap
-    // with the previous circle.
+    // solver passes handle neighboring obstacles without allowing one
+    // correction to leave an overlap with the previous circle.
     static CircleCollisionResult resolveCircleCollisions(
         glm::vec2 position, glm::vec2 velocity, float selfRadius,
         const std::vector<CircleObstacle>& obstacles, int solverIterations = 4);

@@ -495,8 +495,16 @@ void Pipeline::createPipeline(VkFormat colorFormat, VkFormat depthFormat, VkForm
     colorBlendAttachments[1] = historyBlendAttachment;
     depthStencil.depthWriteEnable = VK_FALSE;
     depthStencil.depthCompareOp = VK_COMPARE_OP_EQUAL;
+    // basic.frag constant 0 fixes the material flags used by leafPc. Keep the
+    // shared lighting implementation while compiling away unrelated materials.
+    const VkBool32 treeFoliage = VK_TRUE;
+    const VkSpecializationMapEntry foliageEntry{0, 0, sizeof(treeFoliage)};
+    const VkSpecializationInfo foliageSpecialization{
+        1, &foliageEntry, sizeof(treeFoliage), &treeFoliage};
+    stages[1].pSpecializationInfo = &foliageSpecialization;
     VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
                                       &foliagePipeline_));
+    stages[1].pSpecializationInfo = nullptr;
     depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
     vkDestroyShaderModule(ctx_.device(), foliageDepthModule, nullptr);
 

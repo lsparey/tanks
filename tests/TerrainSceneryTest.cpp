@@ -14,6 +14,7 @@ void require(bool value, const char* message) { if (!value) throw std::runtime_e
 void check(uint32_t seed, float radius, bool production) {
     auto recipe = TerrainRuntime::recipe(seed, 2.222f, 4.48f);
     if (!production) {
+        recipe.macro.landform = MacroTerrain::Landform::Valley; // original wet fixture
         recipe.resolution = 33; recipe.erosion.duration = .25; recipe.erosion.rainDuration = .15; recipe.erosion.talusPasses = 1;
     }
     auto selected = TerrainSelection::select(recipe);

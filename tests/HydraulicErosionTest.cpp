@@ -40,6 +40,21 @@ MacroTerrain::Fields fixture(int n, bool open, int shape = 0, double soilDepth =
     }
     return f;
 }
+void sameSimulation(const MacroTerrain::Fields& a, const HydraulicErosion::Result& ar,
+                    const MacroTerrain::Fields& b, const HydraulicErosion::Result& br) {
+    require(a.heightmap.heights == b.heightmap.heights && a.bedrock == b.bedrock && a.soil == b.soil,
+            "worker count changed material columns");
+    require(ar.water == br.water && ar.sediment == br.sediment && ar.erosion == br.erosion &&
+            ar.deposition == br.deposition && ar.waterExposure == br.waterExposure &&
+            ar.throughflow == br.throughflow && ar.relaxation == br.relaxation &&
+            ar.steps == br.steps && ar.simulatedSeconds == br.simulatedSeconds,
+            "worker count changed erosion diagnostics");
+    require(ar.budget.waterResidual == br.budget.waterResidual &&
+            ar.budget.solidResidual == br.budget.solidResidual &&
+            ar.budget.exportedWater == br.budget.exportedWater &&
+            ar.budget.exportedSediment == br.budget.exportedSediment,
+            "worker count changed erosion budgets");
+}
 void check(const MacroTerrain::Fields& fields, const HydraulicErosion::Result& r) {
     const auto& b = r.budget;
     close(b.waterResidual, 0, 1e-8 * (1 + b.initialWater + b.rainfall), "water budget drift");
@@ -95,6 +110,30 @@ int main() {
             check(field, r);
             if (open) require(r.budget.exportedWater > 0 && r.budget.exportedSediment > 0, "open fixture did not export");
             else require(r.budget.exportedWater == 0 && r.budget.exportedSediment == 0, "closed slope leaked");
+        }
+    }
+    // Uneven wet/dry donors exercise shared concentrations and velocities at
+    // row boundaries, half-width edges and quarter-area corners. Include the
+    // smallest grid, where every vertex is a corner and some workers own no rows.
+    for (int n : {2, 17}) for (bool open : {false, true}) {
+        auto original = fixture(n, open, 1);
+        HydraulicErosion::InitialState patchy;
+        for (int i = 0; i < n * n; ++i) {
+            patchy.water.push_back(i % 3 == 0 ? 0 : .08);
+            patchy.sediment.push_back(i % 5 == 0 ? .06 : .01);
+        }
+        auto serial = original;
+        auto patchySettings = settings;
+        patchySettings.rainfall = 0;
+        auto expected = HydraulicErosion::run(serial, patchySettings, patchy);
+        check(serial, expected);
+        for (int workers : {2, 3, 4}) {
+            auto parallel = original;
+            auto parallelSettings = patchySettings;
+            parallelSettings.workers = workers;
+            auto actual = HydraulicErosion::run(parallel, parallelSettings, patchy);
+            check(parallel, actual);
+            sameSimulation(serial, expected, parallel, actual);
         }
     }
     auto east = fixture(17, true, 1), south = fixture(17, true, 2);
@@ -185,13 +224,8 @@ int main() {
                 first.erosion->steps == repeat.erosion->steps, "non-deterministic erosion");
         s.erosion.workers = 4;
         auto parallel = TerrainGenerator::build(s);
-        require(first.surface.heightmap().heights == parallel.surface.heightmap().heights &&
-                first.erosion->water == parallel.erosion->water && first.erosion->sediment == parallel.erosion->sediment &&
-                first.erosion->erosion == parallel.erosion->erosion && first.erosion->deposition == parallel.erosion->deposition &&
-                first.erosion->relaxation == parallel.erosion->relaxation &&
-                first.erosion->budget.waterResidual == parallel.erosion->budget.waterResidual &&
-                first.erosion->budget.solidResidual == parallel.erosion->budget.solidResidual &&
-                first.erosion->steps == parallel.erosion->steps, "worker count changed erosion");
+        sameSimulation(*first.generationFields, *first.erosion,
+                       *parallel.generationFields, *parallel.erosion);
         for (size_t i = 0; i < first.erosion->water.size(); ++i)
             require(first.erosion->sediment[i] <= s.erosion.maxConcentration * first.erosion->water[i] + 1e-10,
                     "suspended sediment exceeded concentration cap");
