@@ -12,6 +12,7 @@ const char* presetName(Preset preset) {
         case Preset::Legacy: return "legacy";
         case Preset::RollingValley: return "rolling-valley";
         case Preset::ErodedValley: return "eroded-valley";
+        case Preset::DrainedValley: return "drained-valley";
     }
     throw std::invalid_argument("unsupported terrain preset");
 }
@@ -41,6 +42,31 @@ BuildResult build(const Settings& settings) {
     presetName(settings.preset); // reject unknown enum values before allocating
     if (settings.version != kVersion)
         throw std::invalid_argument("unsupported terrain generator version");
+    if (settings.lakes && settings.preset != Preset::DrainedValley)
+        throw std::invalid_argument("lake water requires finalized drained-valley terrain");
+    if (settings.streamSections) {
+        if (!settings.streams) throw std::invalid_argument("stream sections require stream profiles");
+        StreamSections::validate(*settings.streamSections);
+    }
+    if (settings.channelCarving) {
+        if (!settings.streams) throw std::invalid_argument("channel carving requires stream profiles");
+        ChannelCarving::validate(*settings.channelCarving);
+    }
+    if (settings.combinedWater && !settings.streams)
+        throw std::invalid_argument("combined water requires stream profiles");
+    if (settings.playability) {
+        if (!settings.combinedWater) throw std::invalid_argument("playability requires final combined water");
+        TerrainPlayability::validate(*settings.playability);
+    }
+    if (settings.streams) {
+        if (!settings.lakes) throw std::invalid_argument("streams require resolved lake water");
+        StreamNetwork::validate(*settings.streams);
+    }
+    if (settings.lakes) {
+        for (double rate : {settings.lakes->evaporation, settings.lakes->seepage})
+            if (!std::isfinite(rate) || rate < 0 || rate > 1)
+                throw std::invalid_argument("invalid lake loss settings");
+    }
     // Bound before allocation and before legacy noise converts world positions
     // to integer lattice coordinates. This is an input limit, not a RAM budget.
     if (settings.resolution < 2 || settings.resolution > 4097 ||
@@ -52,10 +78,35 @@ BuildResult build(const Settings& settings) {
     auto start = Clock::now();
     std::optional<MacroTerrain::Fields> fields;
     std::optional<HydraulicErosion::Result> erosion;
+    std::optional<TerrainDrainage::Result> drainage;
+    std::optional<LakeWater::Result> water;
+    std::optional<StreamNetwork::Result> streams;
+    std::optional<StreamSections::Result> streamSections;
+    std::optional<ChannelCarving::Result> channelCarving;
+    std::optional<TerrainWater::Result> combinedWater;
+    double channelPreparationMs = 0;
     HeightmapGenerator::Heightmap hm;
     if (settings.preset != Preset::Legacy) {
         fields = MacroTerrain::generate(settings.resolution, settings.worldSize, settings.seed, settings.macro);
-        if (settings.preset == Preset::ErodedValley) erosion = HydraulicErosion::run(*fields, settings.erosion);
+        if (settings.preset == Preset::ErodedValley || settings.preset == Preset::DrainedValley)
+            erosion = HydraulicErosion::run(*fields, settings.erosion);
+        if (settings.preset == Preset::DrainedValley) {
+            HydraulicErosion::settle(*fields, *erosion);
+            drainage = TerrainDrainage::analyze(*fields, {settings.erosion.rainfall, settings.erosion.infiltration});
+            if (settings.lakes) water = LakeWater::build(*fields, *drainage, *settings.lakes);
+            if (settings.streams) streams = StreamNetwork::build(*fields, *drainage, *water, *settings.streams);
+            if (settings.channelCarving) {
+                channelPreparationMs = drainage->elapsedMs + water->elapsedMs + streams->elapsedMs;
+                channelCarving = ChannelCarving::apply(*fields, *drainage, *streams, *settings.channelCarving);
+                // These results refer to pre-cut ground. Rebuild every physical
+                // consumer from final fields, even if this pass made no cuts.
+                drainage = TerrainDrainage::analyze(*fields, {settings.erosion.rainfall, settings.erosion.infiltration});
+                water = LakeWater::build(*fields, *drainage, *settings.lakes);
+                streams = StreamNetwork::build(*fields, *drainage, *water, *settings.streams);
+            }
+            if (settings.streamSections) streamSections = StreamSections::build(*fields, *streams, *settings.streamSections);
+            if (settings.combinedWater) combinedWater = TerrainWater::build(*fields, *drainage, *water, *streams);
+        }
         hm = fields->crop();
     } else {
         hm = HeightmapGenerator::generateHills(settings.resolution, settings.worldSize,
@@ -66,6 +117,9 @@ BuildResult build(const Settings& settings) {
     auto surfaceDone = Clock::now();
     auto mesh = buildMesh(surface);
     auto meshDone = Clock::now();
+    std::optional<TerrainPlayability::Result> playability;
+    if (settings.playability) playability = TerrainPlayability::analyze(combinedWater->surface, *settings.playability);
+    auto analysisDone = Clock::now();
     auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
     Statistics stats;
     stats.heightfieldMs = ms(start, heightsDone);
@@ -74,16 +128,54 @@ BuildResult build(const Settings& settings) {
         stats.heightfieldMs -= stats.erosionMs;
         stats.erosionFieldBytes = erosion->payloadBytes();
         stats.erosionWorkingBytes = erosion->peakWorkingBytes;
+        stats.settlementMs = erosion->settlementMs;
+        stats.heightfieldMs -= stats.settlementMs;
+    }
+    if (drainage) {
+        stats.drainageMs = drainage->elapsedMs;
+        stats.heightfieldMs -= stats.drainageMs;
+        stats.drainageFieldBytes = drainage->payloadBytes();
+        stats.drainageWorkingBytes = drainage->peakWorkingBytes;
     }
     stats.surfaceMs = ms(heightsDone, surfaceDone);
+    if (water) {
+        stats.waterMs = water->elapsedMs;
+        stats.heightfieldMs -= stats.waterMs;
+        stats.waterBytes = water->payloadBytes();
+    }
     stats.meshMs = ms(surfaceDone, meshDone);
-    stats.totalMs = ms(start, meshDone);
+    if (streams) {
+        stats.streamsMs = streams->elapsedMs;
+        stats.heightfieldMs -= stats.streamsMs;
+        stats.streamsBytes = streams->payloadBytes();
+    }
+    stats.totalMs = ms(start, analysisDone);
     stats.retainedSurfaceBytes = surface.heightmap().heights.capacity() * sizeof(float) +
                                  surface.shadingNormals().capacity() * sizeof(glm::vec3);
     stats.meshBytes = mesh.vertices.capacity() * sizeof(MeshVertex) +
                      mesh.indices.capacity() * sizeof(uint32_t);
     if (fields) stats.generationFieldBytes = fields->payloadBytes();
-    return {settings, std::move(surface), std::move(mesh), stats, std::move(fields), std::move(erosion)};
+    if (streamSections) {
+        stats.streamSectionsMs = streamSections->elapsedMs;
+        stats.heightfieldMs -= stats.streamSectionsMs;
+        stats.streamSectionsBytes = streamSections->payloadBytes();
+    }
+    if (channelCarving) {
+        stats.channelPreparationMs = channelPreparationMs;
+        stats.channelCarvingMs = channelCarving->elapsedMs;
+        stats.channelCarvingBytes = channelCarving->payloadBytes();
+        stats.heightfieldMs -= stats.channelPreparationMs + stats.channelCarvingMs;
+    }
+    if (combinedWater) {
+        stats.combinedWaterMs = combinedWater->elapsedMs;
+        stats.combinedWaterBytes = combinedWater->payloadBytes();
+        stats.heightfieldMs -= stats.combinedWaterMs;
+    }
+    if (playability) {
+        stats.playabilityMs = playability->elapsedMs;
+        stats.playabilityBytes = playability->payloadBytes();
+    }
+    return {settings, std::move(surface), std::move(mesh), stats, std::move(fields), std::move(erosion), std::move(drainage), std::move(water), std::move(streams), std::move(streamSections), std::move(channelCarving), std::move(combinedWater), std::move(playability)};
 }
 
 } // namespace TerrainGenerator

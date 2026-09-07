@@ -40,10 +40,12 @@ struct Budget {
     // equals the square's actual worldSize squared.
     double initialWater = 0, rainfall = 0, infiltration = 0, evaporation = 0;
     double exportedWater = 0, finalWater = 0, waterResidual = 0;
+    double removedTransientWater = 0; // explicit terminal reset, NOT boundary export
     double initialSoil = 0, initialSediment = 0, convertedBedrock = 0;
     double exportedSediment = 0, finalSoil = 0, finalSediment = 0;
     double solidResidual = 0; // final + exports - initial - converted bedrock
     double solidRoundingDelta = 0; // explicit double -> float terrain quantization
+    double settledSediment = 0; // terminal transfer into soil, already in finalSoil
 };
 struct Result {
     // Full-domain vertex fields. Water is transient simulation water, NOT the
@@ -57,11 +59,19 @@ struct Result {
     int steps = 0;
     double simulatedSeconds = 0, elapsedMs = 0;
     size_t peakWorkingBytes = 0; // solver vector payload incl. result, excl. caller fields
+    bool finalized = false;
+    double settlementMs = 0;
     size_t payloadBytes() const;
 };
 
 // Conservative CPU reference. Changes fields only after successful completion.
 // Run over the FULL domain before cropping or recomputing final drainage.
 Result run(MacroTerrain::Fields& fields, const Settings& settings = {}, const InitialState& initial = {});
+
+// Last height-changing pass before drainage: deposit all suspended solids in
+// place and explicitly remove temporary simulation water. Updates diagnostics
+// and budgets, preserving bedrock. Both inputs must be the matching output of
+// run(); failures leave them intact. A second call is rejected.
+void settle(MacroTerrain::Fields& fields, Result& result);
 
 } // namespace HydraulicErosion

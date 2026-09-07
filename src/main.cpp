@@ -39,6 +39,8 @@ int main(int argc, char** argv) {
         bool originalTankModel = false;
         bool animateTracks = true;
         bool weaponPreview = false;
+        bool valleyTerrain = true;
+        uint32_t terrainAttempts = 1;
         for (int i = 1; i < argc; ++i) {
             if (std::strcmp(argv[i], "--profile") == 0) profile = true;
             if (std::strcmp(argv[i], "--static-tracks") == 0) animateTracks = false;
@@ -51,6 +53,16 @@ int main(int argc, char** argv) {
                 if (parsed.ec != std::errc{} || parsed.ptr != end)
                     throw std::runtime_error("invalid --seed");
                 seed = value;
+            } else if (std::strcmp(argv[i], "--terrain") == 0) {
+                if (++i >= argc || (std::strcmp(argv[i], "legacy") != 0 && std::strcmp(argv[i], "drained-valley") != 0))
+                    throw std::runtime_error("--terrain requires legacy or drained-valley");
+                valleyTerrain = std::strcmp(argv[i], "drained-valley") == 0;
+            } else if (std::strcmp(argv[i], "--terrain-attempts") == 0) {
+                if (++i >= argc) throw std::runtime_error("--terrain-attempts requires an integer from 1 to 8");
+                const char* end = argv[i] + std::strlen(argv[i]);
+                auto parsed = std::from_chars(argv[i], end, terrainAttempts);
+                if (parsed.ec != std::errc{} || parsed.ptr != end || terrainAttempts < 1 || terrainAttempts > 8)
+                    throw std::runtime_error("--terrain-attempts requires an integer from 1 to 8");
             } else if (std::strcmp(argv[i], "--model") == 0) {
                 if (++i >= argc) throw std::runtime_error("--model requires original or refined");
                 if (std::strcmp(argv[i], "original") != 0 && std::strcmp(argv[i], "refined") != 0)
@@ -65,8 +77,10 @@ int main(int argc, char** argv) {
                     throw std::runtime_error("unknown reference view");
             }
         }
+        if (!valleyTerrain && terrainAttempts != 1)
+            throw std::runtime_error("--terrain-attempts above 1 cannot be used with --terrain legacy");
         if (!view.empty() && !seed) seed = 7331;
-        Application app(parseScreenshotRequest(argc, argv), profile, seed, view, originalTankModel, animateTracks, weaponPreview);
+        Application app(parseScreenshotRequest(argc, argv), profile, seed, view, originalTankModel, animateTracks, weaponPreview, valleyTerrain, terrainAttempts);
         app.run();
     } catch (const std::exception& e) {
         std::cerr << "Fatal error: " << e.what() << std::endl;

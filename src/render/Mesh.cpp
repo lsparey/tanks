@@ -435,7 +435,12 @@ Mesh::Mesh(VulkanContext& ctx, CommandContext& commands, const std::vector<Verte
                                               VK_BUFFER_USAGE_INDEX_BUFFER_BIT)),
       vertexCount_(static_cast<uint32_t>(vertices.size())),
       indexCount_(static_cast<uint32_t>(indices.size())),
-      horizontalInscribedRadius_(horizontalInscribedRadius) {}
+      horizontalInscribedRadius_(horizontalInscribedRadius) {
+    double radius = 0;
+    for (const auto& vertex : vertices)
+        radius = std::max(radius, std::hypot(double(vertex.position.x), double(vertex.position.z)));
+    horizontalBoundingRadius_ = std::nextafter(float(radius), std::numeric_limits<float>::infinity());
+}
 
 void Mesh::bindAndDraw(VkCommandBuffer cmd) const {
     VkBuffer buffers[] = {vertexBuffer_.handle()};

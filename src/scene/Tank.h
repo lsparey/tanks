@@ -71,6 +71,9 @@ public:
     glm::vec3 forward() const { return forward_; }
     // Hull's local-space X extent (outer edge to outer edge) -- see load().
     float hullWidth() const { return hullWidth_; }
+    float hullLength() const { return hullLength_; }
+    // Initial placement uses the accepted ground and first route heading.
+    void placeAt(glm::vec3 position, glm::vec2 forward, const Terrain& terrain);
     glm::vec4 surfaceBounds() const { return surfaceBounds_; }
     // Physical ground-contact locations used by independent tread trails.
     // They follow the stable gameplay pose rather than the oscillating

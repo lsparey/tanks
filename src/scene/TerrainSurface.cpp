@@ -52,15 +52,25 @@ TerrainSurface::Sample TerrainSurface::sampleAt(float worldX, float worldZ) cons
         throw std::invalid_argument("non-finite terrain query");
     const auto& hm = heightmap_;
     // Clamp before scaling so finite, far-outside queries cannot overflow.
-    float gx = (std::clamp(worldX / hm.worldSize, -0.5f, 0.5f) + 0.5f) * (hm.resolution - 1);
-    float gz = (std::clamp(worldZ / hm.worldSize, -0.5f, 0.5f) + 0.5f) * (hm.resolution - 1);
-    int x = std::min(static_cast<int>(gx), hm.resolution - 2);
-    int z = std::min(static_cast<int>(gz), hm.resolution - 2);
-    float tx = gx - x, tz = gz - z;
+    auto axis = [&](float world) {
+        float p = std::clamp(world, -hm.worldSize * .5f, hm.worldSize * .5f);
+        int cell = std::min(int((p / hm.worldSize + .5f) * (hm.resolution - 1)), hm.resolution - 2);
+        auto coordinate = [&](int i) { return (float(i) / (hm.resolution - 1) - .5f) * hm.worldSize; };
+        // Normalized grid inversion alone can put an exact rendered vertex in
+        // its neighbour, and amplifies error on steep water/ground triangles.
+        // Correct against the actual float positions used by position().
+        while (cell > 0 && p < coordinate(cell)) --cell;
+        while (cell < hm.resolution - 2 && p >= coordinate(cell + 1)) ++cell;
+        double t = (double(p) - coordinate(cell)) / (double(coordinate(cell + 1)) - coordinate(cell));
+        return std::pair{cell, t};
+    };
+    auto [x, tx] = axis(worldX);
+    auto [z, tz] = axis(worldZ);
     auto indices = quadIndices(hm.resolution, x, z);
+    uint32_t triangle = 2 * (uint32_t(z) * (hm.resolution - 1) + x);
     if (tz >= tx)
-        return {{indices[0], indices[1], indices[2]}, {1.0f - tz, tz - tx, tx}};
-    return {{indices[3], indices[4], indices[5]}, {1.0f - tx, tz, tx - tz}};
+        return {{indices[0], indices[1], indices[2]}, {float(1 - tz), float(tz - tx), float(tx)}, triangle};
+    return {{indices[3], indices[4], indices[5]}, {float(1 - tx), float(tz), float(tx - tz)}, triangle + 1};
 }
 
 float TerrainSurface::heightAt(float worldX, float worldZ) const {

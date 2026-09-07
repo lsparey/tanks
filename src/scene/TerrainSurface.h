@@ -23,13 +23,15 @@ public:
     float heightAt(float worldX, float worldZ) const;
     glm::vec3 contactNormalAt(float worldX, float worldZ) const;
     glm::vec3 shadingNormalAt(float worldX, float worldZ) const;
-
-private:
+    // Shared triangle selection for fields sampled against this exact mesh.
     struct Sample {
         std::array<uint32_t, 3> indices;
         glm::vec3 weights;
+        uint32_t triangle; // row-major quads, two triangles per quad
     };
     Sample sampleAt(float worldX, float worldZ) const;
+
+private:
     HeightmapGenerator::Heightmap heightmap_;
     std::vector<glm::vec3> shadingNormals_;
 };

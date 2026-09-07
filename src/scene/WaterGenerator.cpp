@@ -215,3 +215,33 @@ bool WaterGenerator::isUnderwater(const FloodField& field, float worldX, float w
     int j = std::clamp(static_cast<int>(std::lround(gz)), 0, field.resolution - 1);
     return field.submerged[static_cast<size_t>(j) * field.resolution + i];
 }
+
+std::unique_ptr<Mesh> WaterGenerator::buildMesh(VulkanContext& ctx, CommandContext& commands,
+                                               const TerrainWater::Surface& surface) {
+    const auto& data = surface.mesh();
+    if (data.indices.empty()) return nullptr;
+    std::vector<Vertex> vertices;
+    vertices.reserve(data.vertices.size());
+    for (const auto& v : data.vertices) {
+        glm::vec3 color = glm::mix(glm::vec3(.09f, .16f, .14f), glm::vec3(.01f, .025f, .045f),
+                                   glm::clamp(v.depth, 0.0f, 1.0f));
+        vertices.push_back({v.position, v.normal, color,
+                           glm::vec2(v.position.x, v.position.z) * kTextureRepeatsPerUnit});
+    }
+    return std::make_unique<Mesh>(ctx, commands, vertices, data.indices);
+}
+
+std::unique_ptr<Mesh> WaterGenerator::buildMesh(VulkanContext& ctx, CommandContext& commands,
+                                               const LakeWater::Surface& surface) {
+    const auto& data = surface.mesh();
+    if (data.indices.empty()) return nullptr;
+    std::vector<Vertex> vertices;
+    vertices.reserve(data.vertices.size());
+    for (const auto& v : data.vertices) {
+        glm::vec3 color = glm::mix(glm::vec3(.09f, .16f, .14f), glm::vec3(.01f, .025f, .045f),
+                                   glm::clamp(v.depth, 0.0f, 1.0f));
+        vertices.push_back({v.position, glm::vec3(0, 1, 0), color,
+                           glm::vec2(v.position.x, v.position.z) * kTextureRepeatsPerUnit});
+    }
+    return std::make_unique<Mesh>(ctx, commands, vertices, data.indices);
+}

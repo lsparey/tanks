@@ -257,6 +257,15 @@ pressed. Without an explicit seed, reference views use 7331; normal gameplay
 still chooses and prints a random seed. Timing, effects, and temporal ray noise
 are not deterministic replay. Capture screenshots outside measurement intervals.
 
+The upgraded valley terrain is now the default: run `./build/tanks` or use
+`./build/tanks --seed 7331` for a repeatable map. Use `--terrain legacy` to compare
+with the previous generator, or `--terrain drained-valley` to select the new path
+explicitly. The new path uses the loaded tank's dimensions to select a dry spawn and route,
+then preserves that route during scenery placement. `--terrain-attempts 1..8`
+explicitly bounds seed selection (default 1); logs record both requested and
+selected seeds. See [terrain runtime notes](docs/TERRAIN_RUNTIME.md) for status,
+replay instructions and remaining acceptance work.
+
 The [visual target and reference board](docs/VISUAL_TARGET.md) describe the
 British countryside daylight palette and show the repeatable camera views.
 

@@ -120,6 +120,16 @@ int main() {
     auto odd = TerrainGenerator::build(oddGrid);
     checkMesh(odd.surface, odd.mesh);
 
+    // Vertex coordinates are rounded by the renderer's float position rule.
+    // Queries at those exact positions must not leak into an adjacent cell.
+    HeightmapGenerator::Heightmap steepGrid{256, 180, std::vector<float>(256 * 256)};
+    for (size_t i = 0; i < steepGrid.heights.size(); ++i) steepGrid.heights[i] = float(i % 7) * 50;
+    TerrainSurface steep(std::move(steepGrid));
+    for (int z = 0; z < 256; z += 17) for (int x = 0; x < 256; x += 17) {
+        auto p = steep.position(x, z);
+        require(steep.heightAt(p.x, p.z) == p.y, "rendered grid vertex sampled a neighbouring height");
+    }
+
     rejects([] { TerrainSurface s({1, 1, {0}}); });
     rejects([] { TerrainSurface s({2, 1, {0}}); });
     rejects([] { TerrainSurface s({2, 0, {0, 0, 0, 0}}); });

@@ -13,14 +13,28 @@ add_library(terrain_generation STATIC
     src/scene/HeightmapGenerator.cpp
     src/scene/MacroTerrain.cpp
     src/scene/HydraulicErosion.cpp
+    src/scene/TerrainDrainage.cpp
+    src/scene/LakeWater.cpp
+    src/scene/ShorelineIndex.cpp
+    src/scene/StreamNetwork.cpp
+    src/scene/StreamSections.cpp
+    src/scene/ChannelCarving.cpp
+    src/scene/TerrainWater.cpp
+    src/scene/TerrainPlayability.cpp
     src/scene/TerrainSurface.cpp
     src/scene/TerrainGenerator.cpp
+    src/scene/TerrainSelection.cpp
+    src/scene/TerrainRuntime.cpp
 )
 target_include_directories(terrain_generation PUBLIC src)
 target_link_libraries(terrain_generation PUBLIC glm::glm Threads::Threads)
 
 add_executable(terrain_probe tools/TerrainProbe.cpp)
 target_link_libraries(terrain_probe PRIVATE terrain_generation)
+add_executable(shoreline_probe tools/ShorelineProbe.cpp)
+target_link_libraries(shoreline_probe PRIVATE terrain_generation)
+add_executable(terrain_selection_probe tools/TerrainSelectionProbe.cpp)
+target_link_libraries(terrain_selection_probe PRIVATE terrain_generation)
 
 include(CTest)
 if(BUILD_TESTING)
@@ -33,6 +47,36 @@ if(BUILD_TESTING)
     add_executable(hydraulic_erosion_test tests/HydraulicErosionTest.cpp)
     target_link_libraries(hydraulic_erosion_test PRIVATE terrain_generation)
     add_test(NAME hydraulic_erosion COMMAND hydraulic_erosion_test)
+    add_executable(terrain_drainage_test tests/TerrainDrainageTest.cpp)
+    target_link_libraries(terrain_drainage_test PRIVATE terrain_generation)
+    add_test(NAME terrain_drainage COMMAND terrain_drainage_test)
+    add_executable(lake_water_test tests/LakeWaterTest.cpp)
+    target_link_libraries(lake_water_test PRIVATE terrain_generation)
+    add_test(NAME lake_water COMMAND lake_water_test)
+    add_executable(stream_network_test tests/StreamNetworkTest.cpp)
+    target_link_libraries(stream_network_test PRIVATE terrain_generation)
+    add_test(NAME stream_network COMMAND stream_network_test)
+    add_executable(stream_sections_test tests/StreamSectionsTest.cpp)
+    target_link_libraries(stream_sections_test PRIVATE terrain_generation)
+    add_test(NAME stream_sections COMMAND stream_sections_test)
+    add_executable(channel_carving_test tests/ChannelCarvingTest.cpp)
+    target_link_libraries(channel_carving_test PRIVATE terrain_generation)
+    add_test(NAME channel_carving COMMAND channel_carving_test)
+    add_executable(terrain_water_test tests/TerrainWaterTest.cpp)
+    target_link_libraries(terrain_water_test PRIVATE terrain_generation)
+    add_test(NAME terrain_water COMMAND terrain_water_test)
+    add_executable(shoreline_index_test tests/ShorelineIndexTest.cpp)
+    target_link_libraries(shoreline_index_test PRIVATE terrain_generation)
+    add_test(NAME shoreline_index COMMAND shoreline_index_test)
+    add_executable(terrain_playability_test tests/TerrainPlayabilityTest.cpp)
+    target_link_libraries(terrain_playability_test PRIVATE terrain_generation)
+    add_test(NAME terrain_playability COMMAND terrain_playability_test)
+    add_executable(terrain_selection_test tests/TerrainSelectionTest.cpp)
+    target_link_libraries(terrain_selection_test PRIVATE terrain_generation)
+    add_test(NAME terrain_selection COMMAND terrain_selection_test)
+    add_executable(terrain_runtime_test tests/TerrainRuntimeTest.cpp)
+    target_link_libraries(terrain_runtime_test PRIVATE terrain_generation)
+    add_test(NAME terrain_runtime COMMAND terrain_runtime_test)
 endif()
 
 if(NOT TANKS_BUILD_GAME)
@@ -115,6 +159,11 @@ if(BUILD_TESTING)
     target_include_directories(tree_mesh_test PRIVATE src)
     target_link_libraries(tree_mesh_test PRIVATE glm::glm Vulkan::Vulkan glfw Threads::Threads)
     add_test(NAME tree_mesh COMMAND tree_mesh_test)
+    add_executable(terrain_scenery_test tests/TerrainSceneryTest.cpp src/render/Mesh.cpp
+        src/render/VoxelSurface.cpp src/render/Buffer.cpp src/render/SingleTimeCommands.cpp
+        src/scene/TreeGenerator.cpp)
+    target_link_libraries(terrain_scenery_test PRIVATE terrain_generation Vulkan::Vulkan glfw)
+    add_test(NAME terrain_scenery COMMAND terrain_scenery_test)
     add_executable(tree_generator_test tests/TreeGeneratorTest.cpp src/scene/TreeGenerator.cpp)
     target_include_directories(tree_generator_test PRIVATE src)
     target_link_libraries(tree_generator_test PRIVATE glm::glm)

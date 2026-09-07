@@ -361,4 +361,74 @@ Result run(MacroTerrain::Fields& fields, const Settings& settings, const Initial
     return result;
 }
 
+void settle(MacroTerrain::Fields& fields, Result& result) {
+    auto started = std::chrono::steady_clock::now();
+    const int n = fields.heightmap.resolution;
+    if (result.finalized || n < 2 || n > 4097 || !range(fields.spacing, .0001, 1000000) ||
+        !std::isfinite(fields.heightmap.worldSize) ||
+        std::abs(double(fields.heightmap.worldSize) - double(fields.spacing) * (n - 1)) >
+            1e-6 * std::max(1.0, double(fields.heightmap.worldSize)))
+        throw std::invalid_argument("invalid or already finalized erosion result");
+    const size_t count = size_t(n) * n;
+    if (fields.heightmap.heights.size() != count || fields.bedrock.size() != count ||
+        fields.soil.size() != count || result.water.size() != count ||
+        result.sediment.size() != count || result.deposition.size() != count)
+        throw std::invalid_argument("settlement field dimensions disagree");
+    std::vector<float> soil(count), heights(count);
+    std::vector<double> deposition(count);
+    auto budget = result.budget;
+    double oldSoil = 0, water = 0, sediment = 0;
+    budget.finalSoil = 0;
+    for (int z = 0; z < n; ++z) {
+        for (int x = 0; x < n; ++x) {
+            size_t i = size_t(z) * n + x;
+            if (!std::isfinite(fields.bedrock[i]) || !std::isfinite(fields.soil[i]) || fields.soil[i] < 0 ||
+                !std::isfinite(fields.heightmap.heights[i]) ||
+                fields.heightmap.heights[i] != fields.bedrock[i] + fields.soil[i] ||
+                !std::isfinite(result.water[i]) || result.water[i] < 0 ||
+                !std::isfinite(result.sediment[i]) || result.sediment[i] < 0 ||
+                !std::isfinite(result.deposition[i]) || result.deposition[i] < 0)
+                throw std::invalid_argument("invalid settlement material or fluid column");
+            double area = double(fields.spacing) * fields.spacing *
+                (x == 0 || x == n - 1 ? .5 : 1) * (z == 0 || z == n - 1 ? .5 : 1);
+            double depositedSoil = double(fields.soil[i]) + result.sediment[i];
+            soil[i] = float(depositedSoil);
+            heights[i] = fields.bedrock[i] + soil[i];
+            deposition[i] = result.deposition[i] + result.sediment[i];
+            if (!std::isfinite(soil[i]) || !std::isfinite(heights[i]) || !std::isfinite(deposition[i]))
+                throw std::invalid_argument("settlement overflow");
+            oldSoil += fields.soil[i] * area;
+            water += result.water[i] * area;
+            sediment += result.sediment[i] * area;
+            budget.finalSoil += soil[i] * area;
+            budget.solidRoundingDelta += (double(soil[i]) - depositedSoil) * area;
+        }
+    }
+    // Detect a stale/mismatched snapshot before committing either input.
+    auto matches = [](double a, double b) {
+        return std::isfinite(a) && std::isfinite(b) && std::abs(a - b) <= 1e-9 * std::max(1.0, std::abs(b));
+    };
+    if (!matches(oldSoil, result.budget.finalSoil) || !matches(water, result.budget.finalWater) ||
+        !matches(sediment, result.budget.finalSediment))
+        throw std::invalid_argument("settlement fields disagree with erosion budget");
+    budget.removedTransientWater += water;
+    budget.settledSediment += sediment;
+    budget.finalWater = budget.finalSediment = 0;
+    budget.waterResidual = budget.removedTransientWater + budget.exportedWater + budget.infiltration +
+        budget.evaporation - budget.initialWater - budget.rainfall;
+    budget.solidResidual = budget.finalSoil + budget.exportedSediment - budget.initialSoil -
+        budget.initialSediment - budget.convertedBedrock;
+    if (!std::isfinite(budget.waterResidual) || !std::isfinite(budget.solidResidual) ||
+        !std::isfinite(budget.solidRoundingDelta))
+        throw std::invalid_argument("non-finite settlement budget");
+    fields.soil.swap(soil);
+    fields.heightmap.heights.swap(heights);
+    result.deposition.swap(deposition);
+    std::fill(result.water.begin(), result.water.end(), 0);
+    std::fill(result.sediment.begin(), result.sediment.end(), 0);
+    result.budget = budget;
+    result.finalized = true;
+    result.settlementMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+}
+
 } // namespace HydraulicErosion

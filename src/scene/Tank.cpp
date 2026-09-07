@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <stdexcept>
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -449,6 +450,20 @@ void Tank::simulateMovement(
                                  feedbackBlend);
     updateSuspensionPose(terrain, deltaTime, longitudinalAcceleration,
                          glm::dot(acceleration, currentRight));
+}
+
+void Tank::placeAt(glm::vec3 position, glm::vec2 forward, const Terrain& terrain) {
+    if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z) ||
+        !std::isfinite(forward.x) || !std::isfinite(forward.y) || glm::length(forward) < 0.001f)
+        throw std::invalid_argument("invalid tank spawn pose");
+    position_ = position;
+    yaw_ = std::atan2(forward.x, forward.y);
+    velocity_ = glm::vec2(0); angularVelocity_ = 0; movementAccumulator_ = 0;
+    longitudinalAcceleration_ = 0; lateralSlipSpeed_ = 0;
+    suspensionInitialized_ = false;
+    suspensionHeightVelocity_ = suspensionPitchVelocity_ = suspensionRollVelocity_ = 0;
+    updateGroundPose(terrain);
+    updateSuspensionPose(terrain, 0, 0, 0);
 }
 
 void Tank::updateGroundPose(const Terrain& terrain) {

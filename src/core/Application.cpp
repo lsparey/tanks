@@ -1,6 +1,7 @@
 #include "Application.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <future>
@@ -35,6 +36,7 @@
 #include "../scene/RockTextureGenerator.h"
 #include "../scene/TrackTextureGenerator.h"
 #include "../scene/WaterGenerator.h"
+#include "../scene/TerrainSelection.h"
 
 namespace {
 
@@ -274,10 +276,22 @@ VkImageMemoryBarrier2 imageBarrier(VkImage image, VkImageAspectFlags aspect,
 
 Application::Application(std::optional<ScreenshotRequest> screenshotRequest, bool performanceReporting,
                          std::optional<uint32_t> worldSeed, std::string referenceView,
-                         bool originalTankModel, bool animateTracks, bool weaponPreview)
+                         bool originalTankModel, bool animateTracks, bool weaponPreview,
+                         bool valleyTerrain, uint32_t terrainAttempts)
     : worldSeed_(worldSeed ? *worldSeed : std::random_device{}()),
       referenceView_(std::move(referenceView)), performanceReporting_(performanceReporting),
       screenshotRequest_(std::move(screenshotRequest)) {
+    try {
+        initialize(originalTankModel, animateTracks, weaponPreview, valleyTerrain, terrainAttempts);
+    } catch (...) {
+        cleanup();
+        throw;
+    }
+}
+
+void Application::initialize(bool originalTankModel, bool animateTracks, bool weaponPreview,
+                             bool valleyTerrain, uint32_t terrainAttempts) {
+    auto loadingStart = std::chrono::steady_clock::now();
     weaponPreview_ = weaponPreview;
     std::cout << "World seed: " << worldSeed_ << '\n';
     initWindow();
@@ -315,6 +329,47 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
         pipeline_->updateHistoryDescriptor(i, historyBuffer_->imageView(readSlot),
                                             historyBuffer_->sampler());
     }
+
+    tank_ = std::make_unique<Tank>(*context_, *commands_,
+                                    std::string(ASSET_ROOT) + (originalTankModel
+                                        ? "/assets/models/tank.x" : "/assets/models/challenger2.obj"), animateTracks);
+    TerrainGenerator::Settings terrainSettings;
+    terrainSettings.seed = worldSeed_;
+    if (valleyTerrain) terrainSettings = TerrainRuntime::recipe(worldSeed_, tank_->hullWidth(), tank_->hullLength());
+    auto terrainBuild = [&] {
+        if (!valleyTerrain) return TerrainGenerator::build(terrainSettings);
+        std::stop_source stop;
+        std::atomic<uint32_t> completed{0};
+        auto job = std::async(std::launch::async, [&] {
+            return TerrainSelection::select(terrainSettings, {terrainAttempts}, [&](const auto& attempt) {
+                std::cout << "Terrain attempt " << attempt.index + 1 << "/" << terrainAttempts
+                          << ", seed " << attempt.seed << ": " << TerrainPlayability::statusName(attempt.playability)
+                          << ", " << attempt.generationMs << " ms\n";
+                completed.store(attempt.index + 1);
+            }, stop.get_token());
+        });
+        try {
+            while (job.wait_for(std::chrono::milliseconds(50)) != std::future_status::ready) {
+                presentLoadingProgress(0.02f + 0.08f * float(completed.load()) / terrainAttempts);
+                if (glfwWindowShouldClose(window_)) stop.request_stop();
+            }
+        } catch (...) {
+            stop.request_stop(); // future joins before its referenced state leaves scope
+            throw;
+        }
+        auto selected = job.get();
+        glfwPollEvents();
+        if (selected.status == TerrainSelection::Status::Cancelled || glfwWindowShouldClose(window_))
+            throw std::runtime_error("terrain loading cancelled");
+        if (!selected.accepted)
+            throw std::runtime_error("terrain selection exhausted " + std::to_string(terrainAttempts) +
+                                     " attempt(s); choose another --seed or increase --terrain-attempts (maximum 8)");
+        worldSeed_ = selected.accepted->settings.seed;
+        std::cout << "Terrain requested seed " << selected.requestedSeed << ", selected seed " << worldSeed_
+                  << ", total selection " << selected.elapsedMs << " ms\n";
+        return std::move(*selected.accepted);
+    }();
+    presentLoadingProgress(0.10f);
 
     // Both generators now offer 4 palette variants each (see
     // GrassTextureGenerator/RockTextureGenerator); basic.frag's patch-blend
@@ -414,36 +469,47 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
         *boundaryWallTexture_, *boundaryWallTexture_, *boundaryWallTexture_, *boundaryWallTexture_);
     presentLoadingProgress(0.15f);
 
-    TerrainGenerator::Settings terrainSettings;
-    terrainSettings.seed = worldSeed_;
-    auto terrainBuild = TerrainGenerator::build(terrainSettings);
     auto terrainStats = terrainBuild.statistics;
     auto terrainUploadStart = std::chrono::steady_clock::now();
     terrain_ = std::make_unique<Terrain>(*context_, *commands_, std::move(terrainBuild));
     double terrainUploadMs = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - terrainUploadStart).count();
-    std::cout << "Terrain legacy v" << terrainSettings.version << ": heights "
-              << terrainStats.heightfieldMs << " ms, surface " << terrainStats.surfaceMs
-              << " ms, mesh " << terrainStats.meshMs << " ms, upload/BLAS "
-              << terrainUploadMs << " ms; CPU surface " << terrainStats.retainedSurfaceBytes
-              << " bytes, transient mesh " << terrainStats.meshBytes << " bytes\n";
+    std::cout << "Terrain " << TerrainGenerator::presetName(terrainSettings.preset)
+              << " v" << terrainSettings.version << ": generation " << terrainStats.totalMs
+              << " ms, upload/BLAS " << terrainUploadMs << " ms\n";
     presentLoadingProgress(0.35f);
-    WaterGenerator::FloodField waterField =
-        WaterGenerator::computeFloodField(*terrain_, kWaterThreshold, kWaterMaxDepth);
-    weaponWaterField_ = waterField;
-    waterMesh_ = WaterGenerator::buildMesh(*context_, *commands_, *terrain_, waterField);
+    if (const auto& water = terrain_->state().water) {
+        waterMesh_ = WaterGenerator::buildMesh(*context_, *commands_, *water);
+        const auto& spawn = *terrain_->state().navigation->spawn;
+        spawnXZ_ = {spawn.position.x, spawn.position.z};
+        tank_->placeAt(spawn.position, spawn.forward, *terrain_);
+        std::cout << "Terrain spawn: " << spawn.position.x << ", " << spawn.position.y << ", " << spawn.position.z
+                  << "; route " << terrain_->state().navigation->routeLength << " m\n";
+    } else {
+        legacyWaterField_ = WaterGenerator::computeFloodField(*terrain_, kWaterThreshold, kWaterMaxDepth);
+        waterMesh_ = WaterGenerator::buildMesh(*context_, *commands_, *terrain_, legacyWaterField_);
+    }
     float deepestWater = -1.0f;
-    for (int z = 1; z < waterField.resolution - 1; ++z) {
-        for (int x = 1; x < waterField.resolution - 1; ++x) {
-            size_t index = static_cast<size_t>(z) * waterField.resolution + x;
-            if (!waterField.submerged[index]) continue;
-            float wx = (static_cast<float>(x) / (waterField.resolution - 1) - 0.5f) * waterField.worldSize;
-            float wz = (static_cast<float>(z) / (waterField.resolution - 1) - 0.5f) * waterField.worldSize;
+    const auto& heightmap = terrain_->heightmap();
+    for (int z = 1; z < heightmap.resolution - 1; ++z) {
+        for (int x = 1; x < heightmap.resolution - 1; ++x) {
+            float wx = (static_cast<float>(x) / (heightmap.resolution - 1) - 0.5f) * heightmap.worldSize;
+            float wz = (static_cast<float>(z) / (heightmap.resolution - 1) - 0.5f) * heightmap.worldSize;
             if (std::abs(wx) > 65.0f || std::abs(wz) > 65.0f) continue;
-            float depth = waterField.waterLevel[index] - terrain_->heightAt(wx, wz);
+            float level;
+            if (const auto& water = terrain_->state().water) {
+                auto sample = water->sampleAt(wx, wz);
+                if (!sample) continue;
+                level = sample->height;
+            } else {
+                size_t index = static_cast<size_t>(z) * heightmap.resolution + x;
+                if (!legacyWaterField_.submerged[index]) continue;
+                level = legacyWaterField_.waterLevel[index];
+            }
+            float depth = level - terrain_->heightAt(wx, wz);
             if (depth > deepestWater) {
                 deepestWater = depth;
-                waterReferenceTarget_ = {wx, waterField.waterLevel[index], wz};
+                waterReferenceTarget_ = {wx, level, wz};
             }
         }
     }
@@ -457,9 +523,6 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
     boundaryWallMesh_ = BoundaryGenerator::buildWallMesh(*context_, *commands_, *terrain_,
                                                           boundaryHalfExtent_, kBoundaryWallHeight);
     presentLoadingProgress(0.45f);
-    tank_ = std::make_unique<Tank>(*context_, *commands_,
-                                    std::string(ASSET_ROOT) + (originalTankModel
-                                        ? "/assets/models/tank.x" : "/assets/models/challenger2.obj"), animateTracks);
     presentLoadingProgress(0.55f);
     // Near-white so the crate texture's own wood color/detail shows through
     // unmodified (same reasoning as the bark/leaf/rock tints).
@@ -607,14 +670,15 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
     cloudDomeMesh_ =
         std::make_unique<Mesh>(Mesh::dome(*context_, *commands_, glm::vec3(1.0f), 0.25f));
     presentLoadingProgress(0.85f);
+    auto placementStart = std::chrono::steady_clock::now();
     spawnBoxes();
-    spawnTrees(waterField);
-    spawnRocks(waterField);
-    spawnSedimentaryCliffs(waterField);
+    spawnTrees();
+    spawnRocks();
+    spawnSedimentaryCliffs();
     if (referenceView_ == "cliffs" && sedimentaryCliffs_.empty())
         throw std::runtime_error("reference seed has no cliffs; choose another --seed");
-    spawnShrubs(waterField);
-    spawnSmallRocks(waterField);
+    spawnShrubs();
+    spawnSmallRocks();
 
     // Static collision circles for the tank's own movement (see
     // Tank::update) -- trees/rocks never move, so this is built once
@@ -662,11 +726,24 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
         }
     }
 
+    if (terrain_->state().reservation) {
+        auto allObstacles = obstacles_;
+        // Boxes use separate destructive AABB contact during play. Include a
+        // circle enclosing the tilted visual cube for the startup certificate.
+        for (const auto& box : boxes_)
+            allObstacles.push_back({{box.position.x, box.position.z}, box.size * 0.866026f});
+        double area = terrain_->state().verifyObstacles(allObstacles);
+        std::cout << "Scenery route verified: " << area << " m2 connected; " << trees_.size() << " trees\n";
+    }
+    std::cout << "Scenery placement/verification: " << std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - placementStart).count() << " ms\n";
     presentLoadingProgress(0.92f);
     buildAccelerationStructures();
     presentLoadingProgress(1.0f);
     input_ = std::make_unique<InputManager>(window_);
     lastFrameTime_ = glfwGetTime();
+    std::cout << "Loading complete: " << std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - loadingStart).count() << " ms\n";
 }
 
 // Presents a single frame containing only a fill bar, via a fully
@@ -692,7 +769,7 @@ void Application::presentLoadingProgress(float fraction) {
 
     uint32_t imageIndex = 0;
     VkResult acquireResult =
-        vkAcquireNextImageKHR(context_->device(), swapchain_->handle(), UINT64_MAX,
+        vkAcquireNextImageKHR(context_->device(), swapchain_->handle(), 50'000'000,
                                frame.imageAvailable, VK_NULL_HANDLE, &imageIndex);
     if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) return;
 
@@ -818,7 +895,9 @@ void Application::presentLoadingProgress(float fraction) {
     VK_CHECK(vkWaitForFences(context_->device(), 1, &frame.inFlight, VK_TRUE, UINT64_MAX));
 }
 
-Application::~Application() {
+Application::~Application() { cleanup(); }
+
+void Application::cleanup() noexcept {
     if (context_) vkDeviceWaitIdle(context_->device());
 
     if (context_ && gpuTimestampPool_ != VK_NULL_HANDLE) {
@@ -886,14 +965,19 @@ Application::~Application() {
 
     if (window_) {
         glfwDestroyWindow(window_);
+        window_ = nullptr;
         glfwTerminate();
     }
 }
 
 void Application::initWindow() {
-    glfwInit();
+    if (!glfwInit()) throw std::runtime_error("GLFW initialization failed");
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     window_ = glfwCreateWindow(kWindowWidth, kWindowHeight, "tanks", nullptr, nullptr);
+    if (!window_) {
+        glfwTerminate();
+        throw std::runtime_error("GLFW window creation failed");
+    }
     glfwSetWindowUserPointer(window_, this);
     glfwSetFramebufferSizeCallback(window_, framebufferResizeCallback);
 }
@@ -1093,7 +1177,8 @@ void Application::applyReferenceCamera() {
         // Tiny horizontal offset avoids a singular world-up/look direction.
         offset = {0.01f, 5.0f, 0.0f};
     } else if (referenceView_ == "landscape") {
-        target = {0.0f, terrain_->heightAt(0.0f, 25.0f) + 3.0f, 25.0f};
+        glm::vec2 at = spawnXZ_ + glm::vec2(0, 25);
+        target = {at.x, terrain_->heightAt(at.x, at.y) + 3.0f, at.y};
         offset = {-14.0f, 6.0f, -30.0f};
     } else if (referenceView_ == "cliffs" && !sedimentaryCliffs_.empty()) {
         target = sedimentaryCliffs_.front().position;
@@ -1102,6 +1187,14 @@ void Application::applyReferenceCamera() {
         target = waterReferenceTarget_;
         offset = {3.0f, 6.0f, -5.0f};
     }
+    if (terrain_->state().reservation && referenceView_.starts_with("tank")) {
+        glm::vec2 forward = glm::normalize(glm::vec2(tank_->forward().x, tank_->forward().z));
+        auto rotate = [&](glm::vec3 v) {
+            return glm::vec3(forward.y * v.x + forward.x * v.z, v.y, -forward.x * v.x + forward.y * v.z);
+        };
+        target = tank_->position() + rotate(target - tank_->position());
+        offset = rotate(offset);
+    }
     glm::vec3 eye = target + offset;
     eye.y = std::max(eye.y, terrain_->heightAt(eye.x, eye.z) + 2.0f);
     glm::vec3 direction = glm::normalize(target - eye);
@@ -1109,10 +1202,19 @@ void Application::applyReferenceCamera() {
                      glm::degrees(std::asin(direction.y)));
 }
 
+bool Application::isUnderwater(float x, float z) const {
+    if (const auto& water = terrain_->state().water) return water->sampleAt(x, z).has_value();
+    return WaterGenerator::isUnderwater(legacyWaterField_, x, z);
+}
+
+bool Application::allowsScenery(glm::vec2 center, float radius) const {
+    return terrain_->state().allowsScenery(center, radius);
+}
+
 void Application::spawnBoxes() {
     constexpr int kBoxCount = 8;
     constexpr float kEdgeMargin = 6.0f;  // keep boxes off the play-area boundary's wall of light
-    constexpr float kMinDistanceFromSpawn = 10.0f;  // tank starts at the origin
+    constexpr float kMinDistanceFromSpawn = 10.0f;
     constexpr float kMinDistanceBetweenBoxes = 6.0f;
     constexpr int kMaxAttemptsPerBox = 50;
 
@@ -1124,16 +1226,21 @@ void Application::spawnBoxes() {
     std::vector<glm::vec2> placed;
     for (int i = 0; i < kBoxCount; ++i) {
         glm::vec2 pos{0.0f, 0.0f};
+        bool found = false;
         for (int attempt = 0; attempt < kMaxAttemptsPerBox; ++attempt) {
             glm::vec2 candidate(coordDist(rng), coordDist(rng));
-            bool tooCloseToSpawn = glm::length(candidate) < kMinDistanceFromSpawn;
+            bool tooCloseToSpawn = glm::length(candidate - spawnXZ_) < kMinDistanceFromSpawn;
             bool tooCloseToOther =
                 std::any_of(placed.begin(), placed.end(), [&](glm::vec2 p) {
                     return glm::length(p - candidate) < kMinDistanceBetweenBoxes;
                 });
             pos = candidate;
-            if (!tooCloseToSpawn && !tooCloseToOther) break;
+            if (!tooCloseToSpawn && !tooCloseToOther && allowsScenery(candidate, 1.732052f)) {
+                found = true;
+                break;
+            }
         }
+        if (!found && terrain_->state().reservation) throw std::runtime_error("no safe box placement for selected terrain");
         placed.push_back(pos);
 
         Box box;
@@ -1145,7 +1252,13 @@ void Application::spawnBoxes() {
     }
 }
 
-void Application::spawnTrees(const WaterGenerator::FloodField& waterField) {
+void Application::spawnTrees() {
+    if (terrain_->state().reservation) {
+        float radius = .17f;
+        for (const auto& mesh : treeBarkMeshes_) radius = std::max(radius, mesh->horizontalBoundingRadius());
+        trees_ = TerrainRuntime::placeTrees(terrain_->state(), worldSeed_, int(treeBarkMeshes_.size()), radius);
+        return;
+    }
     constexpr int kTreeCount = 100;
     constexpr float kEdgeMargin = 3.0f;
     constexpr float kMinDistanceFromSpawn = 8.0f;
@@ -1164,11 +1277,11 @@ void Application::spawnTrees(const WaterGenerator::FloodField& waterField) {
         glm::vec2 pos{0.0f, 0.0f};
         for (int attempt = 0; attempt < kMaxAttemptsPerTree; ++attempt) {
             glm::vec2 candidate(coordDist(rng), coordDist(rng));
-            bool tooCloseToSpawn = glm::length(candidate) < kMinDistanceFromSpawn;
+            bool tooCloseToSpawn = glm::length(candidate - spawnXZ_) < kMinDistanceFromSpawn;
             bool tooCloseToOther = std::any_of(placed.begin(), placed.end(), [&](glm::vec2 p) {
                 return glm::length(p - candidate) < kMinDistanceBetweenTrees;
             });
-            bool underwater = WaterGenerator::isUnderwater(waterField, candidate.x, candidate.y);
+            bool underwater = isUnderwater(candidate.x, candidate.y);
             pos = candidate;
             if (!tooCloseToSpawn && !tooCloseToOther && !underwater) break;
         }
@@ -1183,7 +1296,7 @@ void Application::spawnTrees(const WaterGenerator::FloodField& waterField) {
     }
 }
 
-void Application::spawnRocks(const WaterGenerator::FloodField& waterField) {
+void Application::spawnRocks() {
     // Cluster/rock counts kept in check against the scene's TLAS instance
     // capacity (SceneAccelerationStructure::kMaxInstances = 576): worst case
     // here is 16*6=96 rocks; combined with trees (100*2=200 instances, bark
@@ -1211,17 +1324,22 @@ void Application::spawnRocks(const WaterGenerator::FloodField& waterField) {
     std::vector<glm::vec2> clusterCenters;
     for (int c = 0; c < kClusterCount; ++c) {
         glm::vec2 center{0.0f, 0.0f};
+        bool found = false;
         for (int attempt = 0; attempt < kMaxAttemptsPerCluster; ++attempt) {
             glm::vec2 candidate(coordDist(rng), coordDist(rng));
-            bool tooCloseToSpawn = glm::length(candidate) < kMinDistanceFromSpawn;
+            bool tooCloseToSpawn = glm::length(candidate - spawnXZ_) < kMinDistanceFromSpawn;
             bool tooCloseToOther =
                 std::any_of(clusterCenters.begin(), clusterCenters.end(), [&](glm::vec2 p) {
                     return glm::length(p - candidate) < kMinDistanceBetweenClusters;
                 });
-            bool underwater = WaterGenerator::isUnderwater(waterField, candidate.x, candidate.y);
+            bool underwater = isUnderwater(candidate.x, candidate.y);
             center = candidate;
-            if (!tooCloseToSpawn && !tooCloseToOther && !underwater) break;
+            if (!tooCloseToSpawn && !tooCloseToOther && !underwater && allowsScenery(candidate, 0)) {
+                found = true;
+                break;
+            }
         }
+        if (!found && terrain_->state().reservation) continue;
         clusterCenters.push_back(center);
 
         int rockCount = countDist(rng);
@@ -1230,7 +1348,7 @@ void Application::spawnRocks(const WaterGenerator::FloodField& waterField) {
             // Individual rocks within a cluster can still land in water even
             // when the cluster center didn't -- just skip that one rock
             // rather than rejecting/relocating the whole cluster.
-            if (WaterGenerator::isUnderwater(waterField, pos.x, pos.y)) continue;
+            if (isUnderwater(pos.x, pos.y)) continue;
 
             RockInstance rock;
             rock.position =
@@ -1238,12 +1356,15 @@ void Application::spawnRocks(const WaterGenerator::FloodField& waterField) {
             rock.yaw = yawDist(rng);
             rock.scale = scaleDist(rng);
             rock.meshVariant = variantDist(rng);
+            float radius = rockMeshes_.at(rock.meshVariant)->horizontalBoundingRadius() * rock.scale;
+            if (!allowsScenery(pos, radius) || (terrain_->state().reservation &&
+                glm::length(pos - spawnXZ_) < kMinDistanceFromSpawn + radius)) continue;
             rocks_.push_back(rock);
         }
     }
 }
 
-void Application::spawnSedimentaryCliffs(const WaterGenerator::FloodField& waterField) {
+void Application::spawnSedimentaryCliffs() {
     constexpr int kMaxFormations = 5;
     constexpr int kSectionsPerFormation = 5;
     constexpr float kSectionSpacing = 5.0f;
@@ -1263,8 +1384,8 @@ void Application::spawnSedimentaryCliffs(const WaterGenerator::FloodField& water
     for (float x = -half; x <= half; x += kGridStep) {
         for (float z = -half; z <= half; z += kGridStep) {
             glm::vec2 position(x, z);
-            if (glm::length(position) < kSpawnClearRadius) continue;
-            if (WaterGenerator::isUnderwater(waterField, x, z)) continue;
+            if (glm::length(position - spawnXZ_) < kSpawnClearRadius) continue;
+            if (isUnderwater(x, z)) continue;
             float steepness = 1.0f - terrain_->normalAt(x, z).y;
             candidates.push_back({position, steepness});
         }
@@ -1278,6 +1399,9 @@ void Application::spawnSedimentaryCliffs(const WaterGenerator::FloodField& water
         return a.steepness > b.steepness;
     });
 
+    float sectionRadius = sedimentaryCliffMesh_->horizontalBoundingRadius();
+    for (const auto& piece : sedimentaryCliffCollisionFootprint_)
+        sectionRadius = std::max(sectionRadius, glm::length(piece.center) + piece.radius);
     std::vector<glm::vec2> placed;
     int formationsPlaced = 0;
     for (const CliffCandidate& candidate : candidates) {
@@ -1325,6 +1449,10 @@ void Application::spawnSedimentaryCliffs(const WaterGenerator::FloodField& water
                 sectionPositions[section + 1] + direction * (kSectionSpacing * formationScale);
         }
 
+        if (terrain_->state().reservation && std::any_of(sectionPositions.begin(), sectionPositions.end(), [&](glm::vec2 at) {
+                float radius = sectionRadius * formationScale;
+                return glm::length(at - spawnXZ_) < kSpawnClearRadius + radius || !allowsScenery(at, radius);
+            })) continue;
         for (glm::vec2 sectionPosition : sectionPositions) {
             glm::vec3 normal = terrain_->normalAt(sectionPosition.x, sectionPosition.y);
             RockInstance cliff;
@@ -1340,7 +1468,7 @@ void Application::spawnSedimentaryCliffs(const WaterGenerator::FloodField& water
     }
 }
 
-void Application::spawnShrubs(const WaterGenerator::FloodField& waterField) {
+void Application::spawnShrubs() {
     constexpr int kShrubCount = 140;
     constexpr float kEdgeMargin = 3.0f;
     constexpr float kMinDistanceFromSpawn = 6.0f;
@@ -1354,18 +1482,21 @@ void Application::spawnShrubs(const WaterGenerator::FloodField& waterField) {
     std::uniform_real_distribution<float> scaleDist(0.7f, 1.3f);
     std::uniform_int_distribution<int> variantDist(0, static_cast<int>(shrubMeshes_.size()) - 1);
 
+    float shrubRadius = 0;
+    for (const auto& mesh : shrubMeshes_) shrubRadius = std::max(shrubRadius, mesh->horizontalBoundingRadius());
+    shrubRadius *= 1.3f;
     std::vector<glm::vec2> placed;
     for (int i = 0; i < kShrubCount; ++i) {
         glm::vec2 pos{0.0f, 0.0f};
         bool found = false;
         for (int attempt = 0; attempt < kMaxAttemptsPerShrub; ++attempt) {
             glm::vec2 candidate(coordDist(rng), coordDist(rng));
-            bool tooCloseToSpawn = glm::length(candidate) < kMinDistanceFromSpawn;
+            bool tooCloseToSpawn = glm::length(candidate - spawnXZ_) < kMinDistanceFromSpawn;
             bool tooCloseToOther = std::any_of(placed.begin(), placed.end(), [&](glm::vec2 p) {
                 return glm::length(p - candidate) < kMinDistanceBetweenShrubs;
             });
-            bool underwater = WaterGenerator::isUnderwater(waterField, candidate.x, candidate.y);
-            if (tooCloseToSpawn || tooCloseToOther || underwater) continue;
+            bool underwater = isUnderwater(candidate.x, candidate.y);
+            if (tooCloseToSpawn || tooCloseToOther || underwater || !allowsScenery(candidate, shrubRadius)) continue;
             pos = candidate;
             found = true;
             break;
@@ -1386,7 +1517,7 @@ void Application::spawnShrubs(const WaterGenerator::FloodField& waterField) {
     }
 }
 
-void Application::spawnSmallRocks(const WaterGenerator::FloodField& waterField) {
+void Application::spawnSmallRocks() {
     // Small decorative scree/pebbles, concentrated wherever the rendered
     // terrain is gravel -- NOT
     // added to the ray-traced TLAS (see gatherRayTracingInstances' comment
@@ -1421,7 +1552,7 @@ void Application::spawnSmallRocks(const WaterGenerator::FloodField& waterField) 
     float half = terrain_->worldSize() * 0.5f - kEdgeMargin;
     for (float gx = -half; gx <= half; gx += kGridStep) {
         for (float gz = -half; gz <= half; gz += kGridStep) {
-            if (glm::length(glm::vec2(gx, gz)) < kMinDistanceFromSpawn) continue;
+            if (glm::length(glm::vec2(gx, gz) - spawnXZ_) < kMinDistanceFromSpawn) continue;
             if (terrainGravelAmount(*terrain_, gx, gz) < kMinGravelAmount) continue;
             if (chanceDist(rng) > kSpawnChance) continue;
 
@@ -1429,13 +1560,16 @@ void Application::spawnSmallRocks(const WaterGenerator::FloodField& waterField) 
             for (int k = 0; k < count; ++k) {
                 float px = gx + jitterDist(rng);
                 float pz = gz + jitterDist(rng);
-                if (WaterGenerator::isUnderwater(waterField, px, pz)) continue;
+                if (isUnderwater(px, pz)) continue;
 
                 RockInstance rock;
                 rock.position = glm::vec3(px, terrain_->heightAt(px, pz) - 0.05f, pz);
                 rock.yaw = yawDist(rng);
                 rock.scale = scaleDist(rng);
                 rock.meshVariant = variantDist(rng);
+                float radius = smallRockMeshes_.at(rock.meshVariant)->horizontalBoundingRadius() * rock.scale;
+                if (!allowsScenery({px, pz}, radius) || (terrain_->state().reservation &&
+                    glm::length(glm::vec2(px, pz) - spawnXZ_) < kMinDistanceFromSpawn + radius)) continue;
                 smallRocks_.push_back(rock);
             }
         }
@@ -1788,7 +1922,7 @@ void Application::fireProjectile() {
 void Application::spawnGroundScorch(glm::vec3 point) {
     float half=terrain_->worldSize()*.5f;
     if (std::abs(point.x)>half || std::abs(point.z)>half ||
-        WaterGenerator::isUnderwater(weaponWaterField_,point.x,point.z)) return;
+        isUnderwater(point.x,point.z)) return;
     point.y=terrain_->heightAt(point.x,point.z);
     WeaponEffects::addBounded(scorches_,WeaponEffects::Scorch{point},WeaponEffects::kMaxScorches);
 }

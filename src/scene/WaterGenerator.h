@@ -6,6 +6,8 @@
 #include "../render/CommandContext.h"
 #include "../render/Mesh.h"
 #include "../render/VulkanContext.h"
+#include "LakeWater.h"
+#include "TerrainWater.h"
 
 class Terrain;
 
@@ -44,4 +46,11 @@ public:
     // Nearest-cell lookup -- precise enough for placement checks (see
     // Application::spawnTrees) without needing bilinear interpolation.
     static bool isUnderwater(const FloodField& field, float worldX, float worldZ);
+
+    // Upload the CPU lake surface verbatim; selection/clipping/query geometry
+    // belongs to LakeWater. The game switches consumers during integration.
+    static std::unique_ptr<Mesh> buildMesh(VulkanContext& ctx, CommandContext& commands,
+                                         const LakeWater::Surface& surface);
+    static std::unique_ptr<Mesh> buildMesh(VulkanContext& ctx, CommandContext& commands,
+                                         const TerrainWater::Surface& surface);
 };

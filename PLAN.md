@@ -36,8 +36,9 @@ initial delivered passes, not a ceiling on future visual fidelity.
 
 ## Current goal
 
-**Hydraulic erosion terrain overhaul — macro terrain and Stage 2 CPU erosion
-prototype implemented; performance/integration gates pending.** Replace
+**Hydraulic erosion terrain overhaul — CPU erosion, channel carving and combined
+stream/lake geometry and queries implemented; water quality, playability and
+runtime integration pending.** Replace
 terrain generation and rebuild the surrounding environment as needed, preserving
 the delivered tree system. The user has explicitly allowed the current terrain,
 water, ground materials and non-tree scenery approach to be discarded. Tree
@@ -67,7 +68,43 @@ planned in this order:
 - [ ] Finish Stage 2 quality/performance gates: integrated cold-start cost,
   backend decision and further grid-bias/convergence checks. The measured
   24-second simulation takes about 3 seconds on four CPU workers by itself.
-- [ ] Build final drainage, persistent water and viable spawn/routes.
+- [x] Settle remaining sediment, account for temporary water removal, and
+  analyse final drainage, basin outlets and potential runoff over the full apron
+  ([CPU diagnostics and checks](docs/TERRAIN_DRAINAGE.md)).
+- [x] Add supplied spill-level lakes, conservative basin losses/overflow,
+  triangle-clipped meshes and shared lake/shoreline queries
+  ([prototype and limits](docs/TERRAIN_LAKES.md)).
+- [x] Select streams from resolved runoff, split reaches at confluences, anchor
+  downstream profiles to lakes and report channel-depth shortfalls
+  ([stream design guides](docs/TERRAIN_STREAMS.md)).
+- [x] Survey exact channel cross-sections over the full apron, distinguish real
+  banks from search/domain limits, and record zero-depth spill controls
+  ([bank surveys](docs/TERRAIN_STREAM_SECTIONS.md)).
+- [x] Add bounded soil-first channel excavation with material export accounting,
+  protected lake rims, and fresh drainage/water/contact/render results after edits
+  ([channel carving](docs/TERRAIN_CHANNEL_CARVING.md)).
+- [x] Build a combined terrain-clipped stream/lake mesh and shared height,
+  depth, flow and shoreline queries using downstream catchments
+  ([combined water prototype](docs/TERRAIN_WATER.md)).
+- [x] Accelerate full-apron shoreline queries with an immutable spatial index,
+  preserving exact distances and exported geometry
+  ([parity checks and query benchmark](docs/TERRAIN_SHORELINE.md)).
+- [x] Select dry spawn candidates and connected routes from final water/ground,
+  conservatively accounting for the complete tank footprint, face slopes,
+  boundary and supplied obstacle circles
+  ([static playability checks](docs/TERRAIN_PLAYABILITY.md)).
+- [x] Add bounded deterministic terrain selection with explicit acceptance,
+  attempt diagnostics, cancellation boundaries and accounting for rejected work
+  ([selection policy and tests](docs/TERRAIN_SELECTION.md)).
+- [ ] Finish channel/bank/confluence shape, positive-depth spill connections
+  and partial-lake policy; accept the combined water geometry and its cost.
+- [x] Connect selectable valley generation to responsive loading, retain final
+  water/navigation, use the selected spawn and reserve/recheck routes through
+  scenery placement while preserving 100 trees
+  ([runtime integration](docs/TERRAIN_RUNTIME.md)).
+- [x] Make valley terrain the in-game default after the landscape review, with
+  `--terrain legacy` retained for comparison during further refinement.
+- [ ] Validate actual driving and complete Stage 3 water/playability acceptance.
 - [ ] Rebuild ground materials and non-tree scenery; place existing trees.
 - [ ] Integrate and validate loading, gameplay, dynamic lighting, performance
   and the final visual references.

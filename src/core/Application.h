@@ -61,7 +61,8 @@ public:
                          bool performanceReporting = false,
                          std::optional<uint32_t> worldSeed = std::nullopt,
                          std::string referenceView = {}, bool originalTankModel = false,
-                         bool animateTracks = true, bool weaponPreview = false);
+                         bool animateTracks = true, bool weaponPreview = false,
+                         bool valleyTerrain = true, uint32_t terrainAttempts = 1);
     ~Application();
 
     Application(const Application&) = delete;
@@ -76,7 +77,10 @@ private:
         Free,
     };
 
+    void initialize(bool originalTankModel, bool animateTracks, bool weaponPreview,
+                    bool valleyTerrain, uint32_t terrainAttempts);
     void initWindow();
+    void cleanup() noexcept;
     void mainLoop();
     void drawFrame();
     void reportPerformance();
@@ -224,7 +228,8 @@ private:
     std::vector<WeaponEffects::Flash> muzzleFlashes_;
     std::vector<WeaponEffects::Smoke> blastSmoke_;
     std::vector<WeaponEffects::Scorch> scorches_;
-    WaterGenerator::FloodField weaponWaterField_;
+    WaterGenerator::FloodField legacyWaterField_;
+    glm::vec2 spawnXZ_{0.0f};
     bool weaponPreview_ = false;
     std::vector<TrackMark> trackMarks_;
     struct TrackTrailState {
@@ -261,12 +266,14 @@ private:
     std::unique_ptr<SceneAccelerationStructure> sceneAS_;
     std::unique_ptr<HistoryBuffer> historyBuffer_;
 
+    bool isUnderwater(float x, float z) const;
+    bool allowsScenery(glm::vec2 center, float radius) const;
     void spawnBoxes();
-    void spawnTrees(const WaterGenerator::FloodField& waterField);
-    void spawnRocks(const WaterGenerator::FloodField& waterField);
-    void spawnSedimentaryCliffs(const WaterGenerator::FloodField& waterField);
-    void spawnShrubs(const WaterGenerator::FloodField& waterField);
-    void spawnSmallRocks(const WaterGenerator::FloodField& waterField);
+    void spawnTrees();
+    void spawnRocks();
+    void spawnSedimentaryCliffs();
+    void spawnShrubs();
+    void spawnSmallRocks();
     void spawnExplosion(glm::vec3 position);
     void spawnDynamicLight(glm::vec3 position, glm::vec3 color, float radius, float intensity,
                             float lifetime);

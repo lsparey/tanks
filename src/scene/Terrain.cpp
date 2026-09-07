@@ -3,7 +3,7 @@
 #include <utility>
 
 Terrain::Terrain(VulkanContext& ctx, CommandContext& commands, TerrainGenerator::BuildResult build)
-    : surface_(std::move(build.surface)),
+    : state_(TerrainRuntime::retain(build)),
       mesh_(uploadMesh(ctx, commands, build.mesh)),
       blas_(AccelerationStructure::buildBLAS(ctx, commands, mesh_)) {}
 

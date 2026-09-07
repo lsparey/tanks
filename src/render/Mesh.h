@@ -47,6 +47,9 @@ public:
     // particular procedural variant.
     float horizontalInscribedRadius() const { return horizontalInscribedRadius_; }
 
+    // Encloses all uploaded vertices in XZ, for scenery route reservations.
+    float horizontalBoundingRadius() const { return horizontalBoundingRadius_; }
+
     static Mesh cube(VulkanContext& ctx, CommandContext& commands, glm::vec3 color,
                       float size = 1.0f);
 
@@ -152,4 +155,5 @@ private:
     uint32_t vertexCount_;
     uint32_t indexCount_;
     float horizontalInscribedRadius_ = 0.0f;
+    float horizontalBoundingRadius_ = 0.0f;
 };
