@@ -13,3 +13,8 @@ VP_VULKANINFO_*.json
 
 # Offline Python mesh-authoring tools
 __pycache__/
+
+# Local working notes: measurements, previews, and raw data from
+# terrain/rendering experiments. Not committed — see PLAN.md's
+# "Reference material" section for the load-bearing conclusions.
+/docs/
