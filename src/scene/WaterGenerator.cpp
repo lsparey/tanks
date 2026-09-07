@@ -32,7 +32,7 @@ struct ClipVertex {
 
 // Sutherland-Hodgman clip of a single triangle against the half-space
 // terrainHeight <= level. Triangle in, and out, are CCW-wound (matching
-// Terrain::buildMesh's convention) since clipping a convex polygon against
+// TerrainSurface::quadIndices' convention) since clipping a convex polygon against
 // one linear inequality preserves winding; the result has 0 vertices (fully
 // dry), 3 (fully submerged, or a single corner clipped off), or 4 (a quad,
 // when exactly one corner is dry) -- this is what gives the shoreline a
@@ -186,7 +186,7 @@ std::unique_ptr<Mesh> WaterGenerator::buildMesh(VulkanContext& ctx, CommandConte
         }
     };
 
-    // Same diagonal split as Terrain::buildMesh: (00,01,11) and (00,11,10).
+    // Same diagonal split as TerrainSurface::quadIndices: (00,01,11) and (00,11,10).
     for (int j = 0; j < n - 1; ++j) {
         for (int i = 0; i < n - 1; ++i) {
             const float* level = cellLevel(i, j);

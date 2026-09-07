@@ -36,7 +36,8 @@ initial delivered passes, not a ceiling on future visual fidelity.
 
 ## Current goal
 
-**Hydraulic erosion terrain overhaul — planned, not yet implemented.** Replace
+**Hydraulic erosion terrain overhaul — macro terrain and Stage 2 CPU erosion
+prototype implemented; performance/integration gates pending.** Replace
 terrain generation and rebuild the surrounding environment as needed, preserving
 the delivered tree system. The user has explicitly allowed the current terrain,
 water, ground materials and non-tree scenery approach to be discarded. Tree
@@ -49,12 +50,23 @@ The default direction remains a temperate British landscape, with erosion,
 drainage, soil/rock exposure and placement derived from shared data. Work is
 planned in this order:
 
-- [ ] Establish CPU generation contracts, triangle-consistent ground sampling,
-  baseline timings and diagnostic views.
-- [ ] Generate broad landforms, material resistance and soil with explicit
-  drainage boundaries.
-- [ ] Prototype hydraulic erosion, deposition and limited slope relaxation;
-  select backend and resolution from measured quality and startup cost.
+- [x] Separate CPU terrain generation/meshing from Vulkan upload and match
+  ground sampling to mesh triangles; add fixtures and 16 fixed regression seeds.
+- [x] Add a standalone terrain probe, neutral exports and a measured CPU
+  baseline ([results and commands](docs/TERRAIN_BASELINE.md)).
+- [ ] Finish Stage 0: target-hardware Release runtime/startup, GPU-memory
+  headroom/cap and in-engine visual/gameplay checks. These require a working GPU;
+  the CPU baseline does not satisfy the full stage gate.
+- [x] Generate broad landforms, material resistance and soil with explicit
+  drainage boundaries in the selectable rolling-valley CPU prototype
+  ([preview, tests and timings](docs/TERRAIN_MACRO.md)). No game default change;
+  full visual/playability acceptance remains pending.
+- [x] Prototype hydraulic erosion, conservative sediment transport/deposition,
+  limited soil relaxation and deterministic 1–4-worker CPU passes
+  ([results and limitations](docs/TERRAIN_EROSION_PROTOTYPE.md)).
+- [ ] Finish Stage 2 quality/performance gates: integrated cold-start cost,
+  backend decision and further grid-bias/convergence checks. The measured
+  24-second simulation takes about 3 seconds on four CPU workers by itself.
 - [ ] Build final drainage, persistent water and viable spawn/routes.
 - [ ] Rebuild ground materials and non-tree scenery; place existing trees.
 - [ ] Integrate and validate loading, gameplay, dynamic lighting, performance

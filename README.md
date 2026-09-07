@@ -61,10 +61,18 @@ data. The current terrain, water and non-tree scenery can be replaced. Existing
 tree geometry, density, progressive LOD, wind and soft shadows are preserved;
 tree placement will adapt to the new ground.
 
-This is a documented plan, not an implemented generator. Erosion is intended
-for level generation, with cold startup and runtime performance measured against
-the accepted baseline. The current gameplay features described above remain
-available while the replacement is developed.
+The first foundation is implemented: CPU generation is separate from Vulkan
+upload, contact heights follow the rendered triangles, and a standalone tool
+provides repeatable timing and neutral diagnostic exports. The legacy landform
+remains active. A selectable CPU rolling-valley prototype now adds broad
+landforms, bedrock/soil, erodibility and an apron with open boundary faces;
+see the [macro terrain guide](docs/TERRAIN_MACRO.md) for previews and commands.
+A separate [eroded-valley CPU prototype](docs/TERRAIN_EROSION_PROTOTYPE.md) now
+simulates hydraulic transport, deposition and limited soil relaxation, with
+conservation budgets and deterministic parallel workers. Persistent hydrology,
+spawn/routes, the environment rebuild and game integration are still planned.
+See the [terrain baseline](docs/TERRAIN_BASELINE.md) for commands, measurements
+and outstanding hardware checks.
 
 ## Requirements
 
@@ -265,8 +273,9 @@ Handling is unchanged; individual wheel suspension is not implemented. See the
 [model editing notes](assets/models/README.md) for editable assets, regeneration,
 material groups, and current limitations.
 
-Run the nine regression tests after building (requires `BUILD_TESTING=ON`,
-the default): foliage LOD/wind, tree generation, tree meshes, voxel surfaces,
+Run the twelve regression tests after building (requires `BUILD_TESTING=ON`,
+the default): terrain surfaces, macro terrain, hydraulic erosion, foliage
+LOD/wind, tree generation, tree meshes, voxel surfaces,
 CPU statistics, tank surfaces, model assets, running gear and weapon effects.
 
 ```bash

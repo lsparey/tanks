@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <vector>
 
 // Produces a flat, row-major grid of height values: gentle rolling hills
@@ -18,7 +19,7 @@ public:
         float worldSize = 0;  // total width/depth in world units, centered at origin
         std::vector<float> heights;  // size resolution*resolution
 
-        float at(int i, int j) const { return heights[j * resolution + i]; }
+        float at(int i, int j) const { return heights[static_cast<size_t>(j) * resolution + i]; }
     };
 
     static Heightmap generateHills(int resolution, float worldSize, float amplitude,

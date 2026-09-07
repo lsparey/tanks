@@ -1,6 +1,7 @@
 #include "Application.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <future>
 #include <thread>
@@ -413,17 +414,19 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
         *boundaryWallTexture_, *boundaryWallTexture_, *boundaryWallTexture_, *boundaryWallTexture_);
     presentLoadingProgress(0.15f);
 
-    uint32_t terrainSeed = worldSeed_;
-    // 256, not the old 64 -> 128 -> 256 progression: coarser hills' large
-    // flat triangles were visible as faceting at grazing angles/close
-    // range, and the sharper features HeightmapGenerator now carves (the
-    // plateau's edge, the river's banks) need considerably more grid
-    // resolution than gentle sine-wave hills ever did to read as an actual
-    // slope instead of a single blocky triangle strip. Still cheap for
-    // hardware ray tracing either way -- (256-1)^2*2 ~= 130k triangles for
-    // the whole terrain BLAS, built once at load time.
-    terrain_ = std::make_unique<Terrain>(*context_, *commands_, /*resolution=*/256,
-                                          /*worldSize=*/180.0f, /*amplitude=*/2.2f, terrainSeed);
+    TerrainGenerator::Settings terrainSettings;
+    terrainSettings.seed = worldSeed_;
+    auto terrainBuild = TerrainGenerator::build(terrainSettings);
+    auto terrainStats = terrainBuild.statistics;
+    auto terrainUploadStart = std::chrono::steady_clock::now();
+    terrain_ = std::make_unique<Terrain>(*context_, *commands_, std::move(terrainBuild));
+    double terrainUploadMs = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - terrainUploadStart).count();
+    std::cout << "Terrain legacy v" << terrainSettings.version << ": heights "
+              << terrainStats.heightfieldMs << " ms, surface " << terrainStats.surfaceMs
+              << " ms, mesh " << terrainStats.meshMs << " ms, upload/BLAS "
+              << terrainUploadMs << " ms; CPU surface " << terrainStats.retainedSurfaceBytes
+              << " bytes, transient mesh " << terrainStats.meshBytes << " bytes\n";
     presentLoadingProgress(0.35f);
     WaterGenerator::FloodField waterField =
         WaterGenerator::computeFloodField(*terrain_, kWaterThreshold, kWaterMaxDepth);

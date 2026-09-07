@@ -5,12 +5,44 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+option(TANKS_BUILD_GAME "Build the Vulkan game and its renderer/gameplay tests" ON)
+find_package(glm CONFIG REQUIRED)
+find_package(Threads REQUIRED)
+
+add_library(terrain_generation STATIC
+    src/scene/HeightmapGenerator.cpp
+    src/scene/MacroTerrain.cpp
+    src/scene/HydraulicErosion.cpp
+    src/scene/TerrainSurface.cpp
+    src/scene/TerrainGenerator.cpp
+)
+target_include_directories(terrain_generation PUBLIC src)
+target_link_libraries(terrain_generation PUBLIC glm::glm Threads::Threads)
+
+add_executable(terrain_probe tools/TerrainProbe.cpp)
+target_link_libraries(terrain_probe PRIVATE terrain_generation)
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(terrain_surface_test tests/TerrainSurfaceTest.cpp)
+    target_link_libraries(terrain_surface_test PRIVATE terrain_generation)
+    add_test(NAME terrain_surface COMMAND terrain_surface_test)
+    add_executable(macro_terrain_test tests/MacroTerrainTest.cpp)
+    target_link_libraries(macro_terrain_test PRIVATE terrain_generation)
+    add_test(NAME macro_terrain COMMAND macro_terrain_test)
+    add_executable(hydraulic_erosion_test tests/HydraulicErosionTest.cpp)
+    target_link_libraries(hydraulic_erosion_test PRIVATE terrain_generation)
+    add_test(NAME hydraulic_erosion COMMAND hydraulic_erosion_test)
+endif()
+
+if(NOT TANKS_BUILD_GAME)
+    return()
+endif()
+
 find_package(Vulkan 1.3 REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
-find_package(glm CONFIG REQUIRED)
 find_package(assimp CONFIG REQUIRED)
 find_package(Stb REQUIRED)
-find_package(Threads REQUIRED)
 
 add_executable(tanks
     src/main.cpp
@@ -32,7 +64,6 @@ add_executable(tanks
     src/render/ScreenshotWriter.cpp
     src/scene/Camera.cpp
     src/scene/InputManager.cpp
-    src/scene/HeightmapGenerator.cpp
     src/scene/GrassTextureGenerator.cpp
     src/scene/RockTextureGenerator.cpp
     src/scene/TrackTextureGenerator.cpp
@@ -67,12 +98,12 @@ target_link_libraries(tanks PRIVATE
     glm::glm
     assimp::assimp
     Threads::Threads
+    terrain_generation
 )
 
 include(cmake/CompileShaders.cmake)
 compile_shaders(tanks basic.vert basic.frag foliage_depth.frag hud.vert hud.frag)
 
-include(CTest)
 if(BUILD_TESTING)
     add_executable(foliage_lod_test tests/FoliageLodTest.cpp)
     target_include_directories(foliage_lod_test PRIVATE src)
