@@ -39,10 +39,14 @@ int main(int argc, char** argv) {
         bool originalTankModel = false;
         bool animateTracks = true;
         bool weaponPreview = false;
-        bool valleyTerrain = true;
+        bool valleyTerrain = false;
+        bool showTerrainMenu = false;
         std::optional<MacroTerrain::Landform> landform;
         uint32_t terrainAttempts = 1;
+        std::optional<int> terrainResolution;
+        int refinementPasses = 0;
         for (int i = 1; i < argc; ++i) {
+            if (std::strcmp(argv[i], "--menu") == 0) showTerrainMenu = true;
             if (std::strcmp(argv[i], "--profile") == 0) profile = true;
             if (std::strcmp(argv[i], "--static-tracks") == 0) animateTracks = false;
             if (std::strcmp(argv[i], "--weapon-preview") == 0) weaponPreview = true;
@@ -61,6 +65,17 @@ int main(int argc, char** argv) {
             } else if (std::strcmp(argv[i], "--landform") == 0) {
                 if (++i >= argc) throw std::runtime_error("--landform requires a name");
                 landform = MacroTerrain::parseLandform(argv[i]);
+            } else if (std::strcmp(argv[i], "--terrain-refinement") == 0) {
+                if (++i >= argc) throw std::runtime_error("--terrain-refinement requires off, on, 2x or 4x");
+                refinementPasses = TerrainRefinement::parsePasses(argv[i]);
+            } else if (std::strcmp(argv[i], "--terrain-resolution") == 0) {
+                if (++i >= argc) throw std::runtime_error("--terrain-resolution requires 257 or 513");
+                int value;
+                const char* end = argv[i] + std::strlen(argv[i]);
+                auto parsed = std::from_chars(argv[i], end, value);
+                if (parsed.ec != std::errc{} || parsed.ptr != end || (value != 257 && value != 513))
+                    throw std::runtime_error("--terrain-resolution requires 257 or 513");
+                terrainResolution = value;
             } else if (std::strcmp(argv[i], "--terrain-attempts") == 0) {
                 if (++i >= argc) throw std::runtime_error("--terrain-attempts requires an integer from 1 to 8");
                 const char* end = argv[i] + std::strlen(argv[i]);
@@ -73,21 +88,25 @@ int main(int argc, char** argv) {
                     throw std::runtime_error("--model requires original or refined");
                 originalTankModel = std::strcmp(argv[i], "original") == 0;
             } else if (std::strcmp(argv[i], "--view") == 0) {
-                if (++i >= argc) throw std::runtime_error("--view requires tank, tank-side, tank-front, tank-rear, tank-top, landscape, or water");
+                if (++i >= argc) throw std::runtime_error("--view requires tank, tank-side, tank-front, tank-rear, tank-top, landscape, terrain, or water");
                 view = argv[i];
                 if (view != "tank" && view != "tank-side" && view != "tank-front" &&
                     view != "tank-rear" && view != "tank-top" &&
-                    view != "landscape" && view != "water")
+                    view != "landscape" && view != "terrain" && view != "water")
                     throw std::runtime_error("unknown reference view");
             }
         }
         if (!valleyTerrain && terrainAttempts != 1)
-            throw std::runtime_error("--terrain-attempts above 1 cannot be used with --terrain legacy");
+            throw std::runtime_error("--terrain-attempts above 1 requires --terrain drained-valley");
         if (!valleyTerrain && landform)
-            throw std::runtime_error("--landform cannot be used with --terrain legacy");
+            throw std::runtime_error("--landform requires --terrain drained-valley");
+        if (!valleyTerrain && terrainResolution)
+            throw std::runtime_error("--terrain-resolution requires --terrain drained-valley");
+        if (refinementPasses && (!valleyTerrain || terrainResolution.value_or(257) != 257))
+            throw std::runtime_error("terrain refinement requires --terrain drained-valley with the 257 erosion grid");
         if (!view.empty() && !seed) seed = 7331;
         Application app(parseScreenshotRequest(argc, argv), profile, seed, view, originalTankModel, animateTracks, weaponPreview, valleyTerrain, terrainAttempts,
-                        landform.value_or(MacroTerrain::Landform::Mixed));
+                        landform.value_or(MacroTerrain::Landform::Mixed), terrainResolution.value_or(257), refinementPasses, showTerrainMenu);
         app.run();
     } catch (const std::exception& e) {
         std::cerr << "Fatal error: " << e.what() << std::endl;

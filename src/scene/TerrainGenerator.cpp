@@ -42,6 +42,10 @@ BuildResult build(const Settings& settings) {
     presetName(settings.preset); // reject unknown enum values before allocating
     if (settings.version != kVersion)
         throw std::invalid_argument("unsupported terrain generator version");
+    if (settings.refinementPasses < 0 || settings.refinementPasses > 2)
+        throw std::invalid_argument("terrain refinement requires 0, 1 or 2 passes");
+    if (settings.refinementPasses && settings.preset != Preset::DrainedValley)
+        throw std::invalid_argument("surface refinement requires finalized drained terrain");
     if (settings.lakes && settings.preset != Preset::DrainedValley)
         throw std::invalid_argument("lake water requires finalized drained-valley terrain");
     if (settings.streamSections) {
@@ -85,19 +89,25 @@ BuildResult build(const Settings& settings) {
     std::optional<ChannelCarving::Result> channelCarving;
     std::optional<TerrainWater::Result> combinedWater;
     double channelPreparationMs = 0;
+    std::optional<TerrainRefinement::Result> refinement;
     HeightmapGenerator::Heightmap hm;
     if (settings.preset != Preset::Legacy) {
         fields = MacroTerrain::generate(settings.resolution, settings.worldSize, settings.seed, settings.macro);
+        if (settings.refinementPasses && fields->heightmap.resolution > 1 + 4096 / (1 << settings.refinementPasses))
+            throw std::invalid_argument("refined domain including apron exceeds 4097 samples");
         if (settings.preset == Preset::ErodedValley || settings.preset == Preset::DrainedValley)
             erosion = HydraulicErosion::run(*fields, settings.erosion);
         if (settings.preset == Preset::DrainedValley) {
             HydraulicErosion::settle(*fields, *erosion);
+            if (settings.refinementPasses) refinement = TerrainRefinement::apply(*fields, settings.refinementPasses);
             drainage = TerrainDrainage::analyze(*fields, {settings.erosion.rainfall, settings.erosion.infiltration});
             if (settings.lakes) water = LakeWater::build(*fields, *drainage, *settings.lakes);
             if (settings.streams) streams = StreamNetwork::build(*fields, *drainage, *water, *settings.streams);
             if (settings.channelCarving) {
                 channelPreparationMs = drainage->elapsedMs + water->elapsedMs + streams->elapsedMs;
-                channelCarving = ChannelCarving::apply(*fields, *drainage, *streams, *settings.channelCarving);
+                auto carvingSettings = *settings.channelCarving;
+                carvingSettings.smoothBanks |= settings.refinementPasses != 0;
+                channelCarving = ChannelCarving::apply(*fields, *drainage, *streams, carvingSettings);
                 // These results refer to pre-cut ground. Rebuild every physical
                 // consumer from final fields, even if this pass made no cuts.
                 drainage = TerrainDrainage::analyze(*fields, {settings.erosion.rainfall, settings.erosion.infiltration});
@@ -175,7 +185,7 @@ BuildResult build(const Settings& settings) {
         stats.playabilityMs = playability->elapsedMs;
         stats.playabilityBytes = playability->payloadBytes();
     }
-    return {settings, std::move(surface), std::move(mesh), stats, std::move(fields), std::move(erosion), std::move(drainage), std::move(water), std::move(streams), std::move(streamSections), std::move(channelCarving), std::move(combinedWater), std::move(playability)};
+    return {settings, std::move(surface), std::move(mesh), stats, std::move(fields), std::move(erosion), std::move(drainage), std::move(water), std::move(streams), std::move(streamSections), std::move(channelCarving), std::move(combinedWater), std::move(playability), std::move(refinement)};
 }
 
 } // namespace TerrainGenerator

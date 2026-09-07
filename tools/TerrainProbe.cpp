@@ -47,6 +47,11 @@ uint64_t fieldFingerprint(const TerrainGenerator::BuildResult& build) {
             hash *= 1099511628211ull;
         }
     };
+    if (build.refinement) {
+        word(TerrainRefinement::kVersion);
+        word(build.refinement->sourceResolution);
+        word(build.refinement->targetResolution);
+    }
     const auto& fields = *build.generationFields;
     word(fields.heightmap.resolution);
     word(fields.playableResolution);
@@ -191,6 +196,7 @@ void exportDiagnostics(const TerrainGenerator::BuildResult& build, const std::fi
     std::string stem = std::string(TerrainGenerator::presetName(build.settings.preset)) + "-v" +
                        std::to_string(build.settings.version) + "-seed-" +
                        std::to_string(build.settings.seed) + "-" + std::to_string(hm.resolution);
+    if (build.settings.refinementPasses) stem += "-refinement-v1";
     if (build.generationFields && build.settings.macro.landform != MacroTerrain::Landform::Valley)
         stem += "-" + std::string(MacroTerrain::landformName(build.settings.macro.landform)) +
                 "-landform-v" + std::to_string(MacroTerrain::kLandformVersion);
@@ -259,11 +265,20 @@ void exportDiagnostics(const TerrainGenerator::BuildResult& build, const std::fi
 #endif
              << "; compiler=" << __VERSION__ << '\n';
     if (!build.generationFields) metadata << "amplitude=" << build.settings.amplitude << '\n';
+    if (build.refinement) {
+        metadata << "refinement_version=" << TerrainRefinement::kVersion
+                 << "\nrefinement_passes=" << build.settings.refinementPasses
+                 << "\nrefinement_ms=" << build.refinement->elapsedMs
+                 << "\nrefinement_soil_volume_delta=" << build.refinement->soilVolumeDelta
+                 << "\nrefinement_bedrock_volume_delta=" << build.refinement->bedrockVolumeDelta << '\n';
+    }
     if (build.generationFields) {
         const auto& fields = *build.generationFields;
-        auto fieldImage = [&](std::string_view suffix, const auto& values, double low, double high) {
+        auto fieldImage = [&](std::string_view suffix, const auto& values, double low, double high, int resolution = 0) {
             auto file = open(suffix);
-            file << "P5\n" << fields.heightmap.resolution << ' ' << fields.heightmap.resolution << "\n65535\n";
+            if (!resolution) resolution = fields.heightmap.resolution;
+            if (values.size() != size_t(resolution) * resolution) throw std::runtime_error("diagnostic grid mismatch");
+            file << "P5\n" << resolution << ' ' << resolution << "\n65535\n";
             for (double value : values) {
                 auto pixel = static_cast<uint16_t>(std::clamp((value - low) / std::max(high - low, 1e-12), 0.0, 1.0) * 65535);
                 file.put(static_cast<char>(pixel >> 8));
@@ -302,12 +317,14 @@ void exportDiagnostics(const TerrainGenerator::BuildResult& build, const std::fi
         if (build.erosion) {
             const auto& e = *build.erosion;
             const auto& s = build.settings.erosion;
+            int erosionResolution = build.refinement ? build.refinement->sourceResolution : fields.heightmap.resolution;
+            metadata << "erosion_domain_resolution=" << erosionResolution << '\n';
             struct Diagnostic { const char* name; const std::vector<double>* values; };
             for (const auto& diagnostic : {Diagnostic{"erosion", &e.erosion}, {"deposition", &e.deposition},
                                            {"water", &e.water}, {"sediment", &e.sediment},
                                            {"water-exposure", &e.waterExposure}, {"throughflow", &e.throughflow}}) {
                 double maximum = *std::max_element(diagnostic.values->begin(), diagnostic.values->end());
-                fieldImage(std::string("-") + diagnostic.name + ".pgm", *diagnostic.values, 0, maximum);
+                fieldImage(std::string("-") + diagnostic.name + ".pgm", *diagnostic.values, 0, maximum, erosionResolution);
                 metadata << diagnostic.name << "_max=" << maximum << '\n';
             }
             std::vector<double> change(e.water.size());
@@ -316,7 +333,7 @@ void exportDiagnostics(const TerrainGenerator::BuildResult& build, const std::fi
                 change[i] = e.deposition[i] - e.erosion[i] + e.relaxation[i];
                 magnitude = std::max(magnitude, std::abs(change[i]));
             }
-            fieldImage("-height-change.pgm", change, -magnitude, magnitude);
+            fieldImage("-height-change.pgm", change, -magnitude, magnitude, erosionResolution);
             metadata << "height_change_range=" << -magnitude << ',' << magnitude << '\n';
             const auto& b = e.budget;
             metadata << std::setprecision(17)
@@ -695,7 +712,7 @@ int main(int argc, char** argv) {
                              "                  [--soil-depth N] [--apron-width N]\n"
                              "  Landforms: [--landform mixed|valley|hills|ridges|plain|basin] [--warp-strength N]\n"
                              "  Erosion: [--erosion-seconds N] [--rain-seconds N] [--max-timestep N] [--talus-passes N]\n"
-                             "           [--erosion-workers 1..4]\n"
+                             "           [--erosion-workers 1..4] [--terrain-refinement off|on|2x|4x]\n"
                              "  Drained valley: [--lake-water on|off] [--lake-evaporation N] [--lake-seepage N]\n"
                              "  Stream guides (requires lakes): [--streams on|off] [--stream-min-discharge N]\n"
                              "  Bank surveys (requires streams): [--stream-sections on|off] [--bank-search-distance N]\n"
@@ -728,6 +745,9 @@ int main(int argc, char** argv) {
             else if (option == "--feature-scale") { settings.macro.featureScale = number<float>(argv[i]); macroOptions = true; }
             else if (option == "--soil-depth") { settings.macro.soilDepth = number<float>(argv[i]); macroOptions = true; }
             else if (option == "--apron-width") { settings.macro.apronWidth = number<float>(argv[i]); macroOptions = true; }
+            else if (option == "--terrain-refinement") {
+                settings.refinementPasses = TerrainRefinement::parsePasses(argv[i]);
+            }
             else if (option == "--erosion-seconds") { settings.erosion.duration = number<double>(argv[i]); erosionOptions = true; }
             else if (option == "--rain-seconds") { settings.erosion.rainDuration = number<double>(argv[i]); erosionOptions = true; }
             else if (option == "--max-timestep") { settings.erosion.maxTimestep = number<double>(argv[i]); erosionOptions = true; }
@@ -800,7 +820,7 @@ int main(int argc, char** argv) {
         std::vector<uint32_t> seeds(TerrainGenerator::kRegressionSeeds.begin(), TerrainGenerator::kRegressionSeeds.end());
         if (seed) seeds = {*seed};
         std::vector<double> times;
-        std::cout << "preset,version,seed,resolution,repeat,heightfield_ms,surface_ms,mesh_ms,total_ms,surface_bytes,mesh_bytes,field_bytes,mesh_fnv1a64,field_fnv1a64,erosion_ms,erosion_steps,erosion_field_bytes,erosion_working_bytes,water_residual,solid_residual,solid_rounding_delta,settlement_ms,drainage_ms,drainage_field_bytes,drainage_working_bytes,basins,runoff_residual,removed_transient_water,settled_sediment,lake_version,water_ms,water_bytes,lakes_present,water_triangles,lake_runoff_residual,stream_version,stream_ms,stream_bytes,stream_nodes,stream_reaches,stream_confluences,stream_deficient_nodes,stream_max_deficit,section_version,sections_ms,sections_bytes,sections,bounded_sections,dry_sections,domain_limited_sections,search_limited_sections,spill_controls,carving_version,channel_preparation_ms,carving_ms,carving_bytes,carved_cells,exported_soil,exported_bedrock,removed_ground,carving_residual,carving_rounding_delta,combined_water_version,combined_water_ms,combined_water_bytes,combined_stream_triangles,combined_lake_triangles,combined_stream_area,combined_lake_area,playability_version,playability_status,playability_ms,playability_bytes,playability_working_bytes,playability_components,spawn_x,spawn_y,spawn_z,spawn_connected_area,route_length,route_span,landform_version,landform_requested,landform_resolved,warp_strength\n";
+        std::cout << "preset,version,seed,resolution,repeat,heightfield_ms,surface_ms,mesh_ms,total_ms,surface_bytes,mesh_bytes,field_bytes,mesh_fnv1a64,field_fnv1a64,erosion_ms,erosion_steps,erosion_field_bytes,erosion_working_bytes,water_residual,solid_residual,solid_rounding_delta,settlement_ms,drainage_ms,drainage_field_bytes,drainage_working_bytes,basins,runoff_residual,removed_transient_water,settled_sediment,lake_version,water_ms,water_bytes,lakes_present,water_triangles,lake_runoff_residual,stream_version,stream_ms,stream_bytes,stream_nodes,stream_reaches,stream_confluences,stream_deficient_nodes,stream_max_deficit,section_version,sections_ms,sections_bytes,sections,bounded_sections,dry_sections,domain_limited_sections,search_limited_sections,spill_controls,carving_version,channel_preparation_ms,carving_ms,carving_bytes,carved_cells,exported_soil,exported_bedrock,removed_ground,carving_residual,carving_rounding_delta,combined_water_version,combined_water_ms,combined_water_bytes,combined_stream_triangles,combined_lake_triangles,combined_stream_area,combined_lake_area,playability_version,playability_status,playability_ms,playability_bytes,playability_working_bytes,playability_components,spawn_x,spawn_y,spawn_z,spawn_connected_area,route_length,route_span,landform_version,landform_requested,landform_resolved,warp_strength,final_resolution,refinement_version,refinement_ms\n";
         for (uint32_t value : seeds) {
             settings.seed = value;
             std::optional<uint64_t> expected;
@@ -877,7 +897,9 @@ int main(int argc, char** argv) {
                 std::cout << ',' << MacroTerrain::kLandformVersion << ','
                           << MacroTerrain::landformName(settings.macro.landform) << ','
                           << MacroTerrain::landformName(MacroTerrain::resolveLandform(settings.macro.landform, value))
-                          << ',' << settings.macro.warpStrength << '\n';
+                          << ',' << settings.macro.warpStrength << ',' << build.surface.heightmap().resolution
+                          << ',' << (build.refinement ? TerrainRefinement::kVersion : 0)
+                          << ',' << (build.refinement ? build.refinement->elapsedMs : 0) << '\n';
                 if (repeat == 0 && !directory.empty()) exportDiagnostics(build, directory);
             }
         }

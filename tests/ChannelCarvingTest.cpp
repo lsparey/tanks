@@ -98,6 +98,21 @@ int main() {
         rejects([&] { ChannelCarving::apply(stale, d, n); });
         require(stale.heightmap.heights == f.heightmap.heights && stale.soil == f.soil, "stale-input rejection mutated terrain");
     }
+    // Wider channel on a rising bank: excavation must taper from the actual
+    // local surface, not abruptly meet the lower centreline rim at its edge.
+    {
+        auto terrain = field(), original = terrain;
+        auto drainage = TerrainDrainage::analyze(terrain);
+        auto water = LakeWater::build(terrain, drainage);
+        auto wide = settings; wide.widthAtThreshold = wide.maximumWidth = 4;
+        auto streams = StreamNetwork::build(terrain, drainage, water, wide);
+        ChannelCarving::Settings smooth; smooth.smoothBanks = true;
+        auto result = ChannelCarving::apply(terrain, drainage, streams, smooth);
+        check(original, terrain, drainage, streams, result, smooth);
+        close(result.cutDepth[4 * 9 + 3], .25, 1e-7, "smooth banks changed centre depth");
+        close(result.cutDepth[3 * 9 + 3], .6 * .75 * .75, 2e-7, "bank excavation failed to taper");
+        close(result.cutDepth[2 * 9 + 3], 0, 0, "smooth bank cut its rim");
+    }
     auto f = field(), before = f;
     auto d = TerrainDrainage::analyze(f);
     auto w = LakeWater::build(f, d);

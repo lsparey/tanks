@@ -12,7 +12,7 @@ import zlib
 from pathlib import Path
 
 
-def render(source, output, azimuth, elevation, width=960, height=640):
+def render(source, output, azimuth, elevation, width=960, height=640, frame=None):
     vertices, normals, faces = [], [], []
     with source.open() as obj:
         for line in obj:
@@ -40,8 +40,15 @@ def render(source, output, azimuth, elevation, width=960, height=640):
         return sum(x * y for x, y in zip(a, b))
 
     projected = [(dot(p, right), dot(p, up), dot(p, toward)) for p in vertices]
-    xmin, xmax = min(p[0] for p in projected), max(p[0] for p in projected)
-    ymin, ymax = min(p[1] for p in projected), max(p[1] for p in projected)
+    if frame is None:
+        xmin, xmax = min(p[0] for p in projected), max(p[0] for p in projected)
+        ymin, ymax = min(p[1] for p in projected), max(p[1] for p in projected)
+    else:
+        # Shared projected bounds keep comparisons at exactly the same scale
+        # and position even when the two surfaces have different height ranges.
+        xmin, xmax, ymin, ymax = frame
+        if not all(math.isfinite(v) for v in frame) or xmin >= xmax or ymin >= ymax:
+            raise ValueError("expected finite, increasing projected frame bounds")
     scale = min((width - 80) / (xmax - xmin), (height - 80) / (ymax - ymin))
     projected = [(width / 2 + (x - (xmin + xmax) / 2) * scale,
                   height / 2 - (y - (ymin + ymax) / 2) * scale, z) for x, y, z in projected]
@@ -82,6 +89,7 @@ def render(source, output, azimuth, elevation, width=960, height=640):
     output.with_suffix(".txt").write_text(
         f"source={source}\nview=orthographic\nazimuth={azimuth}\nelevation={elevation}\n"
         f"size={width},{height}\npixels_per_world_unit={scale}\nvertical_exaggeration=1\n"
+        f"projected_frame={xmin},{xmax},{ymin},{ymax}\n"
         "light=normalize(-0.6,1,-0.4); shade=0.2+0.7*max(dot(normal,light),0)\n")
 
 

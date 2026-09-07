@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <string_view>
 
 #include <glm/glm.hpp>
 
@@ -30,6 +31,8 @@ public:
     // squares drawn this way look square on screen regardless of window
     // aspect ratio (see Application, which knows the current aspect).
     void addQuad(glm::vec2 centerNDC, glm::vec2 halfSizeNDC, glm::vec3 color);
+    // Small bitmap lettering; origin is the top-left, pixelSize is in NDC.
+    void addText(std::string_view text, glm::vec2 origin, glm::vec2 pixelSize, glm::vec3 color);
     void render(VkCommandBuffer cmd);
 
 private:

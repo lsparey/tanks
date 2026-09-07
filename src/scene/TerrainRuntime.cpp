@@ -16,10 +16,17 @@ auto range(const std::vector<double>& coordinates, double low, double high) {
 }
 }
 
-TerrainGenerator::Settings recipe(uint32_t seed, float hullWidth, float hullLength, MacroTerrain::Landform landform) {
+TerrainGenerator::Settings recipe(uint32_t seed, float hullWidth, float hullLength, MacroTerrain::Landform landform, int resolution, int refinementPasses) {
+    if (resolution != 257 && resolution != 513)
+        throw std::invalid_argument("runtime terrain resolution must be 257 or 513");
+    if (refinementPasses < 0 || refinementPasses > 2)
+        throw std::invalid_argument("runtime terrain refinement requires 0, 1 or 2 passes");
+    if (refinementPasses && resolution != 257)
+        throw std::invalid_argument("runtime refinement requires the 257 erosion grid");
     TerrainGenerator::Settings s;
     s.preset = TerrainGenerator::Preset::DrainedValley;
-    s.seed = seed; s.resolution = 257; s.erosion.workers = 4;
+    s.refinementPasses = refinementPasses;
+    s.seed = seed; s.resolution = resolution; s.erosion.workers = 4;
     MacroTerrain::landformName(landform); // fail invalid input before generation
     s.macro.landform = landform;
     s.lakes.emplace(); s.streams.emplace(); s.channelCarving.emplace();

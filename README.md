@@ -34,8 +34,13 @@ runtime/build libraries.
 - In-engine PNG screenshot capture for interactive and automated use.
 
 See [PLAN.md](PLAN.md) for the completed-feature index and possible future
-improvements. The [tree-rendering guide](docs/TREE_RENDERING.md) covers crown
-geometry, threaded loading, progressive LOD, wind, shadows, measured costs and
+improvements. Links to `docs/*.md` throughout this README point to local
+working notes (measurements, previews, raw data) that are gitignored and not
+committed; regenerate them with `tools/` and the test suite. PLAN.md's
+"Reference material" section keeps the conclusions and research references
+that would otherwise only live there — including the
+[tree-rendering guide](docs/TREE_RENDERING.md), which covers crown geometry,
+threaded loading, progressive LOD, wind, shadows, measured costs and
 validation.
 
 ## Rendering direction
@@ -258,21 +263,47 @@ Use these short scenarios, allowing the sample window to fill after `F4`:
 
 For static comparisons across launches, use `--seed 7331 --view landscape`.
 The seed fixes terrain, material variants, and prop placement; `--view` also
-accepts `tank`, `tank-side`, `tank-front`, `tank-rear`, `tank-top`, and `water` and holds a reference camera until `C` is
+accepts `tank`, `tank-side`, `tank-front`, `tank-rear`, `tank-top`, `terrain`, and `water` and holds a reference camera until `C` is
 pressed. Without an explicit seed, reference views use 7331; normal gameplay
 still chooses and prints a random seed. Timing, effects, and temporal ray noise
 are not deterministic replay. Capture screenshots outside measurement intervals.
 
-The upgraded British summertime terrain is the default. `--landform mixed`
-(the default) chooses hills, ridges, plains, basins or a valley from the seed.
-Use `--landform hills` (or `ridges`, `plain`, `basin`, `valley`) to choose a family.
-`./out/runtime-release/tanks --seed 7331` runs the optimized build when configured;
-`./build/tanks` is the default Debug build and generates terrain substantially
-more slowly. Use `--terrain legacy` to compare
-with the previous generator, or `--terrain drained-valley` to select the new path
-explicitly; that historical pipeline name no longer forces a valley. To replay
-the previous valley default, add `--landform valley`. Landform overrides cannot
-be combined with `--terrain legacy`. The new path uses the loaded tank's dimensions to select a dry spawn and route,
+For matched terrain comparisons, `--view terrain` uses a fixed world camera.
+`--terrain-resolution 257|513` selects the upgraded pipeline's playable grid;
+257 remains the default. The 513 option is experimental and can exceed the
+unchanged erosion step limit. It cannot be combined with `--terrain legacy`.
+See the [resolution comparison](docs/TERRAIN_RESOLUTION.md) for results.
+
+`--terrain-refinement on` instead builds a 513-sample final surface after the
+usual 257-sample erosion pass, with smoother channel banks. It is opt-in and
+requires upgraded terrain with the default 257 erosion resolution. Try
+`./out/runtime-release/tanks --terrain drained-valley --seed 42 --terrain-refinement on --view terrain`.
+See the [refinement results and remaining water-junction issue](docs/TERRAIN_REFINEMENT.md).
+For a denser comparison, `--terrain-refinement 2x` is equivalent to `on`
+(513 final samples), while `--terrain-refinement 4x` produces 1025 final samples.
+Both retain 257-sample erosion. Compare the same seed and `--view terrain`;
+see the [513/1025 test procedure](docs/TERRAIN_REFINEMENT_4X.md).
+
+`./build/tanks --menu` opens a terrain menu before the loading screen, with the
+original, faster generator selected. Choose original terrain, eroded landscapes,
+513/1025 refined terrain, or the slower full-513 erosion experiment, then select
+a landform and seed and click **Start Game**. Click the landform to cycle it;
+click the seed to replace it, or use **Random**. Tab/arrow keys move focus,
+Enter activates a control, and Escape quits. Invalid seeds disable Start Game.
+See the [menu preview](docs/terrain-menu.png).
+
+**The menu only appears with `--menu`.** Plain `./build/tanks` starts the
+original terrain directly, as does `./build/tanks --terrain legacy`.
+The experimental erosion pipeline requires `--terrain drained-valley` when
+launching through the command line.
+For testing it, prefer the optimized build:
+`./out/runtime-release/tanks --terrain drained-valley --seed 7331`.
+The Debug build remains much slower when erosion is explicitly enabled.
+Within the experimental pipeline, `--landform mixed` chooses hills, ridges,
+plains, basins or a valley from the seed. Add `--landform hills` (or `ridges`,
+`plain`, `basin`, `valley`) to choose a family. Landform, resolution and refinement
+options require `--terrain drained-valley`.
+The new path uses the loaded tank's dimensions to select a dry spawn and route,
 then preserves that route during scenery placement. `--terrain-attempts 1..8`
 explicitly bounds seed selection (default 1); logs record both requested and
 selected seeds. See [terrain runtime notes](docs/TERRAIN_RUNTIME.md) for status,

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -62,8 +63,9 @@ public:
                          std::optional<uint32_t> worldSeed = std::nullopt,
                          std::string referenceView = {}, bool originalTankModel = false,
                          bool animateTracks = true, bool weaponPreview = false,
-                         bool valleyTerrain = true, uint32_t terrainAttempts = 1,
-                         MacroTerrain::Landform landform = MacroTerrain::Landform::Mixed);
+                         bool valleyTerrain = false, uint32_t terrainAttempts = 1,
+                         MacroTerrain::Landform landform = MacroTerrain::Landform::Mixed,
+                         int terrainResolution = 257, int refinementPasses = 0, bool showTerrainMenu = false);
     ~Application();
 
     Application(const Application&) = delete;
@@ -79,7 +81,11 @@ private:
     };
 
     void initialize(bool originalTankModel, bool animateTracks, bool weaponPreview,
-                    bool valleyTerrain, uint32_t terrainAttempts, MacroTerrain::Landform landform);
+                    bool valleyTerrain, uint32_t terrainAttempts, MacroTerrain::Landform landform,
+                    int terrainResolution, int refinementPasses, bool showTerrainMenu);
+    bool selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& landform,
+                       int& terrainResolution, int& refinementPasses);
+    std::string menuTextInput_;
     void initWindow();
     void cleanup() noexcept;
     void mainLoop();
@@ -287,5 +293,5 @@ private:
     std::vector<AccelerationStructure::Instance> gatherRayTracingInstances() const;
     void recreateSwapchainDependentResources();
     std::string nextScreenshotPath();
-    void presentLoadingProgress(float fraction);
+    void presentLoadingProgress(float fraction, const std::function<void()>& drawMenu = {});
 };

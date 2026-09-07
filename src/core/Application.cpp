@@ -279,12 +279,12 @@ VkImageMemoryBarrier2 imageBarrier(VkImage image, VkImageAspectFlags aspect,
 Application::Application(std::optional<ScreenshotRequest> screenshotRequest, bool performanceReporting,
                          std::optional<uint32_t> worldSeed, std::string referenceView,
                          bool originalTankModel, bool animateTracks, bool weaponPreview,
-                         bool valleyTerrain, uint32_t terrainAttempts, MacroTerrain::Landform landform)
+                         bool valleyTerrain, uint32_t terrainAttempts, MacroTerrain::Landform landform, int terrainResolution, int refinementPasses, bool showTerrainMenu)
     : worldSeed_(worldSeed ? *worldSeed : std::random_device{}()),
       referenceView_(std::move(referenceView)), performanceReporting_(performanceReporting),
       screenshotRequest_(std::move(screenshotRequest)) {
     try {
-        initialize(originalTankModel, animateTracks, weaponPreview, valleyTerrain, terrainAttempts, landform);
+        initialize(originalTankModel, animateTracks, weaponPreview, valleyTerrain, terrainAttempts, landform, terrainResolution, refinementPasses, showTerrainMenu);
     } catch (...) {
         cleanup();
         throw;
@@ -292,10 +292,9 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
 }
 
 void Application::initialize(bool originalTankModel, bool animateTracks, bool weaponPreview,
-                             bool valleyTerrain, uint32_t terrainAttempts, MacroTerrain::Landform landform) {
+                             bool valleyTerrain, uint32_t terrainAttempts, MacroTerrain::Landform landform, int terrainResolution, int refinementPasses, bool showTerrainMenu) {
     auto loadingStart = std::chrono::steady_clock::now();
     weaponPreview_ = weaponPreview;
-    std::cout << "World seed: " << worldSeed_ << '\n';
     initWindow();
     context_ = std::make_unique<VulkanContext>(window_);
 
@@ -317,8 +316,14 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
                                             swapchain_->depthFormat(), historyBuffer_->format());
     hud_ = std::make_unique<HudRenderer>(*context_, swapchain_->imageFormat(),
                                           swapchain_->depthFormat());
-    // Nothing has been presented yet -- show an empty bar immediately so the
-    // window doesn't sit with undefined content while textures/terrain/tank
+    if (showTerrainMenu) {
+        if (!selectTerrain(valleyTerrain, landform, terrainResolution, refinementPasses)) return;
+        // Time spent choosing settings is not loading time.
+        loadingStart = std::chrono::steady_clock::now();
+    }
+    std::cout << "World seed: " << worldSeed_ << '\n';
+    // Show the loading bar before textures, terrain and tank assets load so
+    // the window remains responsive during the expensive
     // model/vegetation load below (see presentLoadingProgress's comment).
     presentLoadingProgress(0.0f);
 
@@ -337,7 +342,10 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
                                         ? "/assets/models/tank.x" : "/assets/models/challenger2.obj"), animateTracks);
     TerrainGenerator::Settings terrainSettings;
     terrainSettings.seed = worldSeed_;
-    if (valleyTerrain) terrainSettings = TerrainRuntime::recipe(worldSeed_, tank_->hullWidth(), tank_->hullLength(), landform);
+    if (valleyTerrain) terrainSettings = TerrainRuntime::recipe(worldSeed_, tank_->hullWidth(), tank_->hullLength(), landform, terrainResolution, refinementPasses);
+    std::cout << "Terrain playable resolution: " << (1 + (terrainSettings.resolution - 1) * (1 << refinementPasses)) << '\n';
+    std::cout << "Terrain erosion resolution: " << terrainSettings.resolution
+              << "; refinement: " << (refinementPasses == 2 ? "4x" : refinementPasses == 1 ? "2x" : "off") << '\n';
     auto terrainBuild = [&] {
         if (!valleyTerrain) return TerrainGenerator::build(terrainSettings);
         std::stop_source stop;
@@ -716,7 +724,7 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
         std::chrono::steady_clock::now() - loadingStart).count() << " ms\n";
 }
 
-// Presents a single frame containing only a fill bar, via a fully
+// Presents a loading bar or menu overlay, via a fully
 // synchronous acquire/submit/present using frame-in-flight slot 0 -- called
 // only during construction, before mainLoop's own drawFrame ever runs, so
 // there's no frame pacing to preserve and no risk of racing normal
@@ -725,7 +733,7 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
 // (terrain, water, tank model, tree/rock meshes, acceleration
 // structures) can take several seconds, during which the window would
 // otherwise show undefined content and read as hung to the window manager.
-void Application::presentLoadingProgress(float fraction) {
+void Application::presentLoadingProgress(float fraction, const std::function<void()>& drawMenu) {
     auto& frame = commands_->frame(0);
     VK_CHECK(vkWaitForFences(context_->device(), 1, &frame.inFlight, VK_TRUE, UINT64_MAX));
 
@@ -794,15 +802,18 @@ void Application::presentLoadingProgress(float fraction) {
     vkCmdSetScissor(frame.commandBuffer, 0, 1, &scissor);
 
     hud_->begin();
-    constexpr float kBarHalfWidth = 0.4f;
-    constexpr float kBarHalfHeight = 0.02f;
-    const glm::vec3 kTrackColor(0.16f, 0.17f, 0.18f);
-    const glm::vec3 kFillColor(0.30f, 0.75f, 0.35f);
-    hud_->addQuad({0.0f, 0.0f}, {kBarHalfWidth, kBarHalfHeight}, kTrackColor);
-    float clamped = glm::clamp(fraction, 0.0f, 1.0f);
-    if (clamped > 0.0f) {
-        float fillHalfWidth = kBarHalfWidth * clamped;
-        hud_->addQuad({-kBarHalfWidth + fillHalfWidth, 0.0f}, {fillHalfWidth, kBarHalfHeight}, kFillColor);
+    if (drawMenu) drawMenu();
+    else {
+        constexpr float kBarHalfWidth = 0.4f;
+        constexpr float kBarHalfHeight = 0.02f;
+        const glm::vec3 kTrackColor(0.16f, 0.17f, 0.18f);
+        const glm::vec3 kFillColor(0.30f, 0.75f, 0.35f);
+        hud_->addQuad({0.0f, 0.0f}, {kBarHalfWidth, kBarHalfHeight}, kTrackColor);
+        float clamped = glm::clamp(fraction, 0.0f, 1.0f);
+        if (clamped > 0.0f) {
+            float fillHalfWidth = kBarHalfWidth * clamped;
+            hud_->addQuad({-kBarHalfWidth + fillHalfWidth, 0.0f}, {fillHalfWidth, kBarHalfHeight}, kFillColor);
+        }
     }
     hud_->render(frame.commandBuffer);
 
@@ -954,7 +965,7 @@ void Application::framebufferResizeCallback(GLFWwindow* window, int /*width*/, i
     app->framebufferResized_ = true;
 }
 
-void Application::run() { mainLoop(); }
+void Application::run() { if (!glfwWindowShouldClose(window_)) mainLoop(); }
 
 void Application::mainLoop() {
     while (!glfwWindowShouldClose(window_)) {
@@ -1146,6 +1157,11 @@ void Application::applyReferenceCamera() {
         target = tank_->position() + glm::vec3(0.0f, 0.8f, 0.4f);
         // Tiny horizontal offset avoids a singular world-up/look direction.
         offset = {0.01f, 5.0f, 0.0f};
+    } else if (referenceView_ == "terrain") {
+        // Fixed world pose for comparing generation settings. Spawn and water
+        // selection can move between resolutions, so neither anchors this view.
+        target = {0.0f, 0.0f, 0.0f};
+        offset = {-28.0f, 18.0f, -38.0f};
     } else if (referenceView_ == "landscape") {
         glm::vec2 at = spawnXZ_ + glm::vec2(0, 25);
         target = {at.x, terrain_->heightAt(at.x, at.y) + 3.0f, at.y};
@@ -1163,7 +1179,8 @@ void Application::applyReferenceCamera() {
         offset = rotate(offset);
     }
     glm::vec3 eye = target + offset;
-    eye.y = std::max(eye.y, terrain_->heightAt(eye.x, eye.z) + 2.0f);
+    if (referenceView_ != "terrain")
+        eye.y = std::max(eye.y, terrain_->heightAt(eye.x, eye.z) + 2.0f);
     glm::vec3 direction = glm::normalize(target - eye);
     camera_ = Camera(eye, glm::degrees(std::atan2(direction.z, direction.x)),
                      glm::degrees(std::asin(direction.y)));

@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <optional>
 #include "MacroTerrain.h"
+#include "TerrainRefinement.h"
 #include "HydraulicErosion.h"
 #include "TerrainDrainage.h"
 #include "LakeWater.h"
@@ -27,7 +28,8 @@ struct Settings {
     Preset preset = Preset::Legacy;
     uint32_t version = kVersion;
     uint32_t seed = 7331;
-    int resolution = 256;
+    int resolution = 256; // macro/erosion grid
+    int refinementPasses = 0; // 0: off; 1: 2x intervals; 2: 4x intervals after settlement
     float worldSize = 180.0f;
     float amplitude = 2.2f; // legacy recipe only
     MacroTerrain::Settings macro; // valley recipes
@@ -92,6 +94,7 @@ struct BuildResult {
     std::optional<ChannelCarving::Result> channelCarving;
     std::optional<TerrainWater::Result> combinedWater;
     std::optional<TerrainPlayability::Result> playability;
+    std::optional<TerrainRefinement::Result> refinement;
 };
 
 MeshData buildMesh(const TerrainSurface& surface);

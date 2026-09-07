@@ -141,7 +141,19 @@ Result apply(MacroTerrain::Fields& f, const TerrainDrainage::Result& d,
                 double rim = std::lerp(double(a.ground), double(b.ground), t);
                 double depth = rim - std::lerp(bed[i], bed[j], t);
                 if (depth <= 0) continue;
-                double target = std::max(double(original[cell]) - settings.maximumCut, rim - depth * (1 - relativeSquared));
+                double profile = 1 - relativeSquared;
+                double target;
+                if (settings.smoothBanks) {
+                    // Blend excavation into the actual bank height. Using the
+                    // centreline rim here would leave a cut at the outer edge
+                    // wherever the hillside is higher than that centreline.
+                    profile *= profile;
+                    double cut = std::clamp(double(original[cell]) - std::lerp(bed[i], bed[j], t),
+                                            0.0, double(settings.maximumCut));
+                    target = double(original[cell]) - cut * profile;
+                } else {
+                    target = std::max(double(original[cell]) - settings.maximumCut, rim - depth * profile);
+                }
                 targets[cell] = std::min(targets[cell], roundUp(target));
             }
         }

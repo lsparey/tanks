@@ -12,6 +12,7 @@ find_package(Threads REQUIRED)
 add_library(terrain_generation STATIC
     src/scene/HeightmapGenerator.cpp
     src/scene/MacroTerrain.cpp
+    src/scene/TerrainRefinement.cpp
     src/scene/HydraulicErosion.cpp
     src/scene/TerrainDrainage.cpp
     src/scene/LakeWater.cpp
@@ -38,6 +39,9 @@ target_link_libraries(terrain_selection_probe PRIVATE terrain_generation)
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(terrain_refinement_test tests/TerrainRefinementTest.cpp)
+    target_link_libraries(terrain_refinement_test PRIVATE terrain_generation)
+    add_test(NAME terrain_refinement COMMAND terrain_refinement_test)
     add_executable(terrain_surface_test tests/TerrainSurfaceTest.cpp)
     target_link_libraries(terrain_surface_test PRIVATE terrain_generation)
     add_test(NAME terrain_surface COMMAND terrain_surface_test)
@@ -91,6 +95,7 @@ find_package(Stb REQUIRED)
 add_executable(tanks
     src/main.cpp
     src/core/Application.cpp
+    src/core/TerrainMenu.cpp
     src/render/VulkanContext.cpp
     src/render/Swapchain.cpp
     src/render/CommandContext.cpp

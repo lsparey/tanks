@@ -125,15 +125,20 @@ def main():
     parser.add_argument("--seeds", type=int, nargs="+", default=[7331, 0, 42])
     parser.add_argument("--presets", choices=["legacy", "drained-valley"], nargs="+", default=["legacy", "drained-valley"])
     parser.add_argument("--repeats", type=int, default=3)
-    parser.add_argument("--view", choices=["landscape", "tank-side", "water"], default="landscape")
+    parser.add_argument("--view", choices=["landscape", "terrain", "tank-side", "water"], default="landscape")
     parser.add_argument("--weapon-preview", action="store_true", help="existing one-shot muzzle/explosion preview; not sustained combat")
     parser.add_argument("--landform", choices=["mixed", "valley", "hills", "ridges", "plain", "basin"],
                         help="override the new terrain's landform; legacy comparisons retain legacy geometry")
+    parser.add_argument("--terrain-resolution", type=int, choices=[257, 513],
+                        help="override the new terrain grid; legacy comparisons retain legacy geometry")
+    parser.add_argument("--terrain-refinement", choices=["on", "off", "2x", "4x"], help="257 erosion grid; on/2x yields 513 final samples, 4x yields 1025")
     parser.add_argument("--frames", type=int, default=420)
     parser.add_argument("--timeout", type=float, default=180)
     args = parser.parse_args()
     if args.repeats < 1 or not 301 <= args.frames <= 0x7fffffff or not math.isfinite(args.timeout) or args.timeout <= 0 or any(not 0 <= seed <= 0xffffffff for seed in args.seeds):
         parser.error("positive finite repeats/timeout, 301..2147483647 frames and uint32 seeds required")
+    if args.terrain_refinement in ["on", "2x", "4x"] and args.terrain_resolution == 513:
+        parser.error("refinement requires the 257 erosion grid")
     binary = args.binary.resolve(strict=True)
     args.output.mkdir(parents=True, exist_ok=True)
     if any(args.output.iterdir()):
@@ -178,6 +183,10 @@ def main():
                     command.append("--weapon-preview")
                 if args.landform and preset != "legacy":
                     command.extend(["--landform", args.landform])
+                if args.terrain_resolution and preset != "legacy":
+                    command.extend(["--terrain-resolution", str(args.terrain_resolution)])
+                if args.terrain_refinement and preset != "legacy":
+                    command.extend(["--terrain-refinement", args.terrain_refinement])
                 print("Starting", name, flush=True)
                 started = time.monotonic()
                 peak_rss = None

@@ -6,6 +6,7 @@ namespace ChannelCarving {
 inline constexpr uint32_t kVersion = 1;
 struct Settings {
     float maximumCut = .6f; // world units; no fill or hidden sediment deposition
+    bool smoothBanks = false; // quartic profile has zero derivative at the rim
 };
 struct Budget {
     double initialSoil = 0, finalSoil = 0;
@@ -22,7 +23,8 @@ struct Result {
 };
 
 // One bounded soil-first excavation pass using PRELIMINARY drainage/streams.
-// Carves parabolic sections at requested widths/depths below the old ground
+// Carves sections (parabolic, or tapered local-bank cuts with smoothBanks)
+// at requested widths/depths below the old ground
 // centreline, subject to downstream bed constraints and protected lake rims.
 // Validates and prepares all changes before committing. Caller MUST rebuild
 // drainage, lakes, streams and contact/render surfaces after this height change.
