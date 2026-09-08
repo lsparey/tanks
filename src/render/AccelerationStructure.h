@@ -38,9 +38,10 @@ public:
                                             const Mesh& mesh);
 
     struct Instance {
-        // Match basic.frag's sun-shadow masks. AO/reflections see both.
+        // Match basic.frag's sun-shadow masks. AO/reflections see all three groups.
         static constexpr uint8_t kSolidMask = 0x01;
         static constexpr uint8_t kFoliageMask = 0x02;
+        static constexpr uint8_t kTreeBarkMask = 0x04;
         VkDeviceAddress blasAddress;
         glm::mat4 transform;  // world matrix, same as used for rasterization
         uint8_t mask = kSolidMask;

@@ -1,19 +1,13 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec3 inColor;
 layout(location = 3) in vec2 inUV;
 
-layout(set = 0, binding = 0) uniform FrameUBO {
-    mat4 view;
-    mat4 proj;
-    mat4 prevViewProj;
-    vec4 lightDir;
-    vec4 cameraPos;
-    vec4 prevCameraPos;
-    vec4 windTime;
-} frame;
+#include "frame.glsl"
+#include "tree_wind.glsl"
 
 struct RasterInstance {
     mat4 model;
@@ -74,8 +68,8 @@ void main() {
         float height = max(inPosition.y, 0.0);
         vec3 bend = instanceData.instances[gl_InstanceIndex].wind.xyz;
         vec3 previousBend = instanceData.instances[gl_InstanceIndex].previousWind.xyz;
-        renderPos = model * vec4(inPosition + bend * height * height, 1.0);
-        previousPos = model * vec4(inPosition + previousBend * height * height, 1.0);
+        renderPos = model * vec4(bendTreePosition(inPosition, bend), 1.0);
+        previousPos = model * vec4(bendTreePosition(inPosition, previousBend), 1.0);
         // Inverse transpose of the bend Jacobian, before the rigid model
         // transform. This keeps illumination attached to the bent surface.
         renderNormal.y -= 2.0 * height * dot(bend, inNormal);

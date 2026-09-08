@@ -1,4 +1,5 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_ray_query : require
 #extension GL_EXT_ray_tracing_position_fetch : require
 
@@ -18,36 +19,10 @@ layout(location = 7) in vec3 fragRayWorldPos;
 layout(location = 8) in vec3 fragRayNormal;
 layout(location = 9) flat in vec4 fragFoliageFade;
 
-// Must match DynamicLight.h's kMaxDynamicLights -- GLSL can't share that
-// constant with the C++ side, so the array size here is a plain literal.
-#define MAX_DYNAMIC_LIGHTS 4
-
-layout(set = 0, binding = 0) uniform FrameUBO {
-    mat4 view;
-    mat4 proj;
-    mat4 prevViewProj;
-    vec4 lightDir;   // direction the light travels, xyz
-    vec4 cameraPos;
-    vec4 prevCameraPos;
-    vec4 windTime;
-    // Muzzle-flash/explosion point lights -- see DynamicLight.h and
-    // Application::drawFrame, which fills these each frame. xyz position,
-    // w radius; rgb color, w intensity. A radius/intensity of 0 (the
-    // default for any slot beyond however many lights are actually live)
-    // means "inactive, skip" -- see the loop in main().
-    vec4 dynamicLightPosRadius[MAX_DYNAMIC_LIGHTS];
-    vec4 dynamicLightColorIntensity[MAX_DYNAMIC_LIGHTS];
-    vec4 sunColor;
-    vec4 skyZenith;
-    vec4 skyHorizon;
-    vec4 ambientColor;
-    vec4 cloudColor;
-    vec4 atmosphere;
-    vec4 weaponEffects;
-    vec4 scorchPositionRadius[16];
-    vec4 scorchParameters[16];
-} frame;
+#include "frame.glsl"
 layout(set = 0, binding = 2) uniform sampler2D environmentClouds;
+layout(set = 0, binding = 3) uniform sampler2DArray treeShadowMap;
+#include "tree_shadow_filter.glsl"
 
 // Four material textures: a "high" (grass) pair and a "low" (gravel) pair,
 // each pair patch-blended by a noise mask, with the high/low pair itself
@@ -66,6 +41,10 @@ layout(set = 1, binding = 3) uniform sampler2D materialTexLowB;
 layout(set = 1, binding = 4) uniform sampler2D terrainControlTex;
 layout(set = 2, binding = 0) uniform accelerationStructureEXT sceneTLAS;
 layout(set = 3, binding = 0) uniform sampler2D historyShadow;
+// Independently-smoothed foliage-transmission factor -- see traceSoftShadow
+// and the temporal-accumulation block in main() for why this can't share
+// historyShadow's adaptive blend.
+layout(set = 3, binding = 1) uniform sampler2D historyFoliage;
 
 layout(push_constant) uniform PushConstants {
     mat4 model;
@@ -97,6 +76,9 @@ layout(location = 0) out vec4 outColor;
 // (see main()). w: 2-frame-smoothed shadow disagreement, used next frame to
 // tell a sustained real change from a one-frame noise spike (see main()).
 layout(location = 1) out vec4 outShadowHistory;
+// Fixed-alpha-smoothed foliage-transmission factor -- see the comment on
+// historyFoliage above.
+layout(location = 2) out float outFoliageHistory;
 
 // Hard visibility test via a single ray query: 1.0 if nothing occludes the
 // path from `origin` toward `direction`, 0.0 if something does.
@@ -260,12 +242,18 @@ const int kShadowSamples = 3;
 const int kShadowEdgeExtraSamples = 5;
 const float kConeAngle = 0.05;
 const float kFoliageConeAngle = 0.16;
-const float kFoliageTransmission = 0.4;
+const float kFoliageTransmission = 0.05;
 
 // Match AccelerationStructure::Instance masks. Solid occluders keep their
-// narrow sun cone. Foliage has a separate, wider cone and partial transmission.
-float traceSoftShadow(vec3 origin, vec3 lightDir, float tMax, float noiseSeed,
-                      int sampleCount, int edgeExtraSamples) {
+// narrow sun cone. Foliage has a separate, wider cone and partial
+// transmission.
+//
+// Returns the two factors SEPARATELY (x: solid visibility, y: foliage
+// transmission) rather than pre-multiplied, because they get temporally
+// smoothed independently in main() -- see that block's comment for why a
+// combined value can't be filtered with one policy.
+vec2 traceSoftShadow(vec3 origin, vec3 lightDir, float tMax, float noiseSeed,
+                     int sampleCount, int edgeExtraSamples, int leafSampleCount) {
     vec3 t, b;
     buildBasis(lightDir, t, b);
 
@@ -276,7 +264,7 @@ float traceSoftShadow(vec3 origin, vec3 lightDir, float tMax, float noiseSeed,
         float angle = u1 * 6.2831853;
         float radius = kConeAngle * sqrt(u2);
         vec3 direction = normalize(lightDir + radius * (cos(angle) * t + sin(angle) * b));
-        sum += traceShadow(origin, direction, tMax, 0x01u);
+        sum += traceShadow(origin, direction, tMax, frame.treeShadowParams.x > .5 ? 0x01u : 0x05u);
     }
     float solidVisibility = sum / float(sampleCount);
     if (solidVisibility > 0.001 && solidVisibility < 0.999) {
@@ -287,24 +275,54 @@ float traceSoftShadow(vec3 origin, vec3 lightDir, float tMax, float noiseSeed,
             float angle = u1 * 6.2831853;
             float radius = kConeAngle * sqrt(u2);
             vec3 direction = normalize(lightDir + radius * (cos(angle) * t + sin(angle) * b));
-            sum += traceShadow(origin, direction, tMax, 0x01u);
+            sum += traceShadow(origin, direction, tMax, frame.treeShadowParams.x > .5 ? 0x01u : 0x05u);
         }
         solidVisibility = sum / float(totalSamples);
     }
-    if (solidVisibility < 0.001) return 0.0;
+    if (frame.treeShadowParams.x > .5) return vec2(solidVisibility, 1.0);
 
-    // Two canopy samples keep the broad penumbra from becoming stippled;
-    // temporal accumulation fills in the remaining coverage. Don't duplicate
-    // these for every solid edge ray.
+    // Foliage transmission is irrelevant when a solid occluder already
+    // blocks everything -- skip its rays. Its history simply holds at
+    // whatever it last read while this stays true; harmless since the
+    // product with solidVisibility reads as full shadow regardless, and it
+    // resumes updating the moment solid visibility recovers.
+    if (solidVisibility < 0.001) return vec2(0.0, 1.0);
+
+    // Two canopy samples keep the broad penumbra from becoming stippled at
+    // range, where temporal accumulation fills in the remaining coverage;
+    // up close a wrong canopy estimate is both larger on screen and slower
+    // to converge (more pixels, so more frames before every one of them has
+    // resampled), so a couple of extra rays there are worth the cost. Don't
+    // duplicate these for every solid edge ray.
     float leafVisibility = 0.0;
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < leafSampleCount; ++i) {
         float leafAngle = fract(noiseSeed + 0.37 + float(i) * 0.5) * 6.2831853;
         float leafRadius = kFoliageConeAngle * sqrt(fract(noiseSeed * 1.618 + 0.71 + float(i) * 0.5));
         vec3 leafDir = normalize(lightDir + leafRadius * (cos(leafAngle) * t + sin(leafAngle) * b));
         leafVisibility += traceShadow(origin, leafDir, tMax, 0x02u);
     }
-    // Multiplication preserves full shadow from any solid object behind leaves.
-    return solidVisibility * mix(kFoliageTransmission, 1.0, leafVisibility * 0.5);
+    // No cap on the miss fraction here: traceSoftShadow runs for every
+    // shaded point in the scene, including ground with no tree anywhere
+    // near it, where every leaf-masked sample is a guaranteed miss. Capping
+    // that "fully open" case below 1.0 (an earlier version of this code did,
+    // to compensate for the sparse/conservative leaf proxy undersampling
+    // real occlusion near a tree) silently darkened the entire scene by a
+    // flat amount, not just the ground under canopies -- the opposite of
+    // making canopy shadow more visible, since it shrinks the contrast
+    // between shadowed and unshadowed ground instead of widening it.
+    //
+    // The sparse, conservative leaf proxy (real gaps between sprays, each
+    // inset well inside its spray's actual occupancy) means a point under
+    // genuine canopy usually sees only a fraction of its few leaf-masked
+    // rays register a hit, not all of them -- avgVisibility rarely reaches
+    // 0 even directly under a dense crown. Raising it to a power leaves the
+    // two anchor cases alone (0 stays 0, 1 stays 1) while pulling every
+    // partial hit rate -- the common case under real foliage -- down much
+    // closer to the fully-occluded end, so canopy shade reads as clearly
+    // darker instead of a faint tint on top of full sun.
+    float avgVisibility = leafVisibility / float(leafSampleCount);
+    float shaped = avgVisibility * avgVisibility * (3.0 - 2.0 * avgVisibility);
+    return vec2(solidVisibility, mix(kFoliageTransmission, 1.0, shaped));
 }
 
 const int kAOSamples = 4;
@@ -420,12 +438,14 @@ void main() {
         if (alpha < .002) alpha = 0.0;
         outColor = vec4(acesFilmicTonemap(color*kExposure),alpha);
         outShadowHistory = vec4(0);
+        outFoliageHistory = 1.0;
         return;
     }
     if (materialType > 3.5 && materialType < 4.5) {
         vec3 direction = normalize(fragWorldPos - frame.cameraPos.xyz);
         outColor = vec4(acesFilmicTonemap(skyColor(direction) * kExposure), 1.0);
         outShadowHistory = vec4(1.0, 1.0, length(fragWorldPos - frame.cameraPos.xyz), 0.0);
+        outFoliageHistory = 1.0;
         return;
     }
     float currentViewDist = length(frame.cameraPos.xyz - fragWorldPos);
@@ -683,6 +703,7 @@ void main() {
     if (unlit > 0.5) {
         outColor = vec4(acesFilmicTonemap(albedo * kExposure), finalAlpha);
         outShadowHistory = vec4(1.0, 1.0, 50000.0, 0.0);
+        outFoliageHistory = 1.0;
         return;
     }
 
@@ -717,21 +738,58 @@ void main() {
                            : currentViewDist < 45.0 ? 2 : 0;
     int aoSamples = currentViewDist < 18.0 ? kAOSamples
                   : currentViewDist < 45.0 ? 1 : 0;
-    float rawShadow = traceSoftShadow(rayOrigin, toLight, kShadowTMax, noiseSeed,
-                                      shadowSamples, shadowEdgeSamples);
+    int leafSamples = currentViewDist < 18.0 ? 4 : 2;
+    bool shadowsEnabled = frame.windTime.z > 0.5;
+    // Skip the ray queries entirely rather than just discarding their
+    // result -- the point of the toggle is to measure/avoid their cost, not
+    // just their visual effect.
+    // x: solid-occluder visibility. y: foliage transmission. Kept separate
+    // rather than pre-multiplied -- see the temporal-blend comment below for
+    // why one combined value can't be filtered with a single policy.
+    vec2 rawShadowFoliage = shadowsEnabled
+        ? traceSoftShadow(rayOrigin, toLight, kShadowTMax, noiseSeed, shadowSamples, shadowEdgeSamples,
+                          leafSamples)
+        : vec2(1.0);
+    float rawSolid = rawShadowFoliage.x;
+    float rawFoliage = rawShadowFoliage.y;
     // A different derived seed so AO's samples aren't identical to shadow's.
     float aoSeed = fract(noiseSeed * 2.718281828 + 0.31415926);
-    float rawAO = traceAO(rayOrigin, rayNormal, aoSeed, aoSamples, kAORadius, kAOStrength);
+    float rawAO = shadowsEnabled && frame.treeShadowParams.w > .5 ? traceAO(rayOrigin, rayNormal, aoSeed, aoSamples, kAORadius, kAOStrength) : 1.0;
 
     // Temporal accumulation: blend this frame's noisy few-sample estimates
     // with history reprojected from last frame, so both terms converge
     // toward a stable, much-higher-effective-sample-count result over a
     // few frames instead of showing raw per-frame noise.
+    //
+    // The legacy ray mode retains the previous experimental accumulation.
+    // Mapped tree visibility is evaluated after this block.
+    // The solid-occluder and foliage-transmission terms are smoothed
+    // independently (in separate history textures) rather than as one
+    // combined number, because they need opposite blending policies. Solid
+    // visibility legitimately needs the adaptive fast-snap-on-real-change
+    // logic below (a moving tank's own shadow sweeping across static
+    // ground). Foliage transmission has no equivalent fast case to protect:
+    // the ray-traced leaf proxy is static geometry, decoupled from wind sway
+    // (see basic.vert), so its true value at a given point never changes
+    // frame to frame -- only the few-sample *estimate* of it does. Feeding
+    // that estimate's noise through the same disagreement classifier as
+    // solid visibility was the actual bug behind the reported "denoising
+    // isn't working": a 2-4 ray estimate of a sparse, gappy proxy disagrees
+    // with its own history by more than the dead zone on nearly every frame,
+    // forever, since there's no real per-frame change for the noise to
+    // settle down into agreeing with. That kept the adaptive alpha pinned
+    // near its fast-snap ceiling for foliage-affected pixels permanently, so
+    // raw sampling noise passed straight through basically every frame no
+    // matter how the classifier's constants were tuned. Foliage instead
+    // always uses a small fixed alpha (see kFoliageHistoryAlpha below):
+    // heavy, unconditional smoothing is exactly correct for a value with
+    // nothing legitimate to react quickly to.
     vec4 prevClip = frame.prevViewProj * vec4(fragPrevWorldPos, 1.0);
-    float shadowFactor = rawShadow;
+    float solidFactor = rawSolid;
+    float foliageFactor = rawFoliage;
     float aoFactor = rawAO;
     float shadowDisagreementHistory = 0.0;
-    if (prevClip.w > 0.001) {
+    if (shadowsEnabled && frame.treeShadowParams.z < .5 && prevClip.w > 0.001) {
         vec2 prevNDC = prevClip.xy / prevClip.w;
         // Y is flipped relative to the textbook NDC->UV formula because the
         // app renders with a negative-viewport-height trick (corrects
@@ -755,6 +813,43 @@ void main() {
             float distDiff = abs(historySample.z - expectedPrevDist);
             float tolerance = max(0.05 * expectedPrevDist, 0.15);
             if (distDiff < tolerance) {
+                float historyFoliageSample = texture(historyFoliage, prevUV).r;
+                if (frame.treeShadowParams.x < .5) {
+                    // Retain the previous recursive history filter only for
+                    // the legacy comparison. Mapped tree shadows bypass it.
+                    vec2 texelSize = 6.0 / vec2(textureSize(historyShadow, 0));
+                    vec2 shadowAoSum = historySample.xy;
+                    float tapWeight = 1.0;
+                    // Foliage-transmission history shares these same four
+                    // offsets and the same validity test (both textures are
+                    // reprojected with the identical prevUV, so a tap that's
+                    // across a depth edge for one is across it for the other).
+                    float foliageSum = historyFoliageSample;
+                    float foliageWeight = 1.0;
+                    vec4 tapRight = texture(historyShadow, prevUV + vec2(texelSize.x, 0.0));
+                    if (abs(tapRight.z - expectedPrevDist) < tolerance) {
+                        shadowAoSum += tapRight.xy; tapWeight += 1.0;
+                        foliageSum += texture(historyFoliage, prevUV + vec2(texelSize.x, 0.0)).r; foliageWeight += 1.0;
+                    }
+                    vec4 tapLeft = texture(historyShadow, prevUV - vec2(texelSize.x, 0.0));
+                    if (abs(tapLeft.z - expectedPrevDist) < tolerance) {
+                        shadowAoSum += tapLeft.xy; tapWeight += 1.0;
+                        foliageSum += texture(historyFoliage, prevUV - vec2(texelSize.x, 0.0)).r; foliageWeight += 1.0;
+                    }
+                    vec4 tapUp = texture(historyShadow, prevUV + vec2(0.0, texelSize.y));
+                    if (abs(tapUp.z - expectedPrevDist) < tolerance) {
+                        shadowAoSum += tapUp.xy; tapWeight += 1.0;
+                        foliageSum += texture(historyFoliage, prevUV + vec2(0.0, texelSize.y)).r; foliageWeight += 1.0;
+                    }
+                    vec4 tapDown = texture(historyShadow, prevUV - vec2(0.0, texelSize.y));
+                    if (abs(tapDown.z - expectedPrevDist) < tolerance) {
+                        shadowAoSum += tapDown.xy; tapWeight += 1.0;
+                        foliageSum += texture(historyFoliage, prevUV - vec2(0.0, texelSize.y)).r; foliageWeight += 1.0;
+                    }
+                    historySample.xy = shadowAoSum / tapWeight;
+                    historyFoliageSample = foliageSum / foliageWeight;
+                }
+
                 // Adaptive blend rate: the depth check only catches a
                 // changed *surface* at this pixel, not a changed *lighting*
                 // state on the same static surface -- e.g. ground the tank
@@ -768,7 +863,7 @@ void main() {
                 // noise-smoothing benefit in the steady-state case.
                 //
                 // Dead zone below the ramp: with only a handful of samples
-                // per frame, a penumbra pixel's rawShadow is quantized (5
+                // per frame, a penumbra pixel's rawSolid is quantized (5
                 // samples => steps of 0.2) and jitters between those steps
                 // every frame from sampling noise alone, not a real lighting
                 // change. Without a dead zone that noise alone was enough to
@@ -821,13 +916,26 @@ void main() {
                 if (isTank) {
                     shadowAlpha = 1.0;
                 } else {
-                    float shadowDisagreement = abs(rawShadow - historySample.x);
-                    shadowDisagreementHistory = mix(historySample.w, shadowDisagreement, 0.5);
+                    float shadowDisagreement = abs(rawSolid - historySample.x);
+                    // Smoothed over more frames than the original 0.5:
+                    // widening the 0.15 threshold itself to compensate for a
+                    // noisier raw estimate was tried and rejected -- it
+                    // biased the converged shadow noticeably brighter, not
+                    // just slower to settle, because it suppresses response
+                    // asymmetrically (rare bright sampling outliers still
+                    // clear a higher bar and snap in fast; the more common
+                    // moderate-dark readings no longer do). Averaging over
+                    // more frames before comparing to the *same* original
+                    // threshold instead asks for the disagreement to be
+                    // sustained for longer, which quantization blips aren't
+                    // and a real change (the tank driving under a tree, its
+                    // own shadow sweeping past) still is.
+                    shadowDisagreementHistory = mix(historySample.w, shadowDisagreement, 0.25);
                     shadowAlpha =
                         mix(0.08, 0.9, clamp((shadowDisagreementHistory - 0.15) * 4.0, 0.0, 1.0));
                 }
                 shadowAlpha = max(shadowAlpha, fragFoliageFade.w);
-                shadowFactor = mix(historySample.x, rawShadow, shadowAlpha);
+                solidFactor = mix(historySample.x, rawSolid, shadowAlpha);
 
                 // AO: same invalid-reprojection reasoning as shadow above
                 // applies here too, so skip history for the tank's own
@@ -839,10 +947,32 @@ void main() {
                 float aoAlpha = isTank ? 1.0 : 0.75;
                 aoAlpha = max(aoAlpha, fragFoliageFade.w);
                 aoFactor = mix(historySample.y, rawAO, aoAlpha);
+
+                // Foliage: no adaptive classifier, no isTank fast path, no
+                // fragFoliageFade override -- unlike solid visibility and
+                // AO, this value has no legitimate fast-changing case to
+                // protect (see the comment above where solidFactor/
+                // foliageFactor are declared), so it always uses the same
+                // small alpha. (1-0.06)^n: about half the initial error is
+                // gone after 11 frames, under 10% after 36 -- roughly a
+                // second at 30fps to settle from a cold start, which is fine
+                // for a value that then stays put.
+                const float kFoliageHistoryAlpha = 0.06;
+                foliageFactor = mix(historyFoliageSample, rawFoliage, kFoliageHistoryAlpha);
             }
         }
     }
-    outShadowHistory = vec4(shadowFactor, aoFactor, currentViewDist, shadowDisagreementHistory);
+    // Current-frame mapped visibility never enters screen-space history.
+    if (frame.treeShadowParams.x > .5)
+        foliageFactor = shadowsEnabled ? mappedTreeShadow(fragWorldPos, normal, toLight) : 1.0;
+    if (frame.treeShadowParams.w < .5) aoFactor = 1.0;
+    float shadowFactor = solidFactor * foliageFactor;
+    // A sentinel distance while shadows are off, not currentViewDist: re-
+    // enabling shouldn't let the very next frame trust a "fully lit" history
+    // written for a reason that had nothing to do with the actual surface.
+    outShadowHistory = shadowsEnabled ? vec4(solidFactor, aoFactor, currentViewDist, shadowDisagreementHistory)
+                                      : vec4(solidFactor, aoFactor, 50000.0, 0.0);
+    outFoliageHistory = foliageFactor;
 
     // Diffuse-only bump: applied after the shadow/AO rays (which stay on the
     // true geometric normal -- perturbing their origin bias or hemisphere

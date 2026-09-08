@@ -24,7 +24,7 @@ std::vector<char> readFile(const std::string& path) {
 }  // namespace
 
 Pipeline::Pipeline(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthFormat,
-                   VkFormat historyFormat)
+                   VkFormat historyFormat, VkFormat foliageHistoryFormat)
     : ctx_(ctx),
       uniformBuffer_(ctx, sizeof(FrameUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
@@ -40,10 +40,11 @@ Pipeline::Pipeline(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthForma
     createHistorySetLayout();
     createDescriptorPoolAndSet();
     createPipelineLayout();
-    createPipeline(colorFormat, depthFormat, historyFormat);
+    createPipeline(colorFormat, depthFormat, historyFormat, foliageHistoryFormat);
 }
 
 Pipeline::~Pipeline() {
+    if (treeShadowPipeline_) vkDestroyPipeline(ctx_.device(), treeShadowPipeline_, nullptr);
     if (foliageDepthPipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(ctx_.device(), foliageDepthPipeline_, nullptr);
     if (foliagePipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(ctx_.device(), foliagePipeline_, nullptr);
     if (effectsPipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(ctx_.device(), effectsPipeline_, nullptr);
@@ -78,7 +79,7 @@ void Pipeline::updateFoliageDraws(const std::vector<VkDrawIndexedIndirectCommand
 }
 
 void Pipeline::createDescriptorSetLayout() {
-    VkDescriptorSetLayoutBinding bindings[3]{};
+    VkDescriptorSetLayoutBinding bindings[4]{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -94,7 +95,9 @@ void Pipeline::createDescriptorSetLayout() {
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 3;
+    bindings[3] = bindings[2];
+    bindings[3].binding = 3;
+    layoutInfo.bindingCount = 4;
     layoutInfo.pBindings = bindings;
 
     VK_CHECK(
@@ -139,16 +142,24 @@ void Pipeline::createTLASSetLayout() {
 }
 
 void Pipeline::createHistorySetLayout() {
-    VkDescriptorSetLayoutBinding binding{};
-    binding.binding = 0;
-    binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    // Binding 0: the shadow/AO/distance/disagreement buffer. Binding 1: the
+    // independently (fixed-alpha) smoothed foliage-transmission buffer --
+    // see HistoryBuffer's comment for why that value needs its own texture
+    // instead of a fifth channel on binding 0.
+    VkDescriptorSetLayoutBinding bindings[2]{};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 1;
-    layoutInfo.pBindings = &binding;
+    layoutInfo.bindingCount = 2;
+    layoutInfo.pBindings = bindings;
 
     VK_CHECK(vkCreateDescriptorSetLayout(ctx_.device(), &layoutInfo, nullptr, &historySetLayout_));
 }
@@ -165,8 +176,9 @@ void Pipeline::createDescriptorPoolAndSet() {
     poolSizes[0].descriptorCount = 1;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     // Each material set has four albedo bindings plus the terrain-control
-    // lookup (see createMaterialSetLayout).
-    poolSizes[1].descriptorCount = kMaxMaterialSets * 5 + kHistorySets + 1;
+    // lookup (see createMaterialSetLayout). Each history set now carries two
+    // bindings (shadow/AO buffer, foliage-transmission buffer).
+    poolSizes[1].descriptorCount = kMaxMaterialSets * 5 + kHistorySets * 2 + 2;
     poolSizes[2].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     poolSizes[2].descriptorCount = kTLASSets;
     poolSizes[3].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -255,22 +267,33 @@ void Pipeline::updateTLASDescriptor(size_t frameIndex, VkAccelerationStructureKH
 }
 
 void Pipeline::updateHistoryDescriptor(size_t frameIndex, VkImageView historyView,
-                                        VkSampler historySampler) {
-    VkDescriptorImageInfo imageInfo{};
-    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imageInfo.imageView = historyView;
-    imageInfo.sampler = historySampler;
+                                        VkSampler historySampler, VkImageView foliageHistoryView,
+                                        VkSampler foliageHistorySampler) {
+    VkDescriptorImageInfo imageInfos[2]{};
+    imageInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imageInfos[0].imageView = historyView;
+    imageInfos[0].sampler = historySampler;
+    imageInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imageInfos[1].imageView = foliageHistoryView;
+    imageInfos[1].sampler = foliageHistorySampler;
 
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = historyDescriptorSets_[frameIndex];
-    write.dstBinding = 0;
-    write.dstArrayElement = 0;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.descriptorCount = 1;
-    write.pImageInfo = &imageInfo;
+    VkWriteDescriptorSet writes[2]{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = historyDescriptorSets_[frameIndex];
+    writes[0].dstBinding = 0;
+    writes[0].dstArrayElement = 0;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].descriptorCount = 1;
+    writes[0].pImageInfo = &imageInfos[0];
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = historyDescriptorSets_[frameIndex];
+    writes[1].dstBinding = 1;
+    writes[1].dstArrayElement = 0;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].descriptorCount = 1;
+    writes[1].pImageInfo = &imageInfos[1];
 
-    vkUpdateDescriptorSets(ctx_.device(), 1, &write, 0, nullptr);
+    vkUpdateDescriptorSets(ctx_.device(), 2, writes, 0, nullptr);
 }
 
 void Pipeline::updateEnvironmentDescriptor(const Texture& clouds) {
@@ -355,7 +378,8 @@ VkShaderModule Pipeline::loadShaderModule(const char* relativePath) {
     return module;
 }
 
-void Pipeline::createPipeline(VkFormat colorFormat, VkFormat depthFormat, VkFormat historyFormat) {
+void Pipeline::createPipeline(VkFormat colorFormat, VkFormat depthFormat, VkFormat historyFormat,
+                               VkFormat foliageHistoryFormat) {
     VkShaderModule vertModule = loadShaderModule("basic.vert.spv");
     VkShaderModule fragModule = loadShaderModule("basic.frag.spv");
 
@@ -442,12 +466,19 @@ void Pipeline::createPipeline(VkFormat colorFormat, VkFormat depthFormat, VkForm
                                              VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
     historyBlendAttachment.blendEnable = VK_FALSE;
 
-    VkPipelineColorBlendAttachmentState colorBlendAttachments[] = {colorBlendAttachment,
-                                                                    historyBlendAttachment};
+    // Third color attachment: the foliage-transmission factor, smoothed with
+    // its own fixed-alpha blend independent of the adaptive shadow/AO one
+    // (see basic.frag) -- single channel, so only R is meaningful.
+    VkPipelineColorBlendAttachmentState foliageHistoryBlendAttachment{};
+    foliageHistoryBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT;
+    foliageHistoryBlendAttachment.blendEnable = VK_FALSE;
+
+    VkPipelineColorBlendAttachmentState colorBlendAttachments[] = {
+        colorBlendAttachment, historyBlendAttachment, foliageHistoryBlendAttachment};
 
     VkPipelineColorBlendStateCreateInfo colorBlending{};
     colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    colorBlending.attachmentCount = 2;
+    colorBlending.attachmentCount = 3;
     colorBlending.pAttachments = colorBlendAttachments;
 
     VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
@@ -456,10 +487,10 @@ void Pipeline::createPipeline(VkFormat colorFormat, VkFormat depthFormat, VkForm
     dynamicState.dynamicStateCount = 2;
     dynamicState.pDynamicStates = dynamicStates;
 
-    VkFormat colorAttachmentFormats[] = {colorFormat, historyFormat};
+    VkFormat colorAttachmentFormats[] = {colorFormat, historyFormat, foliageHistoryFormat};
     VkPipelineRenderingCreateInfo renderingInfo{};
     renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    renderingInfo.colorAttachmentCount = 2;
+    renderingInfo.colorAttachmentCount = 3;
     renderingInfo.pColorAttachmentFormats = colorAttachmentFormats;
     renderingInfo.depthAttachmentFormat = depthFormat;
 
@@ -488,11 +519,13 @@ void Pipeline::createPipeline(VkFormat colorFormat, VkFormat depthFormat, VkForm
     stages[1].module = foliageDepthModule;
     colorBlendAttachments[0].colorWriteMask = 0;
     colorBlendAttachments[1].colorWriteMask = 0;
+    colorBlendAttachments[2].colorWriteMask = 0;
     VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
                                       &foliageDepthPipeline_));
     stages[1].module = fragModule;
     colorBlendAttachments[0] = colorBlendAttachment;
     colorBlendAttachments[1] = historyBlendAttachment;
+    colorBlendAttachments[2] = foliageHistoryBlendAttachment;
     depthStencil.depthWriteEnable = VK_FALSE;
     depthStencil.depthCompareOp = VK_COMPARE_OP_EQUAL;
     // basic.frag constant 0 fixes the material flags used by leafPc. Keep the
@@ -513,9 +546,38 @@ void Pipeline::createPipeline(VkFormat colorFormat, VkFormat depthFormat, VkForm
     depthStencil.depthWriteEnable = VK_FALSE;
     rasterizer.cullMode = VK_CULL_MODE_NONE;
     colorBlendAttachments[1].colorWriteMask = 0;
+    colorBlendAttachments[2].colorWriteMask = 0;
     VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
                                       &effectsPipeline_));
 
+    VkShaderModule shadowModule = loadShaderModule("tree_shadow.vert.spv");
+    stages[0].module = shadowModule;
+    pipelineInfo.stageCount = 1; // opaque geometry: no fragment shader needed
+    vertexInput.vertexAttributeDescriptionCount = 1;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    rasterizer.cullMode = VK_CULL_MODE_NONE; // thin leaves cast from either side
+    rasterizer.depthBiasEnable = VK_TRUE;
+    rasterizer.depthBiasConstantFactor = 1.25f;
+    rasterizer.depthBiasSlopeFactor = 1.5f;
+    colorBlending.attachmentCount = 0;
+    renderingInfo.colorAttachmentCount = 0;
+    renderingInfo.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+    VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+                                      &treeShadowPipeline_));
+    vkDestroyShaderModule(ctx_.device(), shadowModule, nullptr);
     vkDestroyShaderModule(ctx_.device(), vertModule, nullptr);
     vkDestroyShaderModule(ctx_.device(), fragModule, nullptr);
+}
+
+void Pipeline::updateTreeShadowDescriptor(VkImageView view, VkSampler sampler) {
+    VkDescriptorImageInfo image{sampler, view, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstSet = descriptorSet_;
+    write.dstBinding = 3;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.descriptorCount = 1;
+    write.pImageInfo = &image;
+    vkUpdateDescriptorSets(ctx_.device(),1,&write,0,nullptr);
 }

@@ -19,6 +19,7 @@
 #include "../render/SceneAccelerationStructure.h"
 #include "../render/Swapchain.h"
 #include "../render/Texture.h"
+#include "../render/TreeShadowMap.h"
 #include "../render/VulkanContext.h"
 #include "../scene/Box.h"
 #include "../scene/Camera.h"
@@ -72,6 +73,11 @@ public:
     Application& operator=(const Application&) = delete;
 
     void run();
+    // 0: legacy rays, 1: stable PCF maps, 2: contact-hardening PCSS maps.
+    void setTreeShadowMode(int mode) { treeShadowMode_ = mode; shadowHistoryReset_ = true; }
+    void setShadowPreview(bool enabled, bool freezeWind) {
+        shadowPreview_ = enabled; freezeWind_ = freezeWind;
+    }
 
 private:
     enum class CameraMode {
@@ -117,6 +123,18 @@ private:
     bool prevCameraToggleKeyDown_ = false;
     bool prevFireDown_ = false;
     bool prevScreenshotKeyDown_ = false;
+    // F5 toggles sun shadows/AO off entirely (see basic.frag's
+    // rawShadow/rawAO) -- lets a perf/quality comparison run without
+    // restarting, and doubles as the terrain menu's SHADOWS button default.
+    bool shadowsEnabled_ = true;
+    int treeShadowMode_ = 2;
+    bool prevTreeShadowKeyDown_ = false;
+    bool aoEnabled_ = true;
+    bool prevAoKeyDown_ = false;
+    bool shadowHistoryReset_ = true;
+    bool shadowPreview_ = false;
+    bool freezeWind_ = false;
+    bool prevShadowsKeyDown_ = false;
     std::optional<ScreenshotRequest> screenshotRequest_;
     int screenshotCounter_ = 0;  // suffixes F12-triggered screenshot filenames
     glm::mat4 prevViewProj_{1.0f};
@@ -132,6 +150,7 @@ private:
     std::array<bool, CommandContext::kFramesInFlight> gpuTimestampsReady_{};
     bool gpuTimingInitialized_ = false;
     float gpuTimestampPeriodNs_ = 1.0f;
+    float gpuTreeShadowMs_ = 0.0f;
     float gpuTlasMs_ = 0.0f;
     float gpuTerrainMs_ = 0.0f;
     float gpuForegroundMs_ = 0.0f;
@@ -217,6 +236,7 @@ private:
     std::vector<std::unique_ptr<Mesh>> treeBarkMeshes_;
     std::vector<std::unique_ptr<Mesh>> treeFoliageMeshes_;
     std::vector<std::vector<Mesh::FoliageGroup>> treeFoliageGroups_;
+    std::vector<glm::vec4> treeShadowBounds_; // local center/radius, all raster levels
     std::vector<std::unique_ptr<Mesh>> mediumTreeBarkMeshes_;
     // Far raster LOD and simplified ray-tracing proxy geometry.
     std::vector<std::unique_ptr<Mesh>> farTreeBarkMeshes_;
@@ -270,7 +290,12 @@ private:
     std::vector<std::unique_ptr<AccelerationStructure>> treeBarkBLAS_;  // one per treeBarkMeshes_ variant
     std::vector<std::unique_ptr<AccelerationStructure>> treeLeafBLAS_;  // one per treeFoliageMeshes_ variant
     std::unique_ptr<SceneAccelerationStructure> sceneAS_;
+    std::unique_ptr<TreeShadowMap> treeShadowMap_;
     std::unique_ptr<HistoryBuffer> historyBuffer_;
+    // Single-channel (R16_SFLOAT) sibling buffer for the independently,
+    // fixed-alpha smoothed foliage-transmission factor -- see basic.frag's
+    // comment on why that value can't share historyBuffer_'s adaptive blend.
+    std::unique_ptr<HistoryBuffer> foliageHistoryBuffer_;
 
     bool isUnderwater(float x, float z) const;
     bool allowsScenery(glm::vec2 center, float radius) const;

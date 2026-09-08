@@ -378,30 +378,50 @@ void appendLeafSprayProxy(std::vector<Vertex>& vertices, std::vector<uint32_t>& 
                                   5,2,0, 5,1,2, 5,3,1, 5,0,3};
     for (size_t i = 0; i < unit.size(); ++i) unit[i] = {tips[i], tips[i], tint, glm::vec2(0)};
     auto inside = [&](glm::vec3 p) { return cells.contains(glm::ivec3(glm::floor(p / kNearLeafVoxelSize))); };
-    auto fitted = unit;
-    for (float inset : {.45f, .35f, .25f, .15f}) {
-        bool contained = true;
-        for (size_t i = 0; i < unit.size(); ++i) {
-            fitted[i].position = spray.center + spray.axes * (unit[i].position * spray.radii * inset);
-            contained = contained && inside(fitted[i].position);
+
+    // Pine/ash sprays are flattened, not spherical (radii like .29/.12/.07):
+    // a single inset shared by all six tips is bottlenecked by the thinnest
+    // axis, so the long axis was left well inside the occupied voxels for no
+    // reason. Fit each tip's reach independently, then only pull back
+    // whichever tip currently reaches furthest on a face that pokes outside.
+    constexpr float kInsets[] = {.6f, .5f, .45f, .4f, .35f, .3f, .25f, .2f, .15f};
+    constexpr int kInsetCount = static_cast<int>(std::size(kInsets));
+    auto positionAt = [&](size_t tip, int level) {
+        return spray.center + spray.axes * (unit[tip].position * spray.radii * kInsets[level]);
+    };
+    std::array<int, 6> tipLevel{};
+    for (size_t i = 0; i < unit.size(); ++i) {
+        tipLevel[i] = -1;
+        for (int level = 0; level < kInsetCount; ++level) {
+            if (inside(positionAt(i, level))) { tipLevel[i] = level; break; }
         }
-        if (!contained) continue;
-        for (size_t i = 0; i < std::size(faces); i += 3) {
-            glm::vec3 center = (fitted[faces[i]].position + fitted[faces[i+1]].position
-                               + fitted[faces[i+2]].position) / 3.0f;
-            contained = contained && inside(center);
-        }
-        if (!contained) continue;
-        uint32_t base = static_cast<uint32_t>(vertices.size());
-        for (auto& vertex : fitted) {
-            vertex.normal = glm::normalize(spray.axes * (vertex.normal / spray.radii));
-            vertices.push_back(vertex);
-        }
-        for (uint32_t index : faces) indices.push_back(base + index);
-        return;
+        // A marginal spray still renders, but casts no independent proxy if
+        // the rounded grid cannot safely contain one at this resolution.
+        if (tipLevel[i] < 0) return;
     }
-    // A marginal spray still renders, but casts no independent proxy if
-    // the rounded grid cannot safely contain one at this resolution.
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (size_t f = 0; f < std::size(faces); f += 3) {
+            uint32_t a = faces[f], b = faces[f + 1], c = faces[f + 2];
+            glm::vec3 center = (positionAt(a, tipLevel[a]) + positionAt(b, tipLevel[b])
+                               + positionAt(c, tipLevel[c])) / 3.0f;
+            if (inside(center)) continue;
+            uint32_t deepest = a;
+            if (tipLevel[b] < tipLevel[deepest]) deepest = b;
+            if (tipLevel[c] < tipLevel[deepest]) deepest = c;
+            if (tipLevel[deepest] + 1 >= kInsetCount) return;
+            ++tipLevel[deepest];
+            changed = true;
+        }
+    }
+    uint32_t base = static_cast<uint32_t>(vertices.size());
+    for (size_t i = 0; i < unit.size(); ++i) {
+        Vertex vertex = unit[i];
+        vertex.position = positionAt(i, tipLevel[i]);
+        vertex.normal = glm::normalize(spray.axes * (vertex.normal / spray.radii));
+        vertices.push_back(vertex);
+    }
+    for (uint32_t index : faces) indices.push_back(base + index);
 }
 
 float calculateHorizontalInscribedRadius(const std::vector<glm::vec3>& positions) {

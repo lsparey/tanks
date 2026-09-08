@@ -34,6 +34,8 @@ std::optional<Application::ScreenshotRequest> parseScreenshotRequest(int argc, c
 int main(int argc, char** argv) {
     try {
         bool profile = false;
+        int treeShadowMode = 2;
+        bool shadowPreview = false, freezeWind = false;
         std::optional<uint32_t> seed;
         std::string view;
         bool originalTankModel = false;
@@ -46,6 +48,15 @@ int main(int argc, char** argv) {
         std::optional<int> terrainResolution;
         int refinementPasses = 0;
         for (int i = 1; i < argc; ++i) {
+            if (std::strcmp(argv[i], "--shadow-preview") == 0) shadowPreview = true;
+            if (std::strcmp(argv[i], "--freeze-wind") == 0) freezeWind = true;
+            if (std::strcmp(argv[i], "--tree-shadows") == 0) {
+                if (++i >= argc) throw std::runtime_error("--tree-shadows requires maps, soft, or rays");
+                if (std::strcmp(argv[i], "maps") == 0) treeShadowMode = 1;
+                else if (std::strcmp(argv[i], "soft") == 0) treeShadowMode = 2;
+                else if (std::strcmp(argv[i], "rays") == 0) treeShadowMode = 0;
+                else throw std::runtime_error("--tree-shadows requires maps, soft, or rays");
+            }
             if (std::strcmp(argv[i], "--menu") == 0) showTerrainMenu = true;
             if (std::strcmp(argv[i], "--profile") == 0) profile = true;
             if (std::strcmp(argv[i], "--static-tracks") == 0) animateTracks = false;
@@ -88,11 +99,11 @@ int main(int argc, char** argv) {
                     throw std::runtime_error("--model requires original or refined");
                 originalTankModel = std::strcmp(argv[i], "original") == 0;
             } else if (std::strcmp(argv[i], "--view") == 0) {
-                if (++i >= argc) throw std::runtime_error("--view requires tank, tank-side, tank-front, tank-rear, tank-top, landscape, terrain, or water");
+                if (++i >= argc) throw std::runtime_error("--view requires tank, tank-side, tank-front, tank-rear, tank-top, landscape, terrain, trees, or water");
                 view = argv[i];
                 if (view != "tank" && view != "tank-side" && view != "tank-front" &&
                     view != "tank-rear" && view != "tank-top" &&
-                    view != "landscape" && view != "terrain" && view != "water")
+                    view != "landscape" && view != "terrain" && view != "trees" && view != "water")
                     throw std::runtime_error("unknown reference view");
             }
         }
@@ -107,6 +118,8 @@ int main(int argc, char** argv) {
         if (!view.empty() && !seed) seed = 7331;
         Application app(parseScreenshotRequest(argc, argv), profile, seed, view, originalTankModel, animateTracks, weaponPreview, valleyTerrain, terrainAttempts,
                         landform.value_or(MacroTerrain::Landform::Mixed), terrainResolution.value_or(257), refinementPasses, showTerrainMenu);
+        app.setTreeShadowMode(treeShadowMode);
+        app.setShadowPreview(shadowPreview,freezeWind);
         app.run();
     } catch (const std::exception& e) {
         std::cerr << "Fatal error: " << e.what() << std::endl;

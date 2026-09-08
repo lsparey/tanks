@@ -19,6 +19,9 @@ function(compile_shaders TARGET_NAME)
             OUTPUT ${SHADER_OUTPUT}
             COMMAND ${GLSLC_EXECUTABLE} ${SHADER_OPTIONS} ${SHADER_INPUT} -o ${SHADER_OUTPUT}
             DEPENDS ${SHADER_INPUT}
+                "${CMAKE_SOURCE_DIR}/shaders/frame.glsl"
+                "${CMAKE_SOURCE_DIR}/shaders/tree_wind.glsl"
+                "${CMAKE_SOURCE_DIR}/shaders/tree_shadow_filter.glsl"
             COMMENT "Compiling shader ${SHADER_SOURCE}"
             VERBATIM
         )

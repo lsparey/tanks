@@ -5,19 +5,23 @@
 #include "CommandContext.h"
 #include "VulkanContext.h"
 
-// Two ping-ponged four-channel (R16G16B16A16_SFLOAT: shadow value, AO
-// value, view-distance, unused) images used for temporal accumulation of
-// the noisy multi-sample shadow/AO terms computed in basic.frag. The
-// view-distance channel (measured from the camera at write time) lets the
-// shader reject reprojected samples whose stored distance doesn't match
-// what the current fragment's world position should measure -- i.e. a
-// different surface was there last frame (disocclusion), not the same one
-// persisting -- instead of blending in stale data; both the shadow and AO
-// channels share this one validity check since they're read from the same
-// reprojected pixel. Each frame writes its result into slot (frameIndex %
-// 2) as a second color attachment (MRT) and reads the OTHER slot -- last
-// frame's result -- as a sampled texture input, ping-ponging naturally in
-// lockstep with the existing 2 frames-in-flight.
+// Two ping-ponged images used for temporal accumulation of the noisy
+// multi-sample shadow/AO/foliage-transmission terms computed in basic.frag.
+// The default four-channel (R16G16B16A16_SFLOAT: shadow value, AO value,
+// view-distance, disagreement history) format holds the shadow/AO buffer;
+// a second, single-channel (R16_SFLOAT) instance holds the independently
+// (fixed-alpha) smoothed foliage-transmission factor -- see basic.frag's
+// comment on why that value needs its own history slot instead of sharing
+// this one's adaptive blend. The view-distance channel (measured from the
+// camera at write time) lets the shader reject reprojected samples whose
+// stored distance doesn't match what the current fragment's world position
+// should measure -- i.e. a different surface was there last frame
+// (disocclusion), not the same one persisting -- instead of blending in
+// stale data; both the shadow and AO channels share this one validity check
+// since they're read from the same reprojected pixel. Each frame writes its
+// result into slot (frameIndex % 2) as a color attachment (MRT) and reads
+// the OTHER slot -- last frame's result -- as a sampled texture input,
+// ping-ponging naturally in lockstep with the existing 2 frames-in-flight.
 //
 // Sized to the swapchain; recreate() must be called (and the sampled-image
 // descriptor sets rewritten) whenever the swapchain resizes, since that
@@ -26,7 +30,9 @@ class HistoryBuffer {
 public:
     static constexpr size_t kSlotCount = 2;
 
-    HistoryBuffer(VulkanContext& ctx, CommandContext& commands, VkExtent2D extent);
+    HistoryBuffer(VulkanContext& ctx, CommandContext& commands, VkExtent2D extent,
+                  VkFormat format = VK_FORMAT_R16G16B16A16_SFLOAT,
+                  VkClearColorValue clearValue = {{1.0f, 1.0f, 50000.0f, 0.0f}});
     ~HistoryBuffer();
 
     HistoryBuffer(const HistoryBuffer&) = delete;
@@ -52,7 +58,8 @@ private:
     void destroy();
 
     VulkanContext& ctx_;
-    VkFormat format_ = VK_FORMAT_R16G16B16A16_SFLOAT;
+    VkFormat format_;
+    VkClearColorValue clearValue_;
     VkSampler sampler_ = VK_NULL_HANDLE;
 
     std::array<VkImage, kSlotCount> images_{};

@@ -109,6 +109,7 @@ add_executable(tanks
     src/render/AccelerationStructure.cpp
     src/render/RayTracingFunctions.cpp
     src/render/SceneAccelerationStructure.cpp
+    src/render/TreeShadowMap.cpp
     src/render/HistoryBuffer.cpp
     src/render/ScreenshotWriter.cpp
     src/scene/Camera.cpp
@@ -151,9 +152,13 @@ target_link_libraries(tanks PRIVATE
 )
 
 include(cmake/CompileShaders.cmake)
-compile_shaders(tanks basic.vert basic.frag foliage_depth.frag hud.vert hud.frag)
+compile_shaders(tanks basic.vert basic.frag tree_shadow.vert foliage_depth.frag hud.vert hud.frag)
 
 if(BUILD_TESTING)
+    add_executable(tree_shadow_cascades_test tests/TreeShadowCascadesTest.cpp)
+    target_include_directories(tree_shadow_cascades_test PRIVATE src)
+    target_link_libraries(tree_shadow_cascades_test PRIVATE glm::glm)
+    add_test(NAME tree_shadow_cascades COMMAND tree_shadow_cascades_test)
     add_executable(foliage_lod_test tests/FoliageLodTest.cpp)
     target_include_directories(foliage_lod_test PRIVATE src)
     target_link_libraries(foliage_lod_test PRIVATE glm::glm)

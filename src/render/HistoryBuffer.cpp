@@ -7,7 +7,8 @@
 
 namespace {
 
-void transitionAndClear(VulkanContext& ctx, CommandContext& commands, VkImage image) {
+void transitionAndClear(VulkanContext& ctx, CommandContext& commands, VkImage image,
+                         VkClearColorValue clearValue) {
     VkCommandBuffer cmd = beginSingleTimeCommands(ctx, commands);
 
     VkImageMemoryBarrier toTransferDst{};
@@ -22,18 +23,14 @@ void transitionAndClear(VulkanContext& ctx, CommandContext& commands, VkImage im
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
                           nullptr, 0, nullptr, 1, &toTransferDst);
 
-    // Clear to (1.0 "fully lit, no shadow", 1.0 "no AO occlusion", a huge
-    // distance, unused) so the very first frame -- before any real temporal
-    // data exists -- doesn't start from garbage memory, and the huge
-    // distance guarantees the depth-based disocclusion check in basic.frag
-    // always (safely) rejects this placeholder data rather than blending
-    // with it. 50000, not something larger: the format is
-    // R16G16B16A16_SFLOAT (half precision, max ~65504), so a value like 1e6
-    // would silently become infinity.
-    VkClearColorValue clearValue{};
-    clearValue.float32[0] = 1.0f;
-    clearValue.float32[1] = 1.0f;
-    clearValue.float32[2] = 50000.0f;
+    // Caller-supplied so the very first frame -- before any real temporal
+    // data exists -- doesn't start from garbage memory. The shadow/AO buffer
+    // clears to (1.0 "fully lit, no shadow", 1.0 "no AO occlusion", a huge
+    // distance, unused); the huge distance guarantees the depth-based
+    // disocclusion check in basic.frag always (safely) rejects this
+    // placeholder data rather than blending with it. 50000, not something
+    // larger: R16G16B16A16_SFLOAT (half precision) maxes out around 65504,
+    // so a value like 1e6 would silently become infinity.
     VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     vkCmdClearColorImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearValue, 1, &range);
 
@@ -55,11 +52,12 @@ void transitionAndClear(VulkanContext& ctx, CommandContext& commands, VkImage im
 
 }  // namespace
 
-HistoryBuffer::HistoryBuffer(VulkanContext& ctx, CommandContext& commands, VkExtent2D extent)
-    : ctx_(ctx) {
+HistoryBuffer::HistoryBuffer(VulkanContext& ctx, CommandContext& commands, VkExtent2D extent,
+                             VkFormat format, VkClearColorValue clearValue)
+    : ctx_(ctx), format_(format), clearValue_(clearValue) {
     create(extent);
     for (size_t i = 0; i < kSlotCount; ++i) {
-        transitionAndClear(ctx_, commands, images_[i]);
+        transitionAndClear(ctx_, commands, images_[i], clearValue_);
     }
 }
 
@@ -171,7 +169,7 @@ void HistoryBuffer::recreate(CommandContext& commands, VkExtent2D extent) {
     destroy();
     create(extent);
     for (size_t i = 0; i < kSlotCount; ++i) {
-        transitionAndClear(ctx_, commands, images_[i]);
+        transitionAndClear(ctx_, commands, images_[i], clearValue_);
     }
 }
 

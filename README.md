@@ -46,7 +46,8 @@ validation.
 ## Rendering direction
 
 The broader goal is a more realistic-looking game using modern techniques
-suited to Arc A370M and native Linux/Mesa Vulkan. The
+suited to **Intel(R) Arc(tm) A370M Graphics (DG2)** and native Linux/Mesa Vulkan
+(the confirmed target GPU for shadow development). The
 [rendering roadmap](docs/RENDERING_ROADMAP.md) prioritises physically based
 materials, linear HDR, temporal image stability and measured ray/geometry
 budgets, followed by selective vegetation, lighting and reconstruction work.
@@ -205,6 +206,9 @@ the swapchain and dependent render targets are recreated automatically.
 | `Space` / Left `Ctrl` | Move up / down in free-camera mode |
 | `F3` | Toggle performance summary in the window title and detailed terminal reports |
 | `F4` | Reset performance samples for a new measurement |
+| `F5` | Toggle shadows and ambient occlusion together |
+| `F6` | Cycle tree shadows: filtered maps → soft maps → legacy rays |
+| `F7` | Toggle ambient occlusion independently while shadows are enabled |
 | `F12` | Save a PNG under `screenshots/` |
 | `Esc` | Quit |
 
@@ -336,6 +340,44 @@ CPU statistics, tank surfaces, model assets, running gear and weapon effects.
 ```bash
 ctest --test-dir build --output-on-failure
 ```
+
+## Tree shadow prototype
+
+Tree sun shadows default to soft PCSS filtering of three stable 2048² depth
+maps rendered from animated bark and leaf meshes. The nested light-space maps follow camera
+translation in whole texels, retain off-camera casters, and blend their edges.
+They reuse the existing raster LODs and wind; their visibility is filtered in
+the current frame, without foliage lighting-history accumulation. Other solid
+objects retain ray-traced sun shadows. Tree proxies remain in AO/reflections.
+
+Try the tree reference camera in the optimized build:
+
+```bash
+./out/runtime-release/tanks --seed 7331 --view trees --tree-shadows soft --profile
+```
+
+Press **F6** to compare stable PCF maps, contact-hardening PCSS maps and the
+previous ray/proxy experiment. Alternatively, launch with `--tree-shadows maps`, `--tree-shadows soft`, or
+`--tree-shadows rays`. F6 resets performance warmup and lighting history. **F7** helps
+separate AO noise from sun shadows; **F5** remains the master shadows/AO toggle.
+GPU reports include `tree shadows` for map generation; map sampling cost is
+included in the terrain/foreground/scenery shading stages.
+
+For matched captures, add `--shadow-preview` (fixed 1/60 simulation steps) and
+optionally `--freeze-wind`. Neither flag fires weapons. For example:
+
+```bash
+./out/runtime-release/tanks --seed 7331 --view trees --tree-shadows soft --shadow-preview --freeze-wind --screenshot screenshots/tree-soft.png --screenshot-frame 180
+```
+
+Soft PCSS maps were selected after the user compared all three modes on the
+Arc A370M: they looked best, with no noticeable performance difference between
+modes. This is an interactive observation, not a measured timing result.
+The shadow maps add one 48 MiB depth array, shared under the existing serialized
+frame submission. PCSS has a bounded filter radius; nearest-depth tree maps
+approximate opaque coverage, not transmission through multiple leaf layers.
+The old ray path and its history attachments remain available for comparison.
+See [the redesign and validation notes](docs/SHADOW_REDESIGN.md).
 
 ## Automated screenshot capture
 

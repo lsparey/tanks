@@ -49,6 +49,8 @@ public:
         glm::vec4 cameraPos;
         glm::vec4 prevCameraPos;  // for basic.frag's depth-based disocclusion rejection
         glm::vec4 windTime{0.0f}; // x: current seconds, y: previous rendered seconds (128s period)
+        // z: shadows/AO ray tracing enabled (1.0) or skipped (0.0) -- see
+        // basic.frag's rawShadow/rawAO and Application's F5 toggle. w unused.
         // Muzzle-flash/explosion point lights -- see DynamicLight.h. xyz is
         // world position, w is the falloff radius (0 means "inactive slot,
         // skip" -- see basic.frag). rgb is color, w is peak intensity.
@@ -67,9 +69,15 @@ public:
         glm::vec4 weaponEffects{0}; // x: active ground scorch count
         std::array<glm::vec4, 16> scorchPositionRadius{};
         std::array<glm::vec4, 16> scorchParameters{}; // x: opacity
+        std::array<glm::mat4, 3> treeShadowMatrices{};
+        glm::vec4 treeShadowWidths{36.f,100.f,300.f,600.f};
+        glm::vec4 treeShadowParams{2.f,2048.f,1.f,1.f};
     };
 
     static_assert(offsetof(FrameUBO, windTime) == 240);
+    static_assert(offsetof(FrameUBO, treeShadowMatrices) == 1008);
+    static_assert(offsetof(FrameUBO, treeShadowParams) == 1216);
+    static_assert(sizeof(FrameUBO) == 1232);
 
     struct PushConstants {
         glm::mat4 model;
@@ -131,7 +139,8 @@ public:
     static_assert(offsetof(PushConstants, tankSurface) == 112);
     static_assert(sizeof(PushConstants) == 128);
 
-    Pipeline(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthFormat, VkFormat historyFormat);
+    Pipeline(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthFormat, VkFormat historyFormat,
+             VkFormat foliageHistoryFormat);
     ~Pipeline();
 
     Pipeline(const Pipeline&) = delete;
@@ -141,6 +150,8 @@ public:
     void updateInstances(const std::vector<RasterInstance>& instances);
     void updateFoliageDraws(const std::vector<VkDrawIndexedIndirectCommand>& draws);
     VkBuffer foliageDrawBuffer() const { return foliageDrawBuffer_.handle(); }
+    VkPipeline treeShadowHandle() const { return treeShadowPipeline_; }
+    void updateTreeShadowDescriptor(VkImageView view, VkSampler sampler);
     VkPipeline foliageDepthHandle() const { return foliageDepthPipeline_; }
     VkPipeline foliageHandle() const { return foliagePipeline_; }
     // highA/highB and lowA/lowB are only sampled/blended when a draw's
@@ -151,7 +162,8 @@ public:
                                                    const Texture* terrainControl = nullptr);
     void updateTLASDescriptor(size_t frameIndex, VkAccelerationStructureKHR tlas);
     void updateEnvironmentDescriptor(const Texture& clouds);
-    void updateHistoryDescriptor(size_t frameIndex, VkImageView historyView, VkSampler historySampler);
+    void updateHistoryDescriptor(size_t frameIndex, VkImageView historyView, VkSampler historySampler,
+                                  VkImageView foliageHistoryView, VkSampler foliageHistorySampler);
 
     VkPipeline handle() const { return pipeline_; }
     VkPipeline effectsHandle() const { return effectsPipeline_; }
@@ -169,7 +181,8 @@ private:
     void createHistorySetLayout();
     void createDescriptorPoolAndSet();
     void createPipelineLayout();
-    void createPipeline(VkFormat colorFormat, VkFormat depthFormat, VkFormat historyFormat);
+    void createPipeline(VkFormat colorFormat, VkFormat depthFormat, VkFormat historyFormat,
+                        VkFormat foliageHistoryFormat);
     VkShaderModule loadShaderModule(const char* relativePath);
 
     VulkanContext& ctx_;
@@ -179,6 +192,7 @@ private:
     VkDescriptorSetLayout tlasSetLayout_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout historySetLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
+    VkPipeline treeShadowPipeline_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
     VkPipeline effectsPipeline_ = VK_NULL_HANDLE;
 

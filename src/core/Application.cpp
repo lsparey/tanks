@@ -44,7 +44,7 @@ constexpr uint32_t kWindowWidth = 1280;
 constexpr uint32_t kWindowHeight = 720;
 // Slots 0–7 retain the broad frame phases. Slots 8–10 subdivide scenery
 // chronologically as 3 -> 8 (bark) -> 9 (depth) -> 10 (leaves) -> 4 (props).
-constexpr uint32_t kGpuTimestampsPerFrame = 11;
+constexpr uint32_t kGpuTimestampsPerFrame = 12;
 constexpr float kAimProjectionDistance = 25.0f;
 
 std::array<glm::vec4,6> frustumPlanes(const glm::mat4& viewProjection) {
@@ -312,8 +312,16 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
     swapchain_ = std::make_unique<Swapchain>(*context_, window_);
     commands_ = std::make_unique<CommandContext>(*context_);
     historyBuffer_ = std::make_unique<HistoryBuffer>(*context_, *commands_, swapchain_->extent());
+    // Clears to 1.0: "fully open, no foliage occlusion sampled yet" -- the
+    // same safe-default reasoning as historyBuffer_'s clear value.
+    foliageHistoryBuffer_ = std::make_unique<HistoryBuffer>(
+        *context_, *commands_, swapchain_->extent(), VK_FORMAT_R16_SFLOAT,
+        VkClearColorValue{{1.0f, 0.0f, 0.0f, 0.0f}});
     pipeline_ = std::make_unique<Pipeline>(*context_, swapchain_->imageFormat(),
-                                            swapchain_->depthFormat(), historyBuffer_->format());
+                                            swapchain_->depthFormat(), historyBuffer_->format(),
+                                            foliageHistoryBuffer_->format());
+    treeShadowMap_ = std::make_unique<TreeShadowMap>(*context_);
+    pipeline_->updateTreeShadowDescriptor(treeShadowMap_->view(), treeShadowMap_->sampler());
     hud_ = std::make_unique<HudRenderer>(*context_, swapchain_->imageFormat(),
                                           swapchain_->depthFormat());
     if (showTerrainMenu) {
@@ -334,7 +342,9 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
     for (size_t i = 0; i < CommandContext::kFramesInFlight; ++i) {
         size_t readSlot = 1 - i;
         pipeline_->updateHistoryDescriptor(i, historyBuffer_->imageView(readSlot),
-                                            historyBuffer_->sampler());
+                                            historyBuffer_->sampler(),
+                                            foliageHistoryBuffer_->imageView(readSlot),
+                                            foliageHistoryBuffer_->sampler());
     }
 
     tank_ = std::make_unique<Tank>(*context_, *commands_,
@@ -637,6 +647,17 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
             presentLoadingProgress(.65f + i * (.20f / kTreeVariantCount));
         {
             auto geometry = treeJobs[i].get();
+            glm::vec3 lower(std::numeric_limits<float>::max());
+            glm::vec3 upper(std::numeric_limits<float>::lowest());
+            auto expandBounds = [&](const Mesh::Geometry& mesh) {
+                for (const auto& vertex : mesh.vertices) {
+                    lower = glm::min(lower,vertex.position);
+                    upper = glm::max(upper,vertex.position);
+                }
+            };
+            for (const auto& bark : geometry.bark) expandBounds(bark);
+            expandBounds(geometry.foliage.mesh);
+            treeShadowBounds_.emplace_back((lower+upper)*.5f,glm::length(upper-lower)*.5f);
             auto upload = [&](const Mesh::Geometry& mesh) {
                 return std::make_unique<Mesh>(*context_, *commands_, mesh.vertices, mesh.indices);
             };
@@ -887,7 +908,9 @@ void Application::cleanup() noexcept {
     }
 
     // Destroy in dependency order before the GLFW window disappears.
+    treeShadowMap_.reset();
     historyBuffer_.reset();
+    foliageHistoryBuffer_.reset();
     sceneAS_.reset();
     treeLeafBLAS_.clear();
     treeBarkBLAS_.clear();
@@ -924,6 +947,7 @@ void Application::cleanup() noexcept {
     mediumTreeBarkMeshes_.clear();
     treeFoliageMeshes_.clear();
     treeFoliageGroups_.clear();
+    treeShadowBounds_.clear();
     treeBarkMeshes_.clear();
     shrubMeshes_.clear();
     trackMarkMesh_.reset();
@@ -979,11 +1003,11 @@ void Application::mainLoop() {
         }
 
         double now = glfwGetTime();
-        float deltaTime = weaponPreview_ ? 1.0f/60.0f : static_cast<float>(now - lastFrameTime_);
+        float deltaTime = (weaponPreview_ || shadowPreview_) ? 1.0f/60.0f : static_cast<float>(now - lastFrameTime_);
         lastFrameTime_ = now;
         // Bound float phase precision without a discontinuity: every wind
         // frequency completes an integer number of cycles in 128 seconds.
-        windTime_ = std::fmod(windTime_ + static_cast<double>(deltaTime), 128.0);
+        if (!freezeWind_) windTime_ = std::fmod(windTime_ + static_cast<double>(deltaTime), 128.0);
         // Exponential moving average rather than the raw instantaneous
         // value, which jitters wildly frame to frame and is unreadable as
         // an on-screen counter.
@@ -1010,6 +1034,32 @@ void Application::mainLoop() {
             std::cout << "Performance sample window reset\n";
         }
         prevPerformanceResetKeyDown_ = resetKeyDown;
+
+        bool shadowsKeyDown = glfwGetKey(window_, GLFW_KEY_F5) == GLFW_PRESS;
+        if (shadowsKeyDown && !prevShadowsKeyDown_) {
+            shadowsEnabled_ = !shadowsEnabled_;
+            shadowHistoryReset_ = true;
+            std::cout << "Shadows " << (shadowsEnabled_ ? "on" : "off") << " (F5 toggles)\n";
+        }
+        prevShadowsKeyDown_ = shadowsKeyDown;
+        bool treeShadowKey = glfwGetKey(window_, GLFW_KEY_F6) == GLFW_PRESS;
+        if (treeShadowKey && !prevTreeShadowKeyDown_) {
+            setTreeShadowMode((treeShadowMode_ + 1) % 3);
+            const char* names[] = {"legacy rays", "stable maps (PCF)", "soft maps (PCSS)"};
+            std::cout << "Tree shadows: " << names[treeShadowMode_] << " (F6 cycles)\n";
+            profiler_.clear();
+            performanceWarmup_ = 60;
+            gpuTimingInitialized_ = false;
+            gpuTimestampsReady_.fill(false);
+        }
+        prevTreeShadowKeyDown_ = treeShadowKey;
+        bool aoKey = glfwGetKey(window_, GLFW_KEY_F7) == GLFW_PRESS;
+        if (aoKey && !prevAoKeyDown_) {
+            aoEnabled_ = !aoEnabled_;
+            shadowHistoryReset_ = true;
+            std::cout << "Ambient occlusion " << (aoEnabled_ ? "on" : "off") << " (F7 toggles)\n";
+        }
+        prevAoKeyDown_ = aoKey;
 
         bool cameraToggleDown = glfwGetKey(window_, GLFW_KEY_C) == GLFW_PRESS;
         if (cameraToggleDown && !prevCameraToggleKeyDown_) {
@@ -1125,7 +1175,7 @@ void Application::reportPerformance() {
            << ", present " << ms[FrameProfiler::Present];
     if (gpuTimingInitialized_) {
         report << "\n  GPU ms (async EMA): total " << gpuTotalMs_ << ", TLAS " << gpuTlasMs_
-               << ", terrain/sky " << gpuTerrainMs_ << ", foreground " << gpuForegroundMs_
+               << ", tree shadows " << gpuTreeShadowMs_ << ", terrain/sky " << gpuTerrainMs_ << ", foreground " << gpuForegroundMs_
                << ", scenery " << gpuSceneryMs_ << ", effects " << gpuEffectsMs_
                << ", HUD/end " << gpuHudMs_
                << "\n  scenery GPU ms (async EMA, subsets): bark " << gpuTreeBarkMs_
@@ -1162,6 +1212,13 @@ void Application::applyReferenceCamera() {
         // selection can move between resolutions, so neither anchors this view.
         target = {0.0f, 0.0f, 0.0f};
         offset = {-28.0f, 18.0f, -38.0f};
+    } else if (referenceView_ == "trees" && !trees_.empty()) {
+        const auto& tree = *std::min_element(trees_.begin(),trees_.end(),[&](const auto& a,const auto& b) {
+            return glm::distance(a.position,tank_->position()) < glm::distance(b.position,tank_->position());
+        });
+        // Look from the down-sun side to include the crown and its ground shadow.
+        target = tree.position + glm::vec3(-1.2f,.8f,-2.2f)*tree.scale;
+        offset = glm::vec3(-4.f,3.f,-7.f)*tree.scale;
     } else if (referenceView_ == "landscape") {
         glm::vec2 at = spawnXZ_ + glm::vec2(0, 25);
         target = {at.x, terrain_->heightAt(at.x, at.y) + 3.0f, at.y};
@@ -1705,7 +1762,8 @@ std::vector<AccelerationStructure::Instance> Application::gatherRayTracingInstan
     std::vector<AccelerationStructure::Instance> instances;
     instances.push_back({terrain_->blasAddress(), glm::mat4(1.0f)});
     for (const auto& tree : trees_) {
-        instances.push_back({treeBarkBLAS_[tree.meshVariant]->deviceAddress(), tree.worldMatrix()});
+        instances.push_back({treeBarkBLAS_[tree.meshVariant]->deviceAddress(), tree.worldMatrix(),
+                             AccelerationStructure::Instance::kTreeBarkMask});
         instances.push_back({treeLeafBLAS_[tree.meshVariant]->deviceAddress(), tree.worldMatrix(),
                              AccelerationStructure::Instance::kFoliageMask});
     }
@@ -1750,10 +1808,13 @@ std::string Application::nextScreenshotPath() {
 void Application::recreateSwapchainDependentResources() {
     swapchain_->recreate();
     historyBuffer_->recreate(*commands_, swapchain_->extent());
+    foliageHistoryBuffer_->recreate(*commands_, swapchain_->extent());
     for (size_t i = 0; i < CommandContext::kFramesInFlight; ++i) {
         size_t readSlot = 1 - i;
         pipeline_->updateHistoryDescriptor(i, historyBuffer_->imageView(readSlot),
-                                            historyBuffer_->sampler());
+                                            historyBuffer_->sampler(),
+                                            foliageHistoryBuffer_->imageView(readSlot),
+                                            foliageHistoryBuffer_->sampler());
     }
 }
 
@@ -1988,13 +2049,14 @@ void Application::drawFrame() {
                        gpuTimestampPeriodNs_ / 1'000'000.0f;
             };
             float tlasMs = elapsedMs(0, 1);
-            float terrainMs = elapsedMs(1, 2);
+            float terrainMs = elapsedMs(11, 2);
             float foregroundMs = elapsedMs(2, 3);
             float sceneryMs = elapsedMs(3, 4);
             float effectsMs = elapsedMs(4, 6);
             float hudMs = elapsedMs(6, 7);
             float totalMs = elapsedMs(0, 7);
             float blend = gpuTimingInitialized_ ? 0.1f : 1.0f;
+            gpuTreeShadowMs_ = glm::mix(gpuTreeShadowMs_, elapsedMs(1,11), blend);
             gpuTlasMs_ = glm::mix(gpuTlasMs_, tlasMs, blend);
             gpuTerrainMs_ = glm::mix(gpuTerrainMs_, terrainMs, blend);
             gpuForegroundMs_ = glm::mix(gpuForegroundMs_, foregroundMs, blend);
@@ -2053,7 +2115,8 @@ void Application::drawFrame() {
     }
     ubo.prevViewProj = prevViewProj_;
     ubo.prevCameraPos = glm::vec4(prevCameraPos_, 0.0f);
-    ubo.windTime = glm::vec4(static_cast<float>(windTime_), prevWindTime_, 0.0f, 0.0f);
+    ubo.windTime = glm::vec4(static_cast<float>(windTime_), prevWindTime_,
+                             shadowsEnabled_ ? 1.0f : 0.0f, 0.0f);
     ubo.lightDir = glm::vec4(glm::normalize(glm::vec3(-0.45f, -0.55f, -0.8f)), 0.0f);
     // cameraPos.w rides along as a per-frame varying seed for the shadow
     // jitter in basic.frag -- without it, the jitter is a pure function of
@@ -2081,7 +2144,13 @@ void Application::drawFrame() {
         ubo.dynamicLightPosRadius[i] = glm::vec4(light.position, light.radius);
         ubo.dynamicLightColorIntensity[i] = glm::vec4(light.color, light.currentIntensity());
     }
+    ubo.treeShadowMatrices = TreeShadowCascades::build(camera_.position(), glm::vec3(ubo.lightDir));
+    ubo.treeShadowWidths = glm::vec4(2.f*TreeShadowCascades::kHalfWidths[0],
+        2.f*TreeShadowCascades::kHalfWidths[1],2.f*TreeShadowCascades::kHalfWidths[2],TreeShadowCascades::kDepthRange);
+    ubo.treeShadowParams = glm::vec4(float(treeShadowMode_),float(TreeShadowCascades::kResolution),
+                                    shadowHistoryReset_ ? 1.f : 0.f, aoEnabled_ ? 1.f : 0.f);
     pipeline_->updateFrameUBO(ubo);
+    shadowHistoryReset_ = false;
 
     // Cull repeated static props and group their transforms by shared
     // mesh/material variant and projected-size LOD. Each non-empty group is
@@ -2208,6 +2277,40 @@ void Application::drawFrame() {
         }
         foliageBatches[variant].count=static_cast<uint32_t>(foliageDraws.size())-foliageBatches[variant].first;
     }
+    // Shadow caster lists are independent of camera visibility and visual
+    // LOD. A tree shares one placement across all of its bough draw ranges.
+    std::array<std::vector<InstanceBatch>, TreeShadowCascades::kCount> shadowBatches;
+    std::array<std::vector<InstanceBatch>, TreeShadowCascades::kCount> shadowFoliageBatches;
+    if (shadowsEnabled_ && treeShadowMode_ != 0) {
+        for (uint32_t cascade=0; cascade<TreeShadowCascades::kCount; ++cascade) {
+            std::vector<std::vector<RasterInstance>> groups(treeVariantCount);
+            for (const auto& tree : trees_) {
+                auto placement = windInstance(tree.worldMatrix(),ubo.windTime.x,ubo.windTime.y);
+                const auto& bounds = treeShadowBounds_[tree.meshVariant];
+                float height = std::max(bounds.y+bounds.w,0.f);
+                float padding = glm::length(glm::vec3(placement.wind)) * height * height;
+                glm::vec3 center = glm::vec3(placement.model*glm::vec4(glm::vec3(bounds),1));
+                if (TreeShadowCascades::intersects(ubo.treeShadowMatrices[cascade],center,
+                                                  (bounds.w+padding)*tree.scale))
+                    groups[tree.meshVariant].push_back(placement);
+            }
+            shadowBatches[cascade] = appendGroups(groups);
+            shadowFoliageBatches[cascade].resize(treeVariantCount);
+            for (size_t variant=0; variant<treeVariantCount; ++variant) {
+                const auto& placements = shadowBatches[cascade][variant];
+                auto& batch = shadowFoliageBatches[cascade][variant];
+                batch.first = static_cast<uint32_t>(foliageDraws.size());
+                if (!placements.count) continue;
+                for (const auto& bough : treeFoliageGroups_[variant]) {
+                    auto draw = bough.levels[cascade];
+                    draw.firstInstance = placements.first;
+                    draw.instanceCount = placements.count;
+                    foliageDraws.push_back(draw);
+                }
+                batch.count = static_cast<uint32_t>(foliageDraws.size()) - batch.first;
+            }
+        }
+    }
     pipeline_->updateInstances(rasterInstances);
     pipeline_->updateFoliageDraws(foliageDraws);
     performanceSample_.ms[FrameProfiler::Visibility] = FrameProfiler::elapsedMs(phaseStart);
@@ -2247,6 +2350,49 @@ void Application::drawFrame() {
     vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                          gpuTimestampPool_, timestampBase + 1);
 
+    // Initialize once in legacy/off mode too, so the bound descriptor
+    // always refers to an image in its declared readable layout.
+    if ((shadowsEnabled_ && treeShadowMode_ != 0) || !treeShadowMap_->initialized()) {
+        treeShadowMap_->begin(frame.commandBuffer);
+        VkDescriptorSet shadowFrameSet = pipeline_->descriptorSet();
+        vkCmdBindDescriptorSets(frame.commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline_->layout(),
+                                0,1,&shadowFrameSet,0,nullptr);
+        vkCmdBindPipeline(frame.commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline_->treeShadowHandle());
+        for (uint32_t cascade=0; cascade<TreeShadowCascades::kCount; ++cascade) {
+            treeShadowMap_->beginCascade(frame.commandBuffer,cascade);
+            if (shadowsEnabled_ && treeShadowMode_ != 0) {
+                Pipeline::PushConstants shadowPc{};
+                shadowPc.unlit = float(cascade);
+                shadowPc.isInstanced = 1.f;
+                vkCmdPushConstants(frame.commandBuffer,pipeline_->layout(),
+                    VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(shadowPc),&shadowPc);
+                for (size_t variant=0; variant<treeVariantCount; ++variant) {
+                    const auto& batch = shadowBatches[cascade][variant];
+                    if (!batch.count) continue;
+                    const Mesh* bark = cascade == 0 ? treeBarkMeshes_[variant].get()
+                        : cascade == 1 ? mediumTreeBarkMeshes_[variant].get() : farTreeBarkMeshes_[variant].get();
+                    bark->bindAndDrawInstanced(frame.commandBuffer,batch.count,batch.first);
+                    const auto& leaves = shadowFoliageBatches[cascade][variant];
+                    if (context_->multiDrawIndirect()) {
+                        for (uint32_t i=0; i<leaves.count;) {
+                            uint32_t count = std::min(leaves.count-i,context_->maxIndirectDrawCount());
+                            treeFoliageMeshes_[variant]->bindAndDrawIndirect(frame.commandBuffer,
+                                pipeline_->foliageDrawBuffer(),(leaves.first+i)*sizeof(VkDrawIndexedIndirectCommand),count);
+                            i += count;
+                        }
+                    } else {
+                        for (uint32_t i=0; i<leaves.count; ++i)
+                            treeFoliageMeshes_[variant]->bindAndDrawRange(frame.commandBuffer,foliageDraws[leaves.first+i]);
+                    }
+                }
+            }
+            vkCmdEndRendering(frame.commandBuffer);
+        }
+        treeShadowMap_->end(frame.commandBuffer);
+    }
+    vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                         gpuTimestampPool_, timestampBase + 11);
+
     VkImage colorImage = swapchain_->image(imageIndex);
     VkImage historyWriteImage = historyBuffer_->image(currentFrame_);
     // The presentable swapchain image and the persistent history slot above
@@ -2258,6 +2404,8 @@ void Application::drawFrame() {
     // render pass (see the resolveImageView fields below).
     VkImage msaaColorImage = swapchain_->colorImage();
     VkImage msaaHistoryImage = historyBuffer_->msaaImage();
+    VkImage foliageHistoryWriteImage = foliageHistoryBuffer_->image(currentFrame_);
+    VkImage msaaFoliageHistoryImage = foliageHistoryBuffer_->msaaImage();
 
     // All attachments are fully overwritten this frame (LOAD_OP_CLEAR), so
     // treating oldLayout as UNDEFINED is correct regardless of prior layout:
@@ -2291,6 +2439,16 @@ void Application::drawFrame() {
                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
                      0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
+        imageBarrier(msaaFoliageHistoryImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                     0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
+        // Same "previous content already handed off as history input, safe
+        // to discard" reasoning as historyWriteImage above.
+        imageBarrier(foliageHistoryWriteImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                     0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
     };
 
     VkMemoryBarrier2 asToShaderBarrier{};
@@ -2304,7 +2462,7 @@ void Application::drawFrame() {
     depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     depInfo.memoryBarrierCount = 1;
     depInfo.pMemoryBarriers = &asToShaderBarrier;
-    depInfo.imageMemoryBarrierCount = 5;
+    depInfo.imageMemoryBarrierCount = 7;
     depInfo.pImageMemoryBarriers = toAttachments;
     vkCmdPipelineBarrier2(frame.commandBuffer, &depInfo);
 
@@ -2332,7 +2490,19 @@ void Application::drawFrame() {
     historyAttachment.clearValue.color.float32[1] = 1.0f;      // neutral: "no AO occlusion"
     historyAttachment.clearValue.color.float32[2] = 50000.0f;  // huge distance: always fails disocclusion check
 
-    VkRenderingAttachmentInfo colorAttachments[] = {colorAttachment, historyAttachment};
+    VkRenderingAttachmentInfo foliageHistoryAttachment{};
+    foliageHistoryAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    foliageHistoryAttachment.imageView = foliageHistoryBuffer_->msaaImageView();
+    foliageHistoryAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    foliageHistoryAttachment.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+    foliageHistoryAttachment.resolveImageView = foliageHistoryBuffer_->imageView(currentFrame_);
+    foliageHistoryAttachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    foliageHistoryAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    foliageHistoryAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    foliageHistoryAttachment.clearValue.color.float32[0] = 1.0f;  // neutral: fully open, no foliage above
+
+    VkRenderingAttachmentInfo colorAttachments[] = {colorAttachment, historyAttachment,
+                                                     foliageHistoryAttachment};
 
     VkRenderingAttachmentInfo depthAttachment{};
     depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -2346,7 +2516,7 @@ void Application::drawFrame() {
     renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
     renderingInfo.renderArea = {{0, 0}, extent};
     renderingInfo.layerCount = 1;
-    renderingInfo.colorAttachmentCount = 2;
+    renderingInfo.colorAttachmentCount = 3;
     renderingInfo.pColorAttachments = colorAttachments;
     renderingInfo.pDepthAttachment = &depthAttachment;
 
@@ -2821,10 +2991,15 @@ void Application::drawFrame() {
                      VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                      VK_ACCESS_2_SHADER_READ_BIT),
+        imageBarrier(foliageHistoryWriteImage, VK_IMAGE_ASPECT_COLOR_BIT,
+                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                     VK_ACCESS_2_SHADER_READ_BIT),
     };
     VkDependencyInfo betweenScenesDepInfo{};
     betweenScenesDepInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    betweenScenesDepInfo.imageMemoryBarrierCount = 2;
+    betweenScenesDepInfo.imageMemoryBarrierCount = 3;
     betweenScenesDepInfo.pImageMemoryBarriers = betweenScenesBarriers;
     vkCmdPipelineBarrier2(frame.commandBuffer, &betweenScenesDepInfo);
 
