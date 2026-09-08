@@ -377,6 +377,10 @@ The shadow maps add one 48 MiB depth array, shared under the existing serialized
 frame submission. PCSS has a bounded filter radius; nearest-depth tree maps
 approximate opaque coverage, not transmission through multiple leaf layers.
 The old ray path and its history attachments remain available for comparison.
+The filter reuses shared texels through texture gathers. Matched Arc A370M
+captures measured 11–14% less foliage-lighting GPU time and 5–6% less total
+GPU time, with at most two 8-bit colour levels of image difference outside the
+HUD. See [the filter measurements](docs/FOLIAGE_FILTER_PERFORMANCE.md).
 See [the redesign and validation notes](docs/SHADOW_REDESIGN.md).
 
 ## Automated screenshot capture

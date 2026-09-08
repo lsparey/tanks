@@ -1,20 +1,12 @@
-// Depth comparisons are bilinearly reconstructed explicitly so D32 needs
-// only nearest sampling support. No per-frame noise or lighting history.
-float treeDepth(ivec2 pixel, int cascade) {
-    int size = int(frame.treeShadowParams.y);
-    if (any(lessThan(pixel, ivec2(0))) || any(greaterThanEqual(pixel, ivec2(size)))) return 1.0;
-    return texelFetch(treeShadowMap, ivec3(pixel, cascade), 0).r;
-}
-
+// Gather raw depths and reconstruct bilinear comparisons explicitly. D32
+// still needs only nearest sampling support. The sampler supplies a lit
+// border, matching the former out-of-bounds texelFetch checks.
+// Gather component order: offsets (0,1), (1,1), (1,0), (0,0).
 float treeCompare(vec2 uv, int cascade, float receiver) {
-    vec2 pixel = uv * frame.treeShadowParams.y - 0.5;
-    ivec2 base = ivec2(floor(pixel));
-    vec2 weight = fract(pixel);
-    float a = step(receiver, treeDepth(base, cascade));
-    float b = step(receiver, treeDepth(base + ivec2(1,0), cascade));
-    float c = step(receiver, treeDepth(base + ivec2(0,1), cascade));
-    float d = step(receiver, treeDepth(base + ivec2(1,1), cascade));
-    return mix(mix(a,b,weight.x), mix(c,d,weight.x), weight.y);
+    vec2 weight = fract(uv * frame.treeShadowParams.y - 0.5);
+    vec4 visibility = step(vec4(receiver), textureGather(treeShadowMap, vec3(uv,cascade), 0));
+    return mix(mix(visibility.w,visibility.z,weight.x),
+               mix(visibility.x,visibility.y,weight.x),weight.y);
 }
 
 float filterTreeCascade(int cascade, vec3 world, vec3 normal, vec3 toLight) {
@@ -47,10 +39,19 @@ float filterTreeCascade(int cascade, vec3 world, vec3 normal, vec3 toLight) {
     }
     float sum = 0.0;
     if (radius <= 1.01) {
-        for (int y=-1; y<=1; ++y)
-            for (int x=-1; x<=1; ++x)
-                sum += treeCompare(uv + vec2(x,y) / frame.treeShadowParams.y, cascade, receiver);
-        return sum / 9.0;
+        // Nine bilinear comparisons share a 4x4 texel footprint. Gather
+        // each texel once and apply the equivalent separable box weights.
+        vec2 texel = vec2(1.0 / frame.treeShadowParams.y);
+        vec2 f = fract(uv * frame.treeShadowParams.y - 0.5);
+        vec4 a = step(vec4(receiver),textureGather(treeShadowMap,vec3(uv-texel,cascade),0));
+        vec4 b = step(vec4(receiver),textureGather(treeShadowMap,vec3(uv+vec2(texel.x,-texel.y),cascade),0));
+        vec4 c = step(vec4(receiver),textureGather(treeShadowMap,vec3(uv+vec2(-texel.x,texel.y),cascade),0));
+        vec4 d = step(vec4(receiver),textureGather(treeShadowMap,vec3(uv+texel,cascade),0));
+        float row0 = a.w*(1.0-f.x)+a.z+b.w+b.z*f.x;
+        float row1 = a.x*(1.0-f.x)+a.y+b.x+b.y*f.x;
+        float row2 = c.w*(1.0-f.x)+c.z+d.w+d.z*f.x;
+        float row3 = c.x*(1.0-f.x)+c.y+d.x+d.y*f.x;
+        return (row0*(1.0-f.y)+row1+row2+row3*f.y)/9.0;
     }
     // Fixed disk pattern avoids temporal sparkle; bilinear comparisons
     // preserve subtexel motion. Large radii remain an approximation.
