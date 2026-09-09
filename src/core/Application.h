@@ -73,6 +73,9 @@ public:
     Application& operator=(const Application&) = delete;
 
     void run();
+    enum class TreeLodMode { Reduced, Previous, Far, Hidden, Full };
+    void setTreeLodMode(TreeLodMode mode);
+    void beginTreeLodBenchmark();
     // 0: legacy rays, 1: stable PCF maps, 2: contact-hardening PCSS maps.
     void setTreeShadowMode(int mode) { treeShadowMode_ = mode; shadowHistoryReset_ = true; }
     void setShadowPreview(bool enabled, bool freezeWind) {
@@ -80,6 +83,12 @@ public:
     }
 
 private:
+    void advanceTreeLodBenchmark();
+    TreeLodMode treeLodMode_ = TreeLodMode::Reduced;
+    TreeLodMode treeLodResumeMode_ = TreeLodMode::Reduced;
+    bool prevTreeLodKeyDown_ = false;
+    bool treeLodBenchmark_ = false;
+    uint32_t treeLodBenchmarkStage_ = 0, treeLodBenchmarkFrames_ = 0;
     enum class CameraMode {
         HullFollow,
         TurretAim,
@@ -110,7 +119,9 @@ private:
     double lastFrameTime_ = 0.0;
     double windTime_ = 0.0;
     float prevWindTime_ = 0.0f;
-    float fpsSmoothed_ = 60.0f;
+    float displayedFps_ = 0.0f;
+    double fpsWindowStart_ = 0.0;
+    uint32_t fpsWindowFrames_ = 0;
     FrameProfiler profiler_;
     FrameProfiler::Sample performanceSample_{};
     bool performanceReporting_ = false;
@@ -131,6 +142,8 @@ private:
     bool prevTreeShadowKeyDown_ = false;
     bool aoEnabled_ = true;
     bool prevAoKeyDown_ = false;
+    bool reflectionRaysEnabled_ = true;
+    bool prevReflectionKeyDown_ = false;
     bool shadowHistoryReset_ = true;
     bool shadowPreview_ = false;
     bool freezeWind_ = false;
@@ -236,11 +249,16 @@ private:
     std::vector<std::unique_ptr<Mesh>> treeBarkMeshes_;
     std::vector<std::unique_ptr<Mesh>> treeFoliageMeshes_;
     std::vector<std::vector<Mesh::FoliageGroup>> treeFoliageGroups_;
+    // CPU staging lists retain capacity across frames and LOD changes.
+    std::vector<std::vector<RasterInstance>> treeInstanceGroups_;
+    std::vector<std::vector<std::vector<RasterInstance>>> foliageInstanceGroups_;
     std::vector<glm::vec4> treeShadowBounds_; // local center/radius, all raster levels
     std::vector<std::unique_ptr<Mesh>> mediumTreeBarkMeshes_;
     // Far raster LOD and simplified ray-tracing proxy geometry.
     std::vector<std::unique_ptr<Mesh>> farTreeBarkMeshes_;
+    std::vector<std::unique_ptr<Mesh>> distantTreeBarkMeshes_; // visible low-cost LOD 2
     std::vector<std::unique_ptr<Mesh>> treeLeafProxyMeshes_;
+    std::array<std::vector<std::unique_ptr<Mesh>>,2> treeReflectionMeshes_;
     std::vector<std::unique_ptr<Mesh>> shrubMeshes_;  // small pool of distinct bush shapes
     std::unique_ptr<Mesh> cloudDomeMesh_;
     std::vector<Box> boxes_;
@@ -288,6 +306,7 @@ private:
     std::unique_ptr<AccelerationStructure> shellBLAS_;
     std::vector<std::unique_ptr<AccelerationStructure>> rockBLAS_;  // one inset proxy per rock variant
     std::vector<std::unique_ptr<AccelerationStructure>> treeBarkBLAS_;  // one per treeBarkMeshes_ variant
+    std::array<std::vector<std::unique_ptr<AccelerationStructure>>,2> treeReflectionBLAS_;
     std::vector<std::unique_ptr<AccelerationStructure>> treeLeafBLAS_;  // one per treeFoliageMeshes_ variant
     std::unique_ptr<SceneAccelerationStructure> sceneAS_;
     std::unique_ptr<TreeShadowMap> treeShadowMap_;
@@ -315,7 +334,7 @@ private:
     void spawnGroundScorch(glm::vec3 point);
     void updateProjectilesAndCollisions(float deltaTime);
     void buildAccelerationStructures();
-    std::vector<AccelerationStructure::Instance> gatherRayTracingInstances() const;
+    std::vector<AccelerationStructure::Instance> gatherRayTracingInstances();
     void recreateSwapchainDependentResources();
     std::string nextScreenshotPath();
     void presentLoadingProgress(float fraction, const std::function<void()>& drawMenu = {});

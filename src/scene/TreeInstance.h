@@ -6,13 +6,14 @@
 #include "FoliageLod.h"
 
 // Decorative placement of shared pine, ash or oak geometry. Bark retains
-// whole-tree LOD; each foliage bough tracks its own progressive selection.
+// whole-tree LOD; each foliage bough tracks its own hard selection.
 struct TreeInstance {
     glm::vec3 position;
     float yaw = 0.0f;
     float scale = 1.0f;
     int meshVariant = 0;
     int lod = 0;  // bark: updated from projected screen size with hysteresis
+    int reflectionLod = 0; // conservative whole-crown ray representation
     std::vector<FoliageLod::Selection> foliageLods;
 
     glm::mat4 worldMatrix() const {

@@ -50,7 +50,8 @@ public:
         glm::vec4 prevCameraPos;  // for basic.frag's depth-based disocclusion rejection
         glm::vec4 windTime{0.0f}; // x: current seconds, y: previous rendered seconds (128s period)
         // z: shadows/AO ray tracing enabled (1.0) or skipped (0.0) -- see
-        // basic.frag's rawShadow/rawAO and Application's F5 toggle. w unused.
+        // basic.frag's rawShadow/rawAO and Application's F5 toggle.
+        // w: reflected-geometry ray queries enabled (F9); sky reflections remain.
         // Muzzle-flash/explosion point lights -- see DynamicLight.h. xyz is
         // world position, w is the falloff radius (0 means "inactive slot,
         // skip" -- see basic.frag). rgb is color, w is peak intensity.

@@ -9,7 +9,7 @@
 #include "VulkanContext.h"
 
 // Owns one TLAS per frame-in-flight slot, each reserved for up to
-// kMaxInstances instances at construction. Rebuilt every frame (see
+// kMaxInstances instances at construction. Rebuilt when instances change (see
 // AccelerationStructure::recordRebuildTLAS) from the current scene's full
 // instance list -- terrain + trees (static) plus tank parts, boxes, shells
 // (changing every frame) -- recorded directly into that frame's own command
@@ -29,16 +29,18 @@ public:
     // sized at construction) rather than risk silently dropping instances
     // under AccelerationStructure::recordRebuildTLAS's clamp-to-capacity.
     // Original 384 scene slots plus 160 animated tank instances and headroom.
-    static constexpr uint32_t kMaxInstances = 576;
+    // Additional reflection-only tree instances coexist with shadow/AO proxies.
+    static constexpr uint32_t kMaxInstances = 864;
 
     SceneAccelerationStructure(VulkanContext& ctx, CommandContext& commands,
                                 const std::vector<AccelerationStructure::Instance>& initialInstances);
 
-    void rebuild(VkCommandBuffer cmd, size_t frameIndex,
+    bool rebuild(VkCommandBuffer cmd, size_t frameIndex,
                  const std::vector<AccelerationStructure::Instance>& instances);
 
     VkAccelerationStructureKHR handle(size_t frameIndex) const { return slots_[frameIndex]->handle(); }
 
 private:
     std::array<std::unique_ptr<AccelerationStructure>, CommandContext::kFramesInFlight> slots_;
+    std::array<std::vector<AccelerationStructure::Instance>, CommandContext::kFramesInFlight> instances_;
 };

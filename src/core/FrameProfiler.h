@@ -22,6 +22,9 @@ public:
         double draws = 0;
         double visibleProps = 0;
         double tlasInstances = 0;
+        double treeReflectionTriangles = 0;
+        double tlasRebuilds = 0;
+        double treeTriangles = 0; // submitted once per visual pass; excludes shadows
     };
     struct Summary {
         Sample mean{};
@@ -54,12 +57,18 @@ public:
             result.mean.draws += samples_[i].draws;
             result.mean.visibleProps += samples_[i].visibleProps;
             result.mean.tlasInstances += samples_[i].tlasInstances;
+            result.mean.treeTriangles += samples_[i].treeTriangles;
+            result.mean.treeReflectionTriangles += samples_[i].treeReflectionTriangles;
+            result.mean.tlasRebuilds += samples_[i].tlasRebuilds;
             sorted[i] = samples_[i].ms[Frame];
         }
         for (double& ms : result.mean.ms) ms /= static_cast<double>(count_);
         result.mean.draws /= static_cast<double>(count_);
         result.mean.visibleProps /= static_cast<double>(count_);
         result.mean.tlasInstances /= static_cast<double>(count_);
+        result.mean.treeTriangles /= static_cast<double>(count_);
+        result.mean.treeReflectionTriangles /= static_cast<double>(count_);
+        result.mean.tlasRebuilds /= static_cast<double>(count_);
         std::sort(sorted.begin(), sorted.begin() + count_);
         // Nearest-rank percentiles: p99 is a slow frame time, not "1% low FPS".
         result.p95 = sorted[static_cast<size_t>(std::ceil(0.95 * count_)) - 1];

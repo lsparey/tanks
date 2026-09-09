@@ -9,7 +9,7 @@
 
 namespace {
 void require(bool b, const char* message) { if (!b) throw std::runtime_error(message); }
-using Geometry = std::array<Mesh::Geometry, 7>;
+using Geometry = std::array<Mesh::Geometry, 9>;
 Geometry build(const TreeGenerator::Tree& tree) {
     Geometry result;
     for (int lod = 0; lod < 3; ++lod) {
@@ -17,6 +17,8 @@ Geometry build(const TreeGenerator::Tree& tree) {
         result[lod*2+1] = Mesh::treeLeafGeometry(glm::vec3(1), tree, lod);
     }
     result[6] = Mesh::treeLeafGeometry(glm::vec3(1), tree, 3);
+    result[7] = Mesh::treeDistantBarkGeometry(glm::vec3(1),tree);
+    result[8] = Mesh::treeDistantLeafGeometry(glm::vec3(1),tree);
     return result;
 }
 bool inside(glm::vec3 p, const Mesh::Geometry& mesh) {
@@ -52,7 +54,7 @@ int main() {
     for (int i=0;i<3;++i) {
         auto serial = build(trees[i]);
         auto parallel = jobs[i].get();
-        for (int mesh=0;mesh<7;++mesh) {
+        for (int mesh=0;mesh<9;++mesh) {
             const auto& a=serial[mesh]; const auto& b=parallel[mesh];
             require(a.indices==b.indices && a.vertices.size()==b.vertices.size(), "Parallel build changed topology");
             for (size_t j=0;j<a.vertices.size();++j) {
@@ -91,11 +93,14 @@ int main() {
         for (size_t i=0;i<grouped.groups.size();++i) {
             const auto& group=grouped.groups[i];
             const auto& other=parallel.groups[i];
-            require(group.center==other.center && group.radius==other.radius && group.seed==other.seed,
+            require(group.center==other.center && group.radius==other.radius && group.seed==other.seed &&
+                    group.cullRadius==other.cullRadius && group.cullRadius>=group.radius,
                     "Non-deterministic bough metadata");
-            for (int lod=0;lod<3;++lod) {
-                const auto& range=group.levels[lod];
-                auto standalone=Mesh::treeLeafGeometry(glm::vec3(1),boughs.at(group.seed),lod);
+            for (int lod=0;lod<5;++lod) {
+                const auto& range=lod == 1 ? group.shadowMedium : lod == 2 ? group.shadowFar
+                    : group.levels[lod >= 3 ? lod-2 : lod];
+                auto standalone=lod >= 3 ? Mesh::treeDistantLeafGeometry(glm::vec3(1),boughs.at(group.seed),lod == 3 ? .18f : .5f)
+                    : Mesh::treeLeafGeometry(glm::vec3(1),boughs.at(group.seed),lod);
                 require(range.firstIndex==nextIndex && range.indexCount==standalone.indices.size(),
                         "Overlapping or incomplete bough range");
                 require(range.vertexOffset==0 && range.instanceCount==0 && range.firstInstance==0,
@@ -105,13 +110,37 @@ int main() {
                     const auto& vertex=grouped.mesh.vertices.at(index);
                     require(vertex.position==standalone.vertices[standalone.indices[j]].position,
                             "Grouping moved foliage or included another bough");
-                    require(glm::length(vertex.position-group.center) <= group.radius+1e-5f,
+                    require(glm::length(vertex.position-group.center) <= (lod >= 3 ? group.cullRadius : group.radius)+1e-5f,
                             "Foliage outside bough culling bound");
                 }
                 nextIndex+=range.indexCount;
             }
         }
         require(nextIndex==grouped.mesh.indices.size(), "Unowned foliage geometry");
+    }
+    // Production-density far meshes must provide a large actual reduction,
+    // including oak, whose previous lowest level still kept every leaf.
+    for (int variant=0; variant<6; ++variant) {
+        auto tree=TreeGenerator::generate(variant+1,static_cast<TreeGenerator::Species>(variant/2),
+                                          variant%2 == 0 ? .88f : 1.f);
+        std::map<uint32_t,TreeGenerator::Tree> boughs;
+        for (const auto& spray : tree.sprays) {
+            auto& bough=boughs[spray.group];
+            bough.species=tree.species;
+            bough.sprays.push_back(spray);
+        }
+        size_t previous=0, reduced=0;
+        for (const auto& [id,bough] : boughs) {
+            previous += Mesh::treeLeafGeometry(glm::vec3(1),bough,2).indices.size();
+            auto mesh=Mesh::treeDistantLeafGeometry(glm::vec3(1),bough);
+            require(!mesh.indices.empty(),"Far LOD dropped an occupied bough");
+            reduced += mesh.indices.size();
+        }
+        require(reduced*5 < previous,"Far foliage failed to remove at least 80% of triangles");
+        auto bark=Mesh::treeDistantBarkGeometry(glm::vec3(1),tree);
+        auto oldBark=Mesh::treeBarkGeometry(glm::vec3(1),tree,2);
+        require(!bark.indices.empty() && bark.indices.size()*2 < oldBark.indices.size(),
+                "Far bark did not substantially reduce geometry");
     }
     for (const auto& leaf:trees[2].sprays) {
         TreeGenerator::Tree one; one.species=TreeGenerator::Species::Oak; one.sprays={leaf};

@@ -108,7 +108,8 @@ float traceShadow(vec3 origin, vec3 direction, float tMax, uint mask) {
 // gradient as the fallback.
 bool traceReflection(vec3 origin, vec3 direction, float tMax, out vec3 hitColor) {
     rayQueryEXT rayQuery;
-    rayQueryInitializeEXT(rayQuery, sceneTLAS, gl_RayFlagsOpaqueEXT, 0xFF, origin, 0.001, direction,
+    // Solid scene objects plus the selected tree reflection representation.
+    rayQueryInitializeEXT(rayQuery, sceneTLAS, gl_RayFlagsOpaqueEXT, 0x09, origin, 0.001, direction,
                            tMax);
     while (rayQueryProceedEXT(rayQuery)) {}
     if (rayQueryGetIntersectionTypeEXT(rayQuery, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
@@ -360,7 +361,7 @@ float traceAO(vec3 origin, vec3 normal, float seedBase, int sampleCount, float r
         float u1 = fract(seedBase + float(i) * 0.7548776662);
         float u2 = fract(seedBase * 1.3247179572 + float(i) * 0.5698402910);
         vec3 sampleDir = cosineSampleHemisphere(normal, u1, u2);
-        occlusion += 1.0 - traceShadow(origin, sampleDir, radius, 0xFFu);
+        occlusion += 1.0 - traceShadow(origin, sampleDir, radius, 0x07u);
     }
     return 1.0 - strength * (occlusion / float(sampleCount));
 }
@@ -1226,7 +1227,9 @@ void main() {
         envColor = skyColor(reflectDir);
         vec3 reflectionHit;
         vec3 reflOrigin = fragWorldPos + normal * kShadowBias;
-        if (traceReflection(reflOrigin, reflectDir, kShadowTMax, reflectionHit)) {
+        // Independent of shadow/AO toggles. Keep the sky fallback when F9
+        // disables closest-hit rays, isolating reflected-geometry cost.
+        if (frame.windTime.w > .5 && traceReflection(reflOrigin, reflectDir, kShadowTMax, reflectionHit)) {
             envColor = reflectionHit;
         }
     }

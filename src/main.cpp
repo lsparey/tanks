@@ -36,6 +36,8 @@ int main(int argc, char** argv) {
         bool profile = false;
         int treeShadowMode = 2;
         bool shadowPreview = false, freezeWind = false;
+        auto treeLodMode = Application::TreeLodMode::Reduced;
+        bool treeLodBenchmark = false;
         std::optional<uint32_t> seed;
         std::string view;
         bool originalTankModel = false;
@@ -48,6 +50,16 @@ int main(int argc, char** argv) {
         std::optional<int> terrainResolution;
         int refinementPasses = 0;
         for (int i = 1; i < argc; ++i) {
+            if (std::strcmp(argv[i], "--tree-lod-benchmark") == 0) treeLodBenchmark = true;
+            if (std::strcmp(argv[i], "--tree-lod") == 0) {
+                if (++i >= argc) throw std::runtime_error("--tree-lod requires reduced, previous, far, hidden, or full");
+                if (std::strcmp(argv[i], "reduced") == 0) treeLodMode = Application::TreeLodMode::Reduced;
+                else if (std::strcmp(argv[i], "previous") == 0) treeLodMode = Application::TreeLodMode::Previous;
+                else if (std::strcmp(argv[i], "far") == 0) treeLodMode = Application::TreeLodMode::Far;
+                else if (std::strcmp(argv[i], "hidden") == 0) treeLodMode = Application::TreeLodMode::Hidden;
+                else if (std::strcmp(argv[i], "full") == 0) treeLodMode = Application::TreeLodMode::Full;
+                else throw std::runtime_error("--tree-lod requires reduced, previous, far, hidden, or full");
+            }
             if (std::strcmp(argv[i], "--shadow-preview") == 0) shadowPreview = true;
             if (std::strcmp(argv[i], "--freeze-wind") == 0) freezeWind = true;
             if (std::strcmp(argv[i], "--tree-shadows") == 0) {
@@ -115,11 +127,16 @@ int main(int argc, char** argv) {
             throw std::runtime_error("--terrain-resolution requires --terrain drained-valley");
         if (refinementPasses && (!valleyTerrain || terrainResolution.value_or(257) != 257))
             throw std::runtime_error("terrain refinement requires --terrain drained-valley with the 257 erosion grid");
+        if (treeLodBenchmark && (weaponPreview || showTerrainMenu || parseScreenshotRequest(argc,argv)))
+            throw std::runtime_error("--tree-lod-benchmark cannot be combined with menu, weapon preview or screenshot capture");
+        if (treeLodBenchmark && view.empty()) view = "trees";
         if (!view.empty() && !seed) seed = 7331;
         Application app(parseScreenshotRequest(argc, argv), profile, seed, view, originalTankModel, animateTracks, weaponPreview, valleyTerrain, terrainAttempts,
                         landform.value_or(MacroTerrain::Landform::Mixed), terrainResolution.value_or(257), refinementPasses, showTerrainMenu);
         app.setTreeShadowMode(treeShadowMode);
         app.setShadowPreview(shadowPreview,freezeWind);
+        app.setTreeLodMode(treeLodMode);
+        if (treeLodBenchmark) app.beginTreeLodBenchmark();
         app.run();
     } catch (const std::exception& e) {
         std::cerr << "Fatal error: " << e.what() << std::endl;

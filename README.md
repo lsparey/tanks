@@ -20,8 +20,10 @@ runtime/build libraries.
   forms have full summer crowns, overlapping thin leaf sprays, varied density
   and coherent wind sway. Oaks use separate lobed leaves and a deep branching
   crown; CPU tree builds run concurrently while the loading screen stays active.
-  Foliage detail changes progressively per bough, with complementary coverage
-  masks blending adjacent levels while retaining dynamic lighting and soft shadows.
+  Foliage uses three detail levels per bough, with direct switches and no
+  blending. The far level merges foliage onto a coarse
+  voxel grid and keeps only major bark branches; soft shadows retain their
+  original geometry.
 - Multipart tank model with independent turret and barrel transforms.
 - Editable Challenger-2-inspired mesh with sloped armour, road wheels, hubs,
   track belts and tread shoes; the original model remains selectable.
@@ -42,6 +44,88 @@ that would otherwise only live there — including the
 [tree-rendering guide](docs/TREE_RENDERING.md), which covers crown geometry,
 threaded loading, progressive LOD, wind, shadows, measured costs and
 validation.
+
+## Tree LOD measurements
+
+The default `--tree-lod reduced` uses three prebuilt mesh levels. Near foliage
+retains full detail, middle foliage uses a 0.18-model-unit voxel grid, and far
+foliage uses a 0.5-model-unit grid. Selection projects the coarse cell width
+onto the screen: middle targets 1.5 pixels and far 2 pixels. Boughs have small
+deterministic threshold offsets and 10% hysteresis to spread hard switches and
+avoid flicker. Exactly one mesh is drawn per bough; there is no blending or
+per-frame geometry generation. This is a cell-footprint heuristic, not a
+measured silhouette-error bound or Nanite's specialized voxel renderer.
+
+Bark retains whole-tree radius thresholds of 90/45 pixels. CPU tree instance
+lists retain their allocated storage between frames. Coarse foliage stays
+farther away when it would otherwise appear as large blocks; performance
+improvement from this quality policy alone is not assumed.
+
+Press `F8` to toggle tree LOD off/on. Off forces full-detail visible bark and
+foliage and restores the original near reflection proxies. On restores the
+selected LOD mode. The HUD shows the state. Use `--tree-lod full` to start
+with tree LOD disabled.
+
+Reflection trees now use the same footprint policy, conservatively measured
+from the nearest point of the whole crown; off-camera trees remain eligible.
+Middle/far ray meshes merge boughs into one whole-tree mesh per reusable variant.
+Only meshes with fewer triangles than the original near ray proxy are selected.
+Separate ray masks keep the original shadow/AO proxies unchanged, including
+legacy shadow rays; reflection-only geometry cannot affect them. Coarse
+reflections remain static, as the original proxies were, and need not match
+individual visible bough switches exactly. All meshes and their BLASes are
+built once during loading.
+
+F9 independently disables reflected-geometry rays, retaining sky reflections.
+The ray-tracing scene reuses each frame slot's TLAS when addresses, transforms,
+and masks are unchanged. Moving tanks, projectiles, destruction and reflection
+LOD changes trigger rebuilds. When F5 shadows/AO and F9 reflection rays are
+both off, scene gathering and TLAS rebuilding are skipped entirely.
+
+F3 reports `tree reflection triangles` (instanced geometry eligible for those
+rays, not the number of triangle intersections), `TLAS rebuilds/frame`, and
+visible `tree triangles/pass`. These expose actual workload changes. The extra
+reflection BLASes use additional memory; when shadows/AO are active, coarse
+reflection instances can add to the TLAS, so a frame-time improvement still
+needs measurement. No new FPS gain is claimed.
+
+`--tree-lod previous` retains the earlier 26/13 bough-radius thresholds,
+original middle/far visual meshes, and fixed near ray proxies for comparison.
+`--tree-lod far` forces lowest visible and reflection detail, while
+`--tree-lod hidden` omits visible trees but retains the default reflection
+policy. Shadows/AO and tree placement retain their behavior. These modes now
+compare both selection policies and geometry; historical measurements below
+used a different configuration.
+
+For a controlled Release comparison:
+
+```bash
+./out/runtime-release/tanks --seed 7331 --view trees --tree-shadows soft --tree-lod-benchmark
+```
+
+The benchmark freezes wind and camera, runs previous/reduced/far/hidden and
+then the reverse order, prints `TREE_LOD_RESULT` CSV rows, and exits after
+`TREE_LOD_COMPLETE`. Each phase runs 360 frames, discards 60 warmup frames,
+and reports the last 240 CPU samples plus asynchronous GPU exponential moving averages.
+Triangle counts count foliage once,
+although foliage is submitted to both depth and lighting passes. Run in an
+unobstructed window without other GPU workloads. Repeat with `--view landscape`
+to check a second camera. Debug/validation builds are unsuitable for timing.
+
+The previous visible tree GPU-pass cost estimates the optimistic GPU headroom
+if those passes became free while all other work stayed fixed. Hidden mode is
+a practical endpoint, but changes occlusion and cannot establish a universal
+FPS ceiling. These comparisons retain shadow quality. The current default also changes
+reflection detail, so the historical visible-only ceiling does not establish
+its total performance headroom.
+With the earlier aggressive 240–200 / 180–140 bands (not the current defaults),
+on the development Arc A370M at 1280×720 (seed 7331, soft shadows), paired
+forward/reverse Release runs reduced tree-view frame time from 25.08 to 20.90 ms
+and landscape from 22.37 to 18.22 ms: about 20–23% higher loop FPS. The default
+removed 75–79% of visible tree GPU cost, leaving only 1.2–1.5 ms of those passes
+to eliminate. Hidden-tree runs measured 19.01/16.65 ms respectively; shadow
+work remained around 7.1 ms. These are scene-specific measurements, not a
+guaranteed gain for every camera. See [local results and raw-log links](docs/TREE_LOD_LIMITS.md).
 
 ## Rendering direction
 
@@ -209,6 +293,8 @@ the swapchain and dependent render targets are recreated automatically.
 | `F5` | Toggle shadows and ambient occlusion together |
 | `F6` | Cycle tree shadows: filtered maps → soft maps → legacy rays |
 | `F7` | Toggle ambient occlusion independently while shadows are enabled |
+| `F8` | Toggle tree LOD; off forces full-detail bark and foliage |
+| `F9` | Toggle reflected-geometry rays; retain sky reflections |
 | `F12` | Save a PNG under `screenshots/` |
 | `Esc` | Quit |
 
@@ -216,6 +302,12 @@ The mouse cursor is captured while the application is running. In free-camera
 mode, `Space` both raises the camera and fires because firing remains active.
 
 ## Performance measurements
+
+The HUD FPS counter counts completed frames over half-second wall-clock windows.
+F8 starts a fresh window. It is separate from the longer F3 report window.
+GPU timestamp readbacks run only while F3/`--profile` reporting is enabled,
+and continue during its CPU-sample warmup so changing LOD does not temporarily
+remove and then restore profiling work.
 
 Press `F3`, or start with `./build/tanks --profile`. The window title shows
 average frame time, p99, combined wait/API time, GPU time, and draw calls.

@@ -19,6 +19,7 @@ int main() {
         sample.draws = 12;
         sample.visibleProps = 20;
         sample.tlasInstances = 30;
+        sample.treeTriangles = i*100;
         profiler.add(sample);
     }
     auto summary = profiler.summary();
@@ -26,6 +27,7 @@ int main() {
     require(summary.p95 == 95 && summary.p99 == 99 && summary.worst == 100);
     require(summary.mean.ms[FrameProfiler::Simulation] == 2 && summary.mean.draws == 12);
     require(summary.mean.visibleProps == 20 && summary.mean.tlasInstances == 30);
+    require(summary.mean.treeTriangles == 5050);
 
     profiler.clear();
     require(profiler.summary().count == 0 && profiler.summary().p99 == 0);

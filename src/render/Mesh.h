@@ -60,11 +60,20 @@ public:
     // Mesh constructor on the render thread that owns the command pool.
     static Geometry treeBarkGeometry(glm::vec3 tint, const TreeGenerator::Tree& tree, int lod = 0);
     static Geometry treeLeafGeometry(glm::vec3 tint, const TreeGenerator::Tree& tree, int lod = 0);
+    // Low-cost visible LOD 2. Original geometry above remains available to
+    // shadow maps/ray proxies and to the matched benchmark baseline.
+    static Geometry treeDistantBarkGeometry(glm::vec3 tint, const TreeGenerator::Tree& tree);
+    // Visible foliage grids: 0.18 model units for middle, 0.5 for far.
+    static Geometry treeDistantLeafGeometry(glm::vec3 tint, const TreeGenerator::Tree& tree,
+                                            float voxelSize = .5f);
     struct FoliageGroup {
         glm::vec3 center{0};
         float radius = 0;
+        float cullRadius = 0; // includes the cheaper far mesh; radius retains the LOD policy
         uint32_t seed = 0;
         std::array<VkDrawIndexedIndirectCommand, 3> levels{};
+        VkDrawIndexedIndirectCommand shadowMedium{}; // original LOD 1
+        VkDrawIndexedIndirectCommand shadowFar{}; // original LOD 2, unchanged shadows/baseline
     };
     struct FoliageGeometry {
         Geometry mesh;

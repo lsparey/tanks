@@ -46,6 +46,20 @@ constexpr uint32_t kWindowHeight = 720;
 // chronologically as 3 -> 8 (bark) -> 9 (depth) -> 10 (leaves) -> 4 (props).
 constexpr uint32_t kGpuTimestampsPerFrame = 12;
 constexpr float kAimProjectionDistance = 25.0f;
+constexpr std::array<Application::TreeLodMode,8> kTreeLodBenchmarkModes = {
+    Application::TreeLodMode::Previous, Application::TreeLodMode::Reduced,
+    Application::TreeLodMode::Far, Application::TreeLodMode::Hidden,
+    Application::TreeLodMode::Hidden, Application::TreeLodMode::Far,
+    Application::TreeLodMode::Reduced, Application::TreeLodMode::Previous};
+const char* treeLodName(Application::TreeLodMode mode) {
+    switch (mode) {
+        case Application::TreeLodMode::Previous: return "previous";
+        case Application::TreeLodMode::Far: return "far";
+        case Application::TreeLodMode::Hidden: return "hidden";
+        case Application::TreeLodMode::Full: return "off - full detail";
+        default: return "reduced";
+    }
+}
 
 std::array<glm::vec4,6> frustumPlanes(const glm::mat4& viewProjection) {
     auto row = [&](int r) {
@@ -618,7 +632,8 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
     struct TreeGeometry {
         std::array<Mesh::Geometry,3> bark;
         Mesh::FoliageGeometry foliage;
-        Mesh::Geometry proxy;
+        Mesh::Geometry proxy, distantBark;
+        std::array<Mesh::Geometry,2> reflections;
     };
     std::array<std::future<TreeGeometry>, kTreeVariantCount> treeJobs;
     // Bound both CPU contention and completed geometry waiting for upload.
@@ -637,6 +652,18 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
             }
             geometry.foliage = Mesh::treeFoliageGeometry(leafTint, tree);
             geometry.proxy = Mesh::treeLeafGeometry(leafTint, tree, 3);
+            geometry.distantBark = Mesh::treeDistantBarkGeometry(barkTint,tree);
+            // Whole-crown meshes for reflection rays only. Merge the canopy
+            // across bough boundaries and keep the original near ray proxy.
+            for (int lod=0; lod<2; ++lod) {
+                auto& mesh = geometry.reflections[lod];
+                mesh = Mesh::treeDistantLeafGeometry(leafTint,tree,lod == 0
+                    ? FoliageLod::kMiddleVoxelSize : FoliageLod::kFarVoxelSize);
+                const auto& bark = lod == 0 ? geometry.bark[2] : geometry.distantBark;
+                uint32_t base = static_cast<uint32_t>(mesh.vertices.size());
+                for (uint32_t index : bark.indices) mesh.indices.push_back(base+index);
+                mesh.vertices.insert(mesh.vertices.end(),bark.vertices.begin(),bark.vertices.end());
+            }
             return geometry;
         });
     };
@@ -656,7 +683,19 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
                 }
             };
             for (const auto& bark : geometry.bark) expandBounds(bark);
-            expandBounds(geometry.foliage.mesh);
+            // Preserve the original shadow bounds; the larger far voxels
+            // belong only to the visible tree representation.
+            for (const auto& bough : geometry.foliage.groups)
+                for (int lod=0; lod<3; ++lod) {
+                    const auto& range = lod == 2 ? bough.shadowFar
+                        : lod == 1 ? bough.shadowMedium : bough.levels[0];
+                    for (uint32_t j=0; j<range.indexCount; ++j) {
+                        const auto& v = geometry.foliage.mesh.vertices[
+                            geometry.foliage.mesh.indices[range.firstIndex+j]];
+                        lower = glm::min(lower,v.position);
+                        upper = glm::max(upper,v.position);
+                    }
+                }
             treeShadowBounds_.emplace_back((lower+upper)*.5f,glm::length(upper-lower)*.5f);
             auto upload = [&](const Mesh::Geometry& mesh) {
                 return std::make_unique<Mesh>(*context_, *commands_, mesh.vertices, mesh.indices);
@@ -664,9 +703,12 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
             treeBarkMeshes_.push_back(upload(geometry.bark[0]));
             mediumTreeBarkMeshes_.push_back(upload(geometry.bark[1]));
             farTreeBarkMeshes_.push_back(upload(geometry.bark[2]));
+            distantTreeBarkMeshes_.push_back(upload(geometry.distantBark));
             treeFoliageMeshes_.push_back(upload(geometry.foliage.mesh));
             treeFoliageGroups_.push_back(std::move(geometry.foliage.groups));
             treeLeafProxyMeshes_.push_back(upload(geometry.proxy));
+            for (int lod=0; lod<2; ++lod)
+                treeReflectionMeshes_[lod].push_back(upload(geometry.reflections[lod]));
         }
         if (i + workers < kTreeVariantCount) treeJobs[i + workers] = launchTree(i + workers);
 
@@ -912,6 +954,7 @@ void Application::cleanup() noexcept {
     historyBuffer_.reset();
     foliageHistoryBuffer_.reset();
     sceneAS_.reset();
+    for (auto& meshes : treeReflectionBLAS_) meshes.clear();
     treeLeafBLAS_.clear();
     treeBarkBLAS_.clear();
     rockBLAS_.clear();
@@ -943,6 +986,8 @@ void Application::cleanup() noexcept {
     mediumRockMeshes_.clear();
     rockMeshes_.clear();
     farTreeBarkMeshes_.clear();
+    distantTreeBarkMeshes_.clear();
+    for (auto& meshes : treeReflectionMeshes_) meshes.clear();
     treeLeafProxyMeshes_.clear();
     mediumTreeBarkMeshes_.clear();
     treeFoliageMeshes_.clear();
@@ -991,7 +1036,61 @@ void Application::framebufferResizeCallback(GLFWwindow* window, int /*width*/, i
 
 void Application::run() { if (!glfwWindowShouldClose(window_)) mainLoop(); }
 
+void Application::setTreeLodMode(TreeLodMode mode) {
+    treeLodMode_ = mode;
+    fpsWindowStart_ = glfwGetTime();
+    fpsWindowFrames_ = 0;
+    for (auto& tree : trees_) {
+        tree.lod = 0;
+        tree.reflectionLod = 0;
+        tree.foliageLods.clear();
+    }
+    profiler_.clear();
+    performanceWarmup_ = 60;
+    gpuTimingInitialized_ = false;
+    gpuTimestampsReady_.fill(false);
+    shadowHistoryReset_ = true;
+    std::cout << "Tree visual LOD: " << treeLodName(mode) << " (shadow geometry unchanged)\n" << std::flush;
+}
+
+void Application::beginTreeLodBenchmark() {
+    treeLodBenchmark_ = true;
+    treeLodBenchmarkStage_ = treeLodBenchmarkFrames_ = 0;
+    freezeWind_ = true;
+    windTime_ = 0;
+    performanceReporting_ = true;
+    setTreeLodMode(kTreeLodBenchmarkModes[0]);
+    std::cout << "TREE_LOD_HEADER,stage,mode,view,seed,width,height,samples,frame_ms,p95_ms,visibility_ms,"
+                 "gpu_ms,tree_gpu_ms,shadow_gpu_ms,terrain_gpu_ms,triangles,shadow_mode,ao,tlas\n" << std::flush;
+}
+
+void Application::advanceTreeLodBenchmark() {
+    if (++treeLodBenchmarkFrames_ < 360) return;
+    const auto stats = profiler_.summary();
+    if (stats.count != FrameProfiler::kCapacity || !gpuTimingInitialized_)
+        throw std::runtime_error("Incomplete tree LOD benchmark measurement window");
+    std::cout << std::fixed << std::setprecision(4)
+        << "TREE_LOD_RESULT," << treeLodBenchmarkStage_ << ',' << treeLodName(treeLodMode_)
+        << ',' << referenceView_ << ',' << worldSeed_ << ',' << swapchain_->extent().width
+        << ',' << swapchain_->extent().height << ',' << stats.count
+        << ',' << stats.mean.ms[FrameProfiler::Frame] << ',' << stats.p95
+        << ',' << stats.mean.ms[FrameProfiler::Visibility] << ',' << gpuTotalMs_
+        << ',' << gpuTreeBarkMs_+gpuFoliageDepthMs_+gpuFoliageLightingMs_
+        << ',' << gpuTreeShadowMs_ << ',' << gpuTerrainMs_ << ',' << stats.mean.treeTriangles
+        << ',' << treeShadowMode_ << ',' << aoEnabled_ << ',' << stats.mean.tlasInstances
+        << '\n' << std::flush;
+    treeLodBenchmarkFrames_ = 0;
+    if (++treeLodBenchmarkStage_ == kTreeLodBenchmarkModes.size()) {
+        std::cout << "TREE_LOD_COMPLETE\n" << std::flush;
+        glfwSetWindowShouldClose(window_,GLFW_TRUE);
+    } else {
+        setTreeLodMode(kTreeLodBenchmarkModes[treeLodBenchmarkStage_]);
+    }
+}
+
 void Application::mainLoop() {
+    fpsWindowStart_ = glfwGetTime();
+    fpsWindowFrames_ = 0;
     while (!glfwWindowShouldClose(window_)) {
         const auto frameStart = FrameProfiler::Clock::now();
         performanceSample_ = {};
@@ -1008,76 +1107,100 @@ void Application::mainLoop() {
         // Bound float phase precision without a discontinuity: every wind
         // frequency completes an integer number of cycles in 128 seconds.
         if (!freezeWind_) windTime_ = std::fmod(windTime_ + static_cast<double>(deltaTime), 128.0);
-        // Exponential moving average rather than the raw instantaneous
-        // value, which jitters wildly frame to frame and is unreadable as
-        // an on-screen counter.
-        if (deltaTime > 0.0f) fpsSmoothed_ = glm::mix(fpsSmoothed_, 1.0f / deltaTime, 0.1f);
 
         input_->update();
 
-        bool performanceKeyDown = glfwGetKey(window_, GLFW_KEY_F3) == GLFW_PRESS;
-        if (performanceKeyDown && !prevPerformanceKeyDown_) {
-            performanceReporting_ = !performanceReporting_;
-            lastPerformanceReport_ = 0.0;
-            if (!performanceReporting_) glfwSetWindowTitle(window_, "tanks");
-            std::cout << "Performance reporting " << (performanceReporting_ ? "on" : "off")
-                      << " (F3 toggles, F4 resets samples)\n";
-        }
-        prevPerformanceKeyDown_ = performanceKeyDown;
-        bool resetKeyDown = glfwGetKey(window_, GLFW_KEY_F4) == GLFW_PRESS;
-        if (resetKeyDown && !prevPerformanceResetKeyDown_) {
-            profiler_.clear();
-            gpuTimingInitialized_ = false;
-            // Discard asynchronous results belonging to the previous window.
-            gpuTimestampsReady_.fill(false);
-            lastPerformanceReport_ = 0.0;
-            std::cout << "Performance sample window reset\n";
-        }
-        prevPerformanceResetKeyDown_ = resetKeyDown;
-
-        bool shadowsKeyDown = glfwGetKey(window_, GLFW_KEY_F5) == GLFW_PRESS;
-        if (shadowsKeyDown && !prevShadowsKeyDown_) {
-            shadowsEnabled_ = !shadowsEnabled_;
-            shadowHistoryReset_ = true;
-            std::cout << "Shadows " << (shadowsEnabled_ ? "on" : "off") << " (F5 toggles)\n";
-        }
-        prevShadowsKeyDown_ = shadowsKeyDown;
-        bool treeShadowKey = glfwGetKey(window_, GLFW_KEY_F6) == GLFW_PRESS;
-        if (treeShadowKey && !prevTreeShadowKeyDown_) {
-            setTreeShadowMode((treeShadowMode_ + 1) % 3);
-            const char* names[] = {"legacy rays", "stable maps (PCF)", "soft maps (PCSS)"};
-            std::cout << "Tree shadows: " << names[treeShadowMode_] << " (F6 cycles)\n";
-            profiler_.clear();
-            performanceWarmup_ = 60;
-            gpuTimingInitialized_ = false;
-            gpuTimestampsReady_.fill(false);
-        }
-        prevTreeShadowKeyDown_ = treeShadowKey;
-        bool aoKey = glfwGetKey(window_, GLFW_KEY_F7) == GLFW_PRESS;
-        if (aoKey && !prevAoKeyDown_) {
-            aoEnabled_ = !aoEnabled_;
-            shadowHistoryReset_ = true;
-            std::cout << "Ambient occlusion " << (aoEnabled_ ? "on" : "off") << " (F7 toggles)\n";
-        }
-        prevAoKeyDown_ = aoKey;
-
-        bool cameraToggleDown = glfwGetKey(window_, GLFW_KEY_C) == GLFW_PRESS;
-        if (cameraToggleDown && !prevCameraToggleKeyDown_) {
-            switch (cameraMode_) {
-                case CameraMode::HullFollow: cameraMode_ = CameraMode::TurretAim; break;
-                case CameraMode::TurretAim: cameraMode_ = CameraMode::Free; break;
-                case CameraMode::Free: cameraMode_ = CameraMode::HullFollow; break;
+        if (!treeLodBenchmark_) {
+            bool performanceKeyDown = glfwGetKey(window_, GLFW_KEY_F3) == GLFW_PRESS;
+            if (performanceKeyDown && !prevPerformanceKeyDown_) {
+                performanceReporting_ = !performanceReporting_;
+                gpuTimingInitialized_ = false;
+                gpuTimestampsReady_.fill(false);
+                lastPerformanceReport_ = 0.0;
+                if (!performanceReporting_) glfwSetWindowTitle(window_, "tanks");
+                std::cout << "Performance reporting " << (performanceReporting_ ? "on" : "off")
+                          << " (F3 toggles, F4 resets samples)\n";
             }
-        }
-        prevCameraToggleKeyDown_ = cameraToggleDown;
-        if (cameraToggleDown) referenceView_.clear();
+            prevPerformanceKeyDown_ = performanceKeyDown;
+            bool resetKeyDown = glfwGetKey(window_, GLFW_KEY_F4) == GLFW_PRESS;
+            if (resetKeyDown && !prevPerformanceResetKeyDown_) {
+                profiler_.clear();
+                gpuTimingInitialized_ = false;
+                // Discard asynchronous results belonging to the previous window.
+                gpuTimestampsReady_.fill(false);
+                lastPerformanceReport_ = 0.0;
+                std::cout << "Performance sample window reset\n";
+            }
+            prevPerformanceResetKeyDown_ = resetKeyDown;
 
+            bool shadowsKeyDown = glfwGetKey(window_, GLFW_KEY_F5) == GLFW_PRESS;
+            if (shadowsKeyDown && !prevShadowsKeyDown_) {
+                shadowsEnabled_ = !shadowsEnabled_;
+                shadowHistoryReset_ = true;
+                std::cout << "Shadows " << (shadowsEnabled_ ? "on" : "off") << " (F5 toggles)\n";
+            }
+            prevShadowsKeyDown_ = shadowsKeyDown;
+            bool treeShadowKey = glfwGetKey(window_, GLFW_KEY_F6) == GLFW_PRESS;
+            if (treeShadowKey && !prevTreeShadowKeyDown_) {
+                setTreeShadowMode((treeShadowMode_ + 1) % 3);
+                const char* names[] = {"legacy rays", "stable maps (PCF)", "soft maps (PCSS)"};
+                std::cout << "Tree shadows: " << names[treeShadowMode_] << " (F6 cycles)\n";
+                profiler_.clear();
+                performanceWarmup_ = 60;
+                gpuTimingInitialized_ = false;
+                gpuTimestampsReady_.fill(false);
+            }
+            prevTreeShadowKeyDown_ = treeShadowKey;
+            bool aoKey = glfwGetKey(window_, GLFW_KEY_F7) == GLFW_PRESS;
+            if (aoKey && !prevAoKeyDown_) {
+                aoEnabled_ = !aoEnabled_;
+                shadowHistoryReset_ = true;
+                std::cout << "Ambient occlusion " << (aoEnabled_ ? "on" : "off") << " (F7 toggles)\n";
+            }
+            prevAoKeyDown_ = aoKey;
+
+            bool treeLodKey = glfwGetKey(window_, GLFW_KEY_F8) == GLFW_PRESS;
+            if (treeLodKey && !prevTreeLodKeyDown_) {
+                if (treeLodMode_ == TreeLodMode::Full) {
+                    setTreeLodMode(treeLodResumeMode_);
+                } else {
+                    treeLodResumeMode_ = treeLodMode_;
+                    setTreeLodMode(TreeLodMode::Full);
+                }
+            }
+            prevTreeLodKeyDown_ = treeLodKey;
+
+            bool reflectionKey = glfwGetKey(window_, GLFW_KEY_F9) == GLFW_PRESS;
+            if (reflectionKey && !prevReflectionKeyDown_) {
+                reflectionRaysEnabled_ = !reflectionRaysEnabled_;
+                profiler_.clear();
+                performanceWarmup_ = 60;
+                gpuTimingInitialized_ = false;
+                gpuTimestampsReady_.fill(false);
+                fpsWindowStart_ = glfwGetTime();
+                fpsWindowFrames_ = 0;
+                std::cout << "Reflection rays " << (reflectionRaysEnabled_ ? "on" : "off")
+                          << " (F9 toggles; sky reflection retained)\n" << std::flush;
+            }
+            prevReflectionKeyDown_ = reflectionKey;
+
+            bool cameraToggleDown = glfwGetKey(window_, GLFW_KEY_C) == GLFW_PRESS;
+            if (cameraToggleDown && !prevCameraToggleKeyDown_) {
+                switch (cameraMode_) {
+                    case CameraMode::HullFollow: cameraMode_ = CameraMode::TurretAim; break;
+                    case CameraMode::TurretAim: cameraMode_ = CameraMode::Free; break;
+                    case CameraMode::Free: cameraMode_ = CameraMode::HullFollow; break;
+                }
+            }
+            prevCameraToggleKeyDown_ = cameraToggleDown;
+            if (cameraToggleDown) referenceView_.clear();
+        }
         // Manual screenshot capture, saved via the same GPU-readback path
         // as the --screenshot CLI flag (see drawFrame) rather than any
         // OS-level screenshot tool -- see ScreenshotRequest's comment for
         // why. Only arms a new request if one isn't already pending, so
         // holding the key doesn't queue up a burst of captures.
-        bool screenshotKeyDown = glfwGetKey(window_, GLFW_KEY_F12) == GLFW_PRESS;
+        bool screenshotKeyDown = !treeLodBenchmark_ && glfwGetKey(window_, GLFW_KEY_F12) == GLFW_PRESS;
         if (screenshotKeyDown && !prevScreenshotKeyDown_ && !screenshotRequest_) {
             screenshotRequest_ = ScreenshotRequest{nextScreenshotPath(), frameCounter_ + 1, false};
         }
@@ -1095,11 +1218,11 @@ void Application::mainLoop() {
             effect.position=point;
             impactEffects_.push_back(effect);
         }
-        tank_->update(*input_, deltaTime, *terrain_, obstacles_, boundaryHalfExtent_);
+        if (!treeLodBenchmark_) tank_->update(*input_, deltaTime, *terrain_, obstacles_, boundaryHalfExtent_);
         updateTrackMarks(deltaTime);
 
-        bool fireDown = glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS ||
-                        glfwGetKey(window_, GLFW_KEY_SPACE) == GLFW_PRESS;
+        bool fireDown = !treeLodBenchmark_ && (glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS ||
+                        glfwGetKey(window_, GLFW_KEY_SPACE) == GLFW_PRESS);
         if (fireDown && !prevFireDown_) fireProjectile();
         prevFireDown_ = fireDown;
 
@@ -1125,9 +1248,21 @@ void Application::mainLoop() {
         drawFrame();
         performanceSample_.ms[FrameProfiler::Frame] = FrameProfiler::elapsedMs(frameStart);
         if (performanceFrameValid_) {
+            // Count completed frames over real elapsed time. Averaging 1/dt
+            // overweights brief fast frames and also used simulated preview
+            // time, producing an FPS value unrelated to actual throughput.
+            ++fpsWindowFrames_;
+            double fpsNow = glfwGetTime();
+            double fpsSeconds = fpsNow - fpsWindowStart_;
+            if (fpsSeconds >= .5) {
+                displayedFps_ = static_cast<float>(fpsWindowFrames_ / fpsSeconds);
+                fpsWindowStart_ = fpsNow;
+                fpsWindowFrames_ = 0;
+            }
             if (performanceWarmup_) --performanceWarmup_;
             else profiler_.add(performanceSample_);
         }
+        if (treeLodBenchmark_ && performanceFrameValid_) advanceTreeLodBenchmark();
         // Reports and title updates are deliberately outside the measured
         // frame. This is CPU loop wall time, not display/presentation latency.
         if (performanceReporting_ && !glfwWindowShouldClose(window_) &&
@@ -1184,7 +1319,10 @@ void Application::reportPerformance() {
     }
     report << "\n  counts (window mean): draws " << stats.mean.draws
            << ", visible props " << stats.mean.visibleProps
-           << ", TLAS instances " << stats.mean.tlasInstances << '\n';
+           << ", TLAS instances " << stats.mean.tlasInstances
+           << ", TLAS rebuilds/frame " << stats.mean.tlasRebuilds
+           << ", tree reflection triangles " << stats.mean.treeReflectionTriangles
+           << ", tree triangles/pass " << stats.mean.treeTriangles << '\n';
     std::cout << report.str() << std::flush;
 }
 
@@ -1741,12 +1879,17 @@ void Application::buildAccelerationStructures() {
             AccelerationStructure::buildBLAS(*context_, *commands_, *mesh)));
     }
 
+    for (int lod=0; lod<2; ++lod)
+        for (const auto& mesh : treeReflectionMeshes_[lod])
+            treeReflectionBLAS_[lod].push_back(std::make_unique<AccelerationStructure>(
+                AccelerationStructure::buildBLAS(*context_, *commands_, *mesh)));
+
     auto initialInstances = gatherRayTracingInstances();
     sceneAS_ =
         std::make_unique<SceneAccelerationStructure>(*context_, *commands_, initialInstances);
 
     // Each frame-in-flight slot's TLAS handle never changes after this --
-    // recordRebuildTLAS rebuilds its contents in place every frame, but
+    // recordRebuildTLAS rebuilds changed contents in place, but
     // reuses the same VkAccelerationStructureKHR object -- so the
     // descriptor only needs writing once per slot here, not every frame.
     for (size_t i = 0; i < CommandContext::kFramesInFlight; ++i) {
@@ -1758,14 +1901,51 @@ void Application::buildAccelerationStructures() {
               << std::endl;
 }
 
-std::vector<AccelerationStructure::Instance> Application::gatherRayTracingInstances() const {
+std::vector<AccelerationStructure::Instance> Application::gatherRayTracingInstances() {
     std::vector<AccelerationStructure::Instance> instances;
     instances.push_back({terrain_->blasAddress(), glm::mat4(1.0f)});
-    for (const auto& tree : trees_) {
-        instances.push_back({treeBarkBLAS_[tree.meshVariant]->deviceAddress(), tree.worldMatrix(),
-                             AccelerationStructure::Instance::kTreeBarkMask});
-        instances.push_back({treeLeafBLAS_[tree.meshVariant]->deviceAddress(), tree.worldMatrix(),
-                             AccelerationStructure::Instance::kFoliageMask});
+    using RayInstance = AccelerationStructure::Instance;
+    const auto extent = swapchain_->extent();
+    const float pixelScale = std::abs(camera_.projMatrix(float(extent.width)/extent.height)[1][1])
+        * extent.height * .5f;
+    const bool treeOcclusionNeeded = shadowsEnabled_ && (aoEnabled_ || treeShadowMode_ == 0);
+    performanceSample_.treeReflectionTriangles = 0;
+    for (auto& tree : trees_) {
+        const auto placement = tree.worldMatrix();
+        const size_t variant = static_cast<size_t>(tree.meshVariant);
+        if (reflectionRaysEnabled_) {
+            const auto& bounds = treeShadowBounds_[variant];
+            const auto center = glm::vec3(placement * glm::vec4(glm::vec3(bounds),1));
+            // All trees, including off-camera ones, can be reflected. Use
+            // distance to the nearest part of the crown, retaining detail
+            // conservatively without scanning its boughs or doing frustum culling.
+            float distance = std::max(glm::length(center-camera_.position()) - bounds.w*tree.scale,.1f);
+            tree.reflectionLod = treeLodMode_ == TreeLodMode::Full || treeLodMode_ == TreeLodMode::Previous ? 0
+                : treeLodMode_ == TreeLodMode::Far ? 2
+                : FoliageLod::selectByFootprint(pixelScale*tree.scale/distance,tree.reflectionLod).fine;
+            // Triangle reduction must be real for this species/variant;
+            // retain the original proxy if a coarse bake is more expensive.
+            if (tree.reflectionLod > 0 &&
+                treeReflectionMeshes_[tree.reflectionLod-1][variant]->indexCount() >=
+                    farTreeBarkMeshes_[variant]->indexCount() + treeLeafProxyMeshes_[variant]->indexCount())
+                tree.reflectionLod = 0;
+        }
+        uint8_t barkMask = treeOcclusionNeeded ? RayInstance::kTreeBarkMask : 0;
+        uint8_t leafMask = treeOcclusionNeeded ? RayInstance::kFoliageMask : 0;
+        if (reflectionRaysEnabled_ && tree.reflectionLod == 0) {
+            barkMask |= RayInstance::kReflectionMask;
+            leafMask |= RayInstance::kReflectionMask;
+            performanceSample_.treeReflectionTriangles += double(farTreeBarkMeshes_[variant]->indexCount()/3)
+                + treeLeafProxyMeshes_[variant]->indexCount()/3;
+        }
+        if (barkMask) instances.push_back({treeBarkBLAS_[variant]->deviceAddress(),placement,barkMask});
+        if (leafMask) instances.push_back({treeLeafBLAS_[variant]->deviceAddress(),placement,leafMask});
+        if (reflectionRaysEnabled_ && tree.reflectionLod > 0) {
+            const size_t lod = static_cast<size_t>(tree.reflectionLod-1);
+            instances.push_back({treeReflectionBLAS_[lod][variant]->deviceAddress(),placement,
+                                 RayInstance::kReflectionMask});
+            performanceSample_.treeReflectionTriangles += treeReflectionMeshes_[lod][variant]->indexCount()/3;
+        }
     }
     for (const auto& rock : rocks_) {
         instances.push_back({rockBLAS_[rock.meshVariant]->deviceAddress(), rock.worldMatrix()});
@@ -2038,7 +2218,7 @@ void Application::drawFrame() {
     // Read them before resetting/reusing the same query range below; no GPU
     // wait or pipeline bubble is introduced by the profiler.
     uint32_t timestampBase = static_cast<uint32_t>(currentFrame_) * kGpuTimestampsPerFrame;
-    if (gpuTimestampsReady_[currentFrame_]) {
+    if (performanceReporting_ && gpuTimestampsReady_[currentFrame_]) {
         std::array<uint64_t, kGpuTimestampsPerFrame> timestamps{};
         VkResult timestampResult = vkGetQueryPoolResults(
             context_->device(), gpuTimestampPool_, timestampBase, kGpuTimestampsPerFrame,
@@ -2116,7 +2296,7 @@ void Application::drawFrame() {
     ubo.prevViewProj = prevViewProj_;
     ubo.prevCameraPos = glm::vec4(prevCameraPos_, 0.0f);
     ubo.windTime = glm::vec4(static_cast<float>(windTime_), prevWindTime_,
-                             shadowsEnabled_ ? 1.0f : 0.0f, 0.0f);
+                             shadowsEnabled_ ? 1.0f : 0.0f, reflectionRaysEnabled_ ? 1.0f : 0.0f);
     ubo.lightDir = glm::vec4(glm::normalize(glm::vec3(-0.45f, -0.55f, -0.8f)), 0.0f);
     // cameraPos.w rides along as a per-frame varying seed for the shadow
     // jitter in basic.frag -- without it, the jitter is a pure function of
@@ -2155,33 +2335,39 @@ void Application::drawFrame() {
     // Cull repeated static props and group their transforms by shared
     // mesh/material variant and projected-size LOD. Each non-empty group is
     // submitted in batches. Bark and rocks use hysteresis; foliage boughs
-    // cross-fade adjacent levels using their individual projected sizes.
+    // select a single level using their individual projected sizes.
     phaseStart = FrameProfiler::Clock::now();
     glm::mat4 viewProjection = ubo.proj * ubo.view;
     const auto planes = frustumPlanes(viewProjection);
     constexpr size_t kLodCount = 3;
     const size_t treeVariantCount = treeBarkMeshes_.size();
     const size_t rockVariantCount = rockMeshes_.size();
-    std::vector<std::vector<RasterInstance>> treeGroups(treeVariantCount * kLodCount);
-    std::vector<std::vector<std::vector<RasterInstance>>> foliageGroups(treeVariantCount);
-    for (size_t variant=0;variant<treeVariantCount;++variant)
+    auto& treeGroups = treeInstanceGroups_;
+    treeGroups.resize(treeVariantCount * kLodCount);
+    for (auto& group : treeGroups) group.clear();
+    auto& foliageGroups = foliageInstanceGroups_;
+    foliageGroups.resize(treeVariantCount);
+    for (size_t variant=0;variant<treeVariantCount;++variant) {
         foliageGroups[variant].resize(treeFoliageGroups_[variant].size()*3);
+        for (auto& group : foliageGroups[variant]) group.clear();
+    }
     std::vector<std::vector<glm::mat4>> rockGroups(rockVariantCount * kLodCount);
     std::vector<std::vector<glm::mat4>> smallRockGroups(smallRockMeshes_.size());
     std::vector<std::vector<glm::mat4>> shrubGroups(shrubMeshes_.size());
     float viewportHeight = static_cast<float>(swapchain_->extent().height);
 
     for (TreeInstance& tree : trees_) {
+        if (treeLodMode_ == TreeLodMode::Hidden) break;
         glm::vec3 center = tree.position + glm::vec3(0.0f, 2.4f * tree.scale, 0.0f);
         float radius = 3.5f * tree.scale;
         if (!sphereIntersectsFrustum(planes, center, radius)) continue;
         float projectedRadius =
             projectedRadiusPixels(ubo.view, ubo.proj, viewportHeight, center, radius);
         tree.lod = selectLodWithHysteresis(tree.lod, projectedRadius,
-                                           // Keep the existing bark thresholds;
-                                           // foliage selects detail per bough below.
-                                           /*nearThreshold=*/120.0f,
-                                           /*farThreshold=*/60.0f);
+                                           /*nearThreshold=*/90.0f,
+                                           /*farThreshold=*/45.0f);
+        if (treeLodMode_ == TreeLodMode::Far) tree.lod = 2;
+        if (treeLodMode_ == TreeLodMode::Full) tree.lod = 0;
         size_t group = static_cast<size_t>(tree.lod) * treeVariantCount + tree.meshVariant;
         RasterInstance placement = windInstance(tree.worldMatrix(), ubo.windTime.x, ubo.windTime.y);
         treeGroups[group].push_back(placement);
@@ -2192,23 +2378,23 @@ void Application::drawFrame() {
         for (size_t j=0;j<boughs.size();++j) {
             const auto& bough = boughs[j];
             glm::vec3 boughCenter = glm::vec3(placement.model * glm::vec4(bough.center,1));
-            float maxHeight = std::max(bough.center.y+bough.radius,0.f);
+            float cullRadius = treeLodMode_ == TreeLodMode::Previous ? bough.radius : bough.cullRadius;
+            float maxHeight = std::max(bough.center.y+cullRadius,0.f);
             float windPadding = bendStrength * maxHeight * maxHeight;
-            if (!sphereIntersectsFrustum(planes,boughCenter,(bough.radius+windPadding)*tree.scale)) continue;
-            float pixels = projectedRadiusPixels(ubo.view,ubo.proj,viewportHeight,boughCenter,bough.radius*tree.scale);
-            auto selection = FoliageLod::select(pixels);
+            if (!sphereIntersectsFrustum(planes,boughCenter,(cullRadius+windPadding)*tree.scale)) continue;
+            float pixelsPerUnit = projectedRadiusPixels(ubo.view,ubo.proj,viewportHeight,boughCenter,tree.scale);
             const auto& previous = tree.foliageLods[j];
+            auto selection = treeLodMode_ == TreeLodMode::Far ? FoliageLod::Selection{2,2,1}
+                : treeLodMode_ == TreeLodMode::Full ? FoliageLod::Selection{0,0,1}
+                : treeLodMode_ == TreeLodMode::Previous ? FoliageLod::select(pixelsPerUnit*bough.radius)
+                : FoliageLod::selectByFootprint(pixelsPerUnit,previous.fine,bough.seed);
             float reactive = firstSelection ? 1.f
                 : std::min(FoliageLod::coverageChange(selection,previous)*4.f,1.f);
             tree.foliageLods[j] = selection;
-            auto append = [&](int lod,float side) {
-                auto instance = placement;
-                instance.foliageFade = glm::vec4(selection.fineCoverage,side,
-                    bough.seed + static_cast<uint32_t>(&tree-trees_.data())*127u,reactive);
-                foliageGroups[tree.meshVariant][j*3+lod].push_back(instance);
-            };
-            append(selection.fine,selection.transitioning() ? 1.f : 0.f);
-            if (selection.transitioning()) append(selection.coarse,-1.f);
+            auto instance = placement;
+            instance.foliageFade = glm::vec4(1.f,0.f,
+                bough.seed + static_cast<uint32_t>(&tree-trees_.data())*127u,reactive);
+            foliageGroups[tree.meshVariant][j*3+selection.fine].push_back(instance);
         }
     }
     for (RockInstance& rock : rocks_) {
@@ -2270,10 +2456,14 @@ void Application::drawFrame() {
         auto batches=appendGroups(foliageGroups[variant]);
         for (size_t j=0;j<batches.size();++j) {
             if (!batches[j].count) continue;
-            auto draw=treeFoliageGroups_[variant][j/3].levels[j%3];
+            const auto& bough = treeFoliageGroups_[variant][j/3];
+            auto draw = bough.levels[j%3];
+            if (treeLodMode_ == TreeLodMode::Previous && j%3 != 0)
+                draw = j%3 == 1 ? bough.shadowMedium : bough.shadowFar;
             draw.instanceCount=batches[j].count;
             draw.firstInstance=batches[j].first;
             foliageDraws.push_back(draw);
+            performanceSample_.treeTriangles += double(draw.indexCount/3)*draw.instanceCount;
         }
         foliageBatches[variant].count=static_cast<uint32_t>(foliageDraws.size())-foliageBatches[variant].first;
     }
@@ -2302,7 +2492,8 @@ void Application::drawFrame() {
                 batch.first = static_cast<uint32_t>(foliageDraws.size());
                 if (!placements.count) continue;
                 for (const auto& bough : treeFoliageGroups_[variant]) {
-                    auto draw = bough.levels[cascade];
+                    auto draw = cascade == 2 ? bough.shadowFar
+                        : cascade == 1 ? bough.shadowMedium : bough.levels[0];
                     draw.firstInstance = placements.first;
                     draw.instanceCount = placements.count;
                     foliageDraws.push_back(draw);
@@ -2327,7 +2518,9 @@ void Application::drawFrame() {
     std::unique_ptr<Buffer> screenshotBuffer;
 
     phaseStart = FrameProfiler::Clock::now();
-    auto rayInstances = gatherRayTracingInstances();
+    const bool rayTracingNeeded = shadowsEnabled_ || reflectionRaysEnabled_;
+    auto rayInstances = rayTracingNeeded ? gatherRayTracingInstances()
+        : std::vector<AccelerationStructure::Instance>{};
     performanceSample_.tlasInstances = static_cast<double>(rayInstances.size());
     performanceSample_.ms[FrameProfiler::TlasGather] = FrameProfiler::elapsedMs(phaseStart);
     phaseStart = FrameProfiler::Clock::now();
@@ -2342,11 +2535,12 @@ void Application::drawFrame() {
     vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                          gpuTimestampPool_, timestampBase + 0);
 
-    // Rebuild this frame-in-flight slot's TLAS from the current scene state
+    // Rebuild this slot only when its scene changes and ray queries are enabled
     // (acceleration structure builds can't happen inside a dynamic
     // rendering scope, so this must be before vkCmdBeginRendering). Read by
     // basic.frag via ray query for shadow tracing.
-    sceneAS_->rebuild(frame.commandBuffer, currentFrame_, rayInstances);
+    if (rayTracingNeeded)
+        performanceSample_.tlasRebuilds = sceneAS_->rebuild(frame.commandBuffer, currentFrame_, rayInstances) ? 1 : 0;
     vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                          gpuTimestampPool_, timestampBase + 1);
 
@@ -2713,7 +2907,8 @@ void Application::drawFrame() {
         size_t variant = group % treeVariantCount;
         const Mesh* barkMesh = lod == 0   ? treeBarkMeshes_[variant].get()
                                : lod == 1 ? mediumTreeBarkMeshes_[variant].get()
-                                          : farTreeBarkMeshes_[variant].get();
+                                          : treeLodMode_ == TreeLodMode::Previous ? farTreeBarkMeshes_[variant].get()
+                                                                                 : distantTreeBarkMeshes_[variant].get();
         vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(),
                                  1, 1, &barkMaterialSets_[variant], 0, nullptr);
         Pipeline::PushConstants treePc{};
@@ -2725,11 +2920,12 @@ void Application::drawFrame() {
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(treePc), &treePc);
         barkMesh->bindAndDrawInstanced(frame.commandBuffer, batch.count, batch.first);
+        performanceSample_.treeTriangles += double(barkMesh->indexCount()/3)*batch.count;
     }
 
     vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                          gpuTimestampPool_, timestampBase + 8);
-    // A cheap masked depth pass resolves foliage coverage before ray queries.
+    // An opaque depth pass resolves foliage visibility before ray queries.
     // The lighting pass uses equal-depth testing and can reject hidden leaves early.
     uint32_t foliageTimestamp = 9;
     for (VkPipeline foliagePass : {pipeline_->foliageDepthHandle(), pipeline_->foliageHandle()}) {
@@ -2964,8 +3160,14 @@ void Application::drawFrame() {
     constexpr glm::vec2 kFpsRightEdge(0.95f, 0.85f);
     constexpr float kFpsDigitHalfHeight = 0.035f;
     glm::vec3 fpsColor(1.0f, 1.0f, 1.0f);
-    addNumber(*hud_, static_cast<int>(fpsSmoothed_ + 0.5f), kFpsRightEdge, kFpsDigitHalfHeight, aspect,
+    addNumber(*hud_, static_cast<int>(displayedFps_ + 0.5f), kFpsRightEdge, kFpsDigitHalfHeight, aspect,
               fpsColor);
+
+    hud_->addText(treeLodMode_ == TreeLodMode::Full ? "F8 TREE LOD: OFF - FULL DETAIL"
+                                                 : "F8 TREE LOD: ON",
+                  {-0.93f,-0.87f}, {.0045f/aspect,.0045f}, glm::vec3(1.f));
+    hud_->addText(reflectionRaysEnabled_ ? "F9 REFLECTION RAYS: ON" : "F9 REFLECTION RAYS: OFF",
+                  {-0.93f,-0.92f}, {.0045f/aspect,.0045f}, glm::vec3(1.f));
 
     vkCmdEndRendering(frame.commandBuffer);
     vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -3104,7 +3306,9 @@ void Application::drawFrame() {
     phaseStart = FrameProfiler::Clock::now();
     VK_CHECK(vkQueueSubmit2(context_->graphicsQueue(), 1, &submitInfo, frame.inFlight));
     performanceSample_.ms[FrameProfiler::Submit] = FrameProfiler::elapsedMs(phaseStart);
-    gpuTimestampsReady_[currentFrame_] = !captureScreenshot && performanceWarmup_ == 0;
+    // Readbacks are a profiling feature, independent of the CPU sample
+    // warmup. F8 must not remove this work for 60 frames and then restore it.
+    gpuTimestampsReady_[currentFrame_] = performanceReporting_ && !captureScreenshot;
 
     if (captureScreenshot) {
         // Screenshots are rare, explicit (CLI- or key-triggered) events, not

@@ -38,10 +38,12 @@ public:
                                             const Mesh& mesh);
 
     struct Instance {
-        // Match basic.frag's sun-shadow masks. AO/reflections see all three groups.
+        // Match basic.frag: shadows/AO use 0x07; reflections use 0x09.
+        // Reflection-only coarse trees must never change shadow/AO occlusion.
         static constexpr uint8_t kSolidMask = 0x01;
         static constexpr uint8_t kFoliageMask = 0x02;
         static constexpr uint8_t kTreeBarkMask = 0x04;
+        static constexpr uint8_t kReflectionMask = 0x08;
         VkDeviceAddress blasAddress;
         glm::mat4 transform;  // world matrix, same as used for rasterization
         uint8_t mask = kSolidMask;

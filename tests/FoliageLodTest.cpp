@@ -14,7 +14,7 @@ std::array<float,3> weights(float pixels) {
     auto lod = FoliageLod::select(pixels);
     require(lod.fine >= 0 && lod.coarse < 3 && lod.coarse >= lod.fine,
             "Invalid foliage level");
-    require(lod.coarse-lod.fine <= 1, "Non-adjacent levels blended");
+    require(!lod.transitioning() && lod.fineCoverage == 1, "Hard LOD switch blended meshes");
     require(lod.fineCoverage >= 0 && lod.fineCoverage <= 1, "Invalid coverage");
     std::array<float,3> result{};
     result[lod.fine] += lod.fineCoverage;
@@ -25,22 +25,20 @@ std::array<float,3> weights(float pixels) {
 }
 int main() {
     auto previous = weights(0);
-    for (int step=1; step<=10000; ++step) {
+    for (int step=1; step<=28000; ++step) {
         auto current = weights(step*.01f);
-        for (int lod=0;lod<3;++lod)
-            require(std::abs(current[lod]-previous[lod]) < .003f, "LOD coverage jumps");
         require(current[1]+2*current[2] <= previous[1]+2*previous[2]+1e-6f,
                 "Larger bough became less detailed");
         previous = current;
     }
     require(weights(0)[2] == 1 && weights(std::numeric_limits<float>::max())[0] == 1,
             "Incorrect near/far endpoints");
-    for (float boundary : {16.f, 24.f, 32.f, 48.f}) {
+    for (float boundary : {13.f, 26.f}) {
         require(FoliageLod::coverageChange(FoliageLod::select(boundary-.001f),
-                                         FoliageLod::select(boundary+.001f)) < .001f,
-                "Blend boundary resets lighting history");
+                                         FoliageLod::select(boundary+.001f)) == 1.f,
+                "Hard switch retained stale lighting history");
     }
-    require(FoliageLod::coverageChange(FoliageLod::select(0),FoliageLod::select(100)) == 1,
+    require(FoliageLod::coverageChange(FoliageLod::select(0),FoliageLod::select(280)) == 1,
             "Teleport retained stale lighting history");
     // Shared wind must be invariant under uniform scale, rotate back into the
     // same world direction, and carry the actual previous rendered sample.

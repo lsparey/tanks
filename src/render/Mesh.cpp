@@ -1,4 +1,5 @@
 #include "Mesh.h"
+#include "../scene/FoliageLod.h"
 #include "DrawStatistics.h"
 #include "VoxelSurface.h"
 #include "../scene/TreeGenerator.h"
@@ -861,6 +862,7 @@ Mesh::FoliageGeometry Mesh::treeFoliageGeometry(glm::vec3 tint, const TreeGenera
         }
         group.center = (lo+hi)*.5f;
         group.radius = glm::length(hi-lo)*.5f;
+        group.cullRadius = group.radius;
         for (int lod=0;lod<3;++lod) {
             auto mesh = treeLeafGeometry(tint,bough,lod);
             auto& range=group.levels[lod];
@@ -870,8 +872,50 @@ Mesh::FoliageGeometry Mesh::treeFoliageGeometry(glm::vec3 tint, const TreeGenera
             for (uint32_t index:mesh.indices) result.mesh.indices.push_back(base+index);
             result.mesh.vertices.insert(result.mesh.vertices.end(),mesh.vertices.begin(),mesh.vertices.end());
         }
+        group.shadowMedium = group.levels[1];
+        group.shadowFar = group.levels[2];
+        for (int lod=1; lod<3; ++lod) {
+            auto mesh = treeDistantLeafGeometry(tint,bough,lod == 1 ? FoliageLod::kMiddleVoxelSize : FoliageLod::kFarVoxelSize);
+            auto& range = group.levels[lod];
+            range.firstIndex = static_cast<uint32_t>(result.mesh.indices.size());
+            range.indexCount = static_cast<uint32_t>(mesh.indices.size());
+            uint32_t base = static_cast<uint32_t>(result.mesh.vertices.size());
+            for (uint32_t index : mesh.indices) result.mesh.indices.push_back(base+index);
+            for (const auto& vertex : mesh.vertices)
+                group.cullRadius = std::max(group.cullRadius,glm::length(vertex.position-group.center));
+            result.mesh.vertices.insert(result.mesh.vertices.end(),mesh.vertices.begin(),mesh.vertices.end());
+        }
         result.groups.push_back(group);
     }
+    return result;
+}
+
+Mesh::Geometry Mesh::treeDistantBarkGeometry(glm::vec3 tint, const TreeGenerator::Tree& tree) {
+    Geometry result;
+    for (const auto& branch : tree.branches) {
+        // Keep trunk and principal boughs; sub-pixel twigs account for most
+        // of the old far bark's geometry and are hidden inside the crown.
+        if (branch.baseRadius < .045f) continue;
+        glm::vec3 direction = branch.tip-branch.base;
+        float length = glm::length(direction);
+        if (length < 1e-5f) continue;
+        appendOrientedFrustum(result.vertices,result.indices,branch.base,direction,length,
+            branch.baseRadius,branch.tipRadius,tint,4,2.2f);
+    }
+    return result;
+}
+
+Mesh::Geometry Mesh::treeDistantLeafGeometry(glm::vec3 tint, const TreeGenerator::Tree& tree,
+                                              float voxelSize) {
+    VoxelSet cells;
+    for (const auto& spray : tree.sprays) {
+        voxelizeLeafSpray(cells,spray,voxelSize);
+        // Fine sprays can fall between sample centers on this grid. Retain
+        // their occupied cell, merging neighbors without dropping a bough.
+        cells.insert(glm::ivec3(glm::floor(spray.center/voxelSize)));
+    }
+    Geometry result;
+    VoxelSurface::appendMesh(result.vertices,result.indices,cells,voxelSize,tint,1.4f);
     return result;
 }
 
