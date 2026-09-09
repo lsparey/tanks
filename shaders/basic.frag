@@ -388,6 +388,64 @@ vec3 acesFilmicTonemap(vec3 x) {
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
 
+const float kPi = 3.14159265359;
+
+// Trowbridge-Reitz/GGX normal distribution -- how tightly microfacet normals
+// cluster around the half vector. alpha is roughness*roughness (the usual
+// perceptual-roughness-to-alpha remap, keeps the low end of the roughness
+// slider from feeling like it does nothing).
+float distributionGGX(float NdotH, float alpha) {
+    float a2 = alpha * alpha;
+    float d = NdotH * NdotH * (a2 - 1.0) + 1.0;
+    return a2 / max(kPi * d * d, 1e-6);
+}
+
+// Smith joint masking-shadowing term, direct-lighting alpha/2 remap (Karis
+// 2013) -- accounts for microfacets occluding/shadowing each other.
+float geometrySmithGGX(float NdotV, float NdotL, float alpha) {
+    float k = alpha * 0.5;
+    float gv = NdotV / (NdotV * (1.0 - k) + k);
+    float gl = NdotL / (NdotL * (1.0 - k) + k);
+    return gv * gl;
+}
+
+// Schlick's Fresnel approximation. f0 is normal-incidence reflectance:
+// ~0.02-0.06 for dielectrics (paint, stone, soil), the material's own tint
+// for metals.
+vec3 fresnelSchlick(float cosTheta, vec3 f0) {
+    float m = clamp(1.0 - cosTheta, 0.0, 1.0);
+    return f0 + (vec3(1.0) - f0) * (m * m * m * m * m);
+}
+
+// diffuseWeight is the energy left over for the diffuse term after Fresnel
+// reflectance and metalness are accounted for -- replaces the old flat
+// mix(1.0,0.75,specularStrength) diffuse-darkening hack with the BRDF's own
+// real split (only actually reduces diffuse at grazing angles or for
+// metals, not as a constant per-material tax). specular is the full
+// Cook-Torrance D*G*F/(4*NdotV*NdotL) term already multiplied by NdotL, so
+// callers just add it in scaled by light color/shadow/intensity.
+struct BrdfResult { vec3 diffuseWeight; vec3 specular; };
+
+// f0 is the caller's already-resolved normal-incidence reflectance --
+// mix(vec3(dielectricConst), metalTintColor, metalness), NOT derived in
+// here, since a metal's Fresnel tint is its own steel/tarnish colour, not
+// its (possibly wear-darkened) diffuse albedo texture and not plain white.
+BrdfResult evaluateGGX(vec3 N, vec3 V, vec3 L, float roughness, float metalness, vec3 f0) {
+    vec3 H = normalize(V + L);
+    float NdotL = max(dot(N, L), 0.0);
+    float NdotV = max(dot(N, V), 1e-4);
+    float NdotH = max(dot(N, H), 0.0);
+    float VdotH = max(dot(V, H), 0.0);
+    float alpha = max(roughness * roughness, 0.0025);
+    vec3 F = fresnelSchlick(VdotH, f0);
+    float D = distributionGGX(NdotH, alpha);
+    float G = geometrySmithGGX(NdotV, NdotL, alpha);
+    BrdfResult r;
+    r.specular = (D * G * F) / max(4.0 * NdotV * NdotL, 1e-4) * NdotL;
+    r.diffuseWeight = (vec3(1.0) - F) * (1.0 - metalness);
+    return r;
+}
+
 // Exponential distance fog, tinted by the plain sky gradient (not
 // skyColor's cloud-textured version -- see skyGradient's comment) -- gives
 // the terrain's ~255-unit corner-to-corner diagonal (see Camera::
@@ -626,6 +684,31 @@ void main() {
     bool tankMaterial = materialType > 4.5 && materialType < 7.5;
     bool rockMaterial = materialType > 2.5 && materialType < 3.5;
     bool barkMaterial = materialType > 9.5 && materialType < 10.5;
+    bool isLeaf = materialType > 1.5 && materialType < 2.5;
+    // Shared PBR base parameters -- perceptual roughness, metalness, and
+    // dielectric normal-incidence reflectance (F0). No per-pixel roughness/
+    // metal texture exists yet (every TextureGenerator is base-colour-only),
+    // so these are per-materialType constants, the same idiom already used
+    // for the per-type specularStrength overrides further below. Tank parts
+    // overwrite these below once wear/dust/soot are known; water overwrites
+    // them once isWater is known.
+    float roughness = 0.55;      // generic/crates default
+    float metalness = 0.0;
+    float f0Dielectric = 0.04;
+    // Only meaningful once metalness > 0 -- a metal's Fresnel tint is its
+    // own steel/tarnish colour, not its diffuse albedo texture (which for
+    // the tank is deliberately darkened for wear/dust/soot, and would make
+    // any metal tinted by it look wrongly near-black) and not plain white.
+    vec3 metalTint = vec3(1.0);
+    if (materialType > 0.5 && materialType < 1.5) {        // terrain: soil/grass/gravel
+        roughness = 0.85; f0Dielectric = 0.035;
+    } else if (isLeaf) {                                   // foliage: waxy leaf sheen
+        roughness = 0.55; f0Dielectric = 0.02;
+    } else if (rockMaterial) {                             // stone: broad mineral sheen
+        roughness = 0.75; f0Dielectric = 0.035;
+    } else if (barkMaterial) {
+        roughness = 0.8; f0Dielectric = 0.035;
+    }
     // Only tank colour channels carry baked edge distances. Natural stone
     // retains its authored tint, independently of geometric feature masks.
     vec3 albedo = tankMaterial ? texColor * 0.95 : fragColor * texColor;
@@ -674,9 +757,28 @@ void main() {
         albedo = mix(albedo, vec3(0.12, 0.13, 0.14), tankWear * (tracks ? 0.65 : 0.38));
         albedo = mix(albedo, vec3(0.15, 0.125, 0.085), tankDust);
         albedo = mix(albedo, vec3(0.006, 0.005, 0.004), tankSoot);
+        // Base roughness/metalness per part -- painted armour is a
+        // dielectric coat over steel, tracks mix worn metal pins with
+        // rubber pads, the barrel is bare/oiled gun steel. Wear exposes more
+        // bare metal underneath (smoother, more metallic); dust/soot cake
+        // the surface in a dielectric layer (rougher, less metallic) -- the
+        // same wear/dust/soot signal that used to drive the old Blinn-Phong
+        // exponent directly now drives physically-named roughness/metalness.
         tankRoughness = tracks ? 0.86 : (barrel ? 0.53 : 0.78);
+        metalness = tracks ? 0.45 : (barrel ? 0.85 : 0.05);
+        f0Dielectric = 0.045; // dielectric floor once dust/soot cake the metal below
+        // Iron's real F0 is close to (0.56,0.57,0.58), but combined with
+        // the flat ambient-specular fill above (an omnidirectional stand-in
+        // for a real environment reflection) that reads as too bright for
+        // a gun barrel under this scene's flat sky -- toned down from the
+        // literal physical value rather than the fill term, which other
+        // materials still rely on.
+        metalTint = tracks ? vec3(0.42, 0.40, 0.38) : vec3(0.32, 0.33, 0.34); // worn/oiled steel
         tankRoughness = mix(tankRoughness, tracks ? 0.48 : 0.56, tankWear);
+        metalness = mix(metalness, max(metalness, 0.6), tankWear);
         tankRoughness = mix(tankRoughness, 0.95, clamp(tankDust + tankSoot, 0.0, 1.0));
+        metalness = mix(metalness, 0.0, clamp(tankDust + tankSoot, 0.0, 1.0));
+        roughness = tankRoughness;
     }
     // Texture alpha times the per-draw opacity (PushConstants::opacity) --
     // both are 1.0 for every opaque draw in the scene, so this only actually
@@ -1100,14 +1202,6 @@ void main() {
     else if (barkMaterial) specularStrength = 0.01;
     else if (materialType > 1.5 && materialType < 2.5) specularStrength = 0.025;
 
-    // Everything below is gated by specularStrength (0 for terrain/other
-    // matte objects), so only opted-in draws (the tank) get these. Real
-    // metals have low diffuse reflectance, so the base color is darkened a
-    // little here rather than left at full brightness before the reflective
-    // terms are layered on -- otherwise those terms just wash the color out
-    // toward white instead of reading as a highlight on top of it.
-    vec3 base = albedo * lighting * mix(1.0, 0.75, specularStrength) + albedo * dynamicLight;
-
     vec3 viewDir = normalize(frame.cameraPos.xyz - fragWorldPos);
 
     // Animated ripple: perturbs a *separate* shading normal used only by
@@ -1127,32 +1221,63 @@ void main() {
         float wave2 = sin(fragWorldPos.x * 3.1 - t * 0.065 + 1.7) * cos(fragWorldPos.z * 2.3 + t * 0.045);
         vec2 bump = vec2(wave1, wave2) * waveStrength;
         shadingNormal = normalize(normal + vec3(bump.x, 0.0, bump.y));
+        // A real sun-glint on water is a small, tight, bright highlight, not
+        // a broad sheen -- low roughness gives GGX the same tight-highlight
+        // behavior the old exponent-150 Blinn-Phong term aimed for.
+        roughness = 0.06; metalness = 0.0; f0Dielectric = 0.02;
     }
 
-    // Blinn-Phong specular -- a lower exponent than a glossy/chrome look
-    // would use gives a broader, softer highlight, reading as duller,
-    // brushed metal rather than polished plastic. Water gets a much
-    // tighter, brighter exponent instead -- a real sun-glint on water is a
-    // small, sharp highlight, not a broad sheen.
-    vec3 halfDir = normalize(toLight + viewDir);
-    float specAngle = max(dot(shadingNormal, halfDir), 0.0);
-    float specExponent = isWater ? 150.0 : (materialType > 2.5 ? 9.0 : 20.0);
-    if (tankMaterial) specExponent = clamp(2.0 / pow(tankRoughness, 4.0) - 2.0, 6.0, 96.0);
-    float specular = pow(specAngle, specExponent) * specularStrength * 0.6 * shadowFactor;
+    // Energy-conserving GGX microfacet specular replaces the old flat
+    // Blinn-Phong highlight for every opaque material. Leaves keep their
+    // existing Blinn-Phong-lite look untouched -- an explicit compatibility
+    // case (see the roadmap), not covered by this opaque-surface model.
+    // diffuseWeight is the BRDF's own (1-Fresnel)*(1-metalness) energy
+    // split; for leaves it instead reproduces the old flat
+    // mix(1.0,0.75,specularStrength) diffuse-darkening constant exactly, so
+    // foliage stays pixel-identical.
+    vec3 specular;
+    vec3 diffuseWeight;
+    float fresnelRim = 0.0;
+    // Ambient light reflected specularly rather than diffusely, filling in
+    // exactly the energy diffuseWeight removes below for metals. Without
+    // this, a high-metalness surface (diffuseWeight collapses toward 0) is
+    // only ever lit by the sun's tight GGX highlight, reading as near-black
+    // everywhere else -- real metal ambient response needs a reflected
+    // environment term, which this model doesn't have yet (a real
+    // prefiltered environment/irradiance pass is later roadmap work). This
+    // is a flat, non-directional stand-in for that: f0Ambient tints it by
+    // the material's own colour for metals (bare steel reflecting flat sky
+    // light isn't white) and by the small dielectric F0 otherwise (already
+    // negligible next to that material's own diffuse term). Zero for
+    // leaves, which don't use this energy model at all.
+    vec3 ambientSpecular = vec3(0.0);
+    if (isLeaf) {
+        vec3 halfDir = normalize(toLight + viewDir);
+        float specAngle = max(dot(shadingNormal, halfDir), 0.0);
+        specular = vec3(pow(specAngle, 20.0) * specularStrength * 0.6 * shadowFactor);
+        // Fresnel/rim term: surfaces brighten at grazing view angles, a
+        // cheap but very characteristic cue for metal. Kept subtle and
+        // tinted toward neutral gray rather than white so it doesn't bleach
+        // the paint color. Gated by aoFactor (unlike specular above, which
+        // already has shadowFactor) -- grazing angles cluster inside
+        // concave nooks exactly where AO is darkest, so without this an
+        // occluded crevice still gets a full-strength rim glow that reads
+        // as a lit patch floating in shadow.
+        fresnelRim = pow(1.0 - max(dot(shadingNormal, viewDir), 0.0), 3.0) *
+                     specularStrength * 0.18 * aoFactor;
+        diffuseWeight = vec3(mix(1.0, 0.75, specularStrength));
+    } else {
+        vec3 f0 = mix(vec3(f0Dielectric), metalTint, metalness);
+        BrdfResult brdf = evaluateGGX(shadingNormal, viewDir, toLight, roughness, metalness, f0);
+        specular = brdf.specular * specularStrength * shadowFactor;
+        diffuseWeight = brdf.diffuseWeight;
+        // Grazing-angle brightening is already inside the BRDF's own
+        // Fresnel term above -- no separate rim term needed.
+        ambientSpecular = frame.ambientColor.rgb * frame.ambientColor.w * aoFactor *
+                          f0 * mix(1.0, 0.5, roughness);
+    }
 
-    // Fresnel/rim term: surfaces brighten at grazing view angles, a cheap
-    // but very characteristic cue for metal. Kept subtle and tinted toward
-    // neutral gray rather than white so it doesn't bleach the paint color.
-    // Gated by aoFactor (unlike specular above, which already has
-    // shadowFactor) -- grazing angles cluster inside concave nooks (the
-    // tank turret's own hatch cavity is the clearest example) exactly where
-    // AO is darkest, so without this an occluded crevice still gets a
-    // full-strength rim glow that reads as a lit patch floating in shadow.
-    // Harmless back when specularStrength was a small flat constant; became
-    // visible once the per-pixel specular map (see isDynamicObject above)
-    // started pushing it well above that baseline.
-    float fresnel =
-        pow(1.0 - max(dot(shadingNormal, viewDir), 0.0), 3.0) * specularStrength * 0.18 * aoFactor;
+    vec3 base = albedo * lighting * diffuseWeight + ambientSpecular + albedo * dynamicLight;
 
     // Environment reflection. Base case is the analytic sky+cloud function
     // above sampled along the reflection vector -- one shared cloud lookup,
@@ -1215,6 +1340,13 @@ void main() {
         // rather than dark, clear, and just slightly reflective.
         float depthAlphaFloor = mix(0.18, 0.7, waterDepthT);
         finalAlpha = max(depthAlphaFloor, mix(pc.opacity * 0.4, 0.6, waterFresnel));
+    } else {
+        // Rough surfaces reflect the environment more weakly/diffusely than
+        // a mirror-smooth one -- a cheap analytic stand-in for real
+        // roughness-filtered environment sampling. Still just the existing
+        // unfiltered procedural-sky/ray-traced sample below; a full
+        // prefiltered-IBL pass is later roadmap work.
+        effectiveReflectivity *= mix(1.0, 0.15, roughness);
     }
 
     // Matte surfaces do not need an environment color at all. Keeping the
@@ -1249,7 +1381,7 @@ void main() {
     // "mostly transparent, tinted by depth, plus a reflection"). Negligible
     // difference for the tank's own tiny reflectivity (0.06).
     vec3 result = mix(baseContribution, envColor, effectiveReflectivity) +
-                  specular * frame.sunColor.rgb * frame.sunColor.w + fresnel * vec3(0.6);
+                  specular * frame.sunColor.rgb * frame.sunColor.w + fresnelRim * vec3(0.6);
 
     // Fogged toward the sky color along the actual camera->fragment
     // direction (not the reflection vector envColor uses above) so it reads

@@ -202,7 +202,7 @@ as history, including terrain components this goal may replace.
 - [x] [Tank model silhouette and running gear](#tank-model-silhouette-and-running-gear)
 - [x] [Foliage and environmental motion](#foliage-and-environmental-motion)
 - [x] [Unified sky, sun, and atmosphere](#unified-sky-sun-and-atmosphere)
-- [ ] [Physically based material foundation](#physically-based-material-foundation)
+- [x] [Physically based material foundation](#physically-based-material-foundation)
 - [ ] [Linear HDR and temporal image stability](#linear-hdr-and-temporal-image-stability)
 - [ ] [Selective advanced lighting and atmosphere](#selective-advanced-lighting-and-atmosphere)
 - [ ] [Near-field ground vegetation](#near-field-ground-vegetation)
@@ -750,6 +750,22 @@ transmission and verify its appearance under any shared lighting changes.
 - Priority: P1, beginning at the terrain's material stage.
 - Acceptance: convincing response in neutral/matched lighting without compensating
   albedo hacks, specular shimmer or unexplained scene-tone shifts.
+- Status: completed for an initial opaque GGX pass in `basic.frag` -- shared
+  Trowbridge-Reitz/Smith/Schlick BRDF, per-materialType roughness/metalness/F0
+  (terrain, rock, bark, tank armour/tracks/barrel, water), and a flat ambient-
+  specular fill so metal parts aren't only lit by the direct sun highlight.
+  Tank wear/dust/soot now drives roughness and metalness together instead of
+  an ad hoc Blinn-Phong exponent. Leaf transmission is an explicit,
+  pixel-identical compatibility path, untouched. Reviewed against the current
+  legacy-terrain scene (tank/terrain/water/trees) with no regressions.
+  Limitations: no per-pixel roughness/metal/normal textures (still per-type
+  constants); the ambient-specular fill is a flat, non-directional stand-in
+  for a real prefiltered environment reflection, tuned by eye rather than
+  measured (the barrel's tint was pulled well below iron's literal F0 to
+  avoid reading as too bright under this flat fill); terrain material
+  rebuild (soil/rock exposure from erosion fields) remains separate, deferred
+  work, so this pass shades the legacy terrain's existing grass/gravel split
+  only.
 
 ### Linear HDR and temporal image stability
 
