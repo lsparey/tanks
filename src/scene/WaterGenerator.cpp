@@ -141,8 +141,11 @@ std::unique_ptr<Mesh> WaterGenerator::buildMesh(VulkanContext& ctx, CommandConte
     // than a first pass at this palette, which still read as too light once
     // combined with basic.frag's lighting/reflection terms on top. Must
     // match basic.frag's kWaterShallowColor/kWaterDeepColor.
-    const glm::vec3 shallowColor(0.09f, 0.16f, 0.14f);
-    const glm::vec3 deepColor(0.01f, 0.025f, 0.045f);
+    // Peaty green-brown, not teal-blue: inland English pond water gets its
+    // colour from dissolved organics and a muddy bed, so the blue channel
+    // stays lowest at both ends of the depth ramp.
+    const glm::vec3 shallowColor(0.085f, 0.125f, 0.075f);
+    const glm::vec3 deepColor(0.012f, 0.022f, 0.018f);
 
     auto worldXZ = [&](int i, int j) {
         float x = (static_cast<float>(i) / (n - 1) - 0.5f) * hm.worldSize;

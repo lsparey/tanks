@@ -73,15 +73,20 @@ std::vector<uint8_t> LeafTextureGenerator::generate(uint32_t size, uint32_t vari
             midGreen = glm::vec3(0.22f, 0.24f, 0.06f);
             lightGreen = glm::vec3(0.36f, 0.34f, 0.10f);
             break;
+        // Both darker palettes used to run the blue channel close to green
+        // (teal), which stood out as the most artificially-saturated thing
+        // in frame once the grass palette moved to realistic olive turf.
+        // Real conifer needles are dark yellow-green; "cool" reads through
+        // a lower red channel, not a high blue one.
         case 2:  // dark pine/conifer green
-            darkGreen = glm::vec3(0.03f, 0.09f, 0.05f);
-            midGreen = glm::vec3(0.07f, 0.17f, 0.10f);
-            lightGreen = glm::vec3(0.12f, 0.26f, 0.16f);
+            darkGreen = glm::vec3(0.035f, 0.095f, 0.033f);
+            midGreen = glm::vec3(0.075f, 0.18f, 0.055f);
+            lightGreen = glm::vec3(0.125f, 0.28f, 0.095f);
             break;
-        case 3:  // cool blue-green
-            darkGreen = glm::vec3(0.05f, 0.13f, 0.11f);
-            midGreen = glm::vec3(0.10f, 0.24f, 0.20f);
-            lightGreen = glm::vec3(0.17f, 0.35f, 0.29f);
+        case 3:  // cool deep green
+            darkGreen = glm::vec3(0.04f, 0.13f, 0.05f);
+            midGreen = glm::vec3(0.09f, 0.24f, 0.09f);
+            lightGreen = glm::vec3(0.15f, 0.35f, 0.14f);
             break;
         default:
             break;

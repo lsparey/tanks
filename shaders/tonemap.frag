@@ -48,6 +48,22 @@ vec3 acesFilmicTonemap(vec3 x) {
 // saturating solid; a much faster pan will still clip to a flat tint.
 const float kVelocityDebugScale = 150.0;
 
+// Contrast-adaptive sharpening (AMD CAS-style), applied to the tonemapped
+// result. The TAA blend upstream keeps its own small fixed unsharp mask,
+// but its history resampling still leaves surfaces like the tank's camo
+// noticeably soft. CAS scales its kernel weight by inverse local contrast
+// -- soft, low-contrast regions get the most sharpening while
+// already-contrasty edges get little, which is what avoids the halos a
+// fixed-strength unsharp mask produces at this strength. Runs on
+// display-referred (post-tonemap) values, the standard placement: in
+// linear HDR a bright highlight's huge numeric range would dominate the
+// contrast estimate.
+const float kSharpness = 0.4;
+
+vec3 tonemapAt(vec2 uv) {
+    return acesFilmicTonemap(texture(hdrColor, uv).rgb * kExposure);
+}
+
 void main() {
     if (pc.showVelocityDebug > 0.5) {
         // Zero motion reads as flat grey; amplified x/y tint shows
@@ -57,6 +73,23 @@ void main() {
         outColor = vec4(clamp(vec3(0.5) + vec3(velocity * kVelocityDebugScale, 0.0), 0.0, 1.0), 1.0);
         return;
     }
-    vec4 hdr = texture(hdrColor, fragUV);
-    outColor = vec4(acesFilmicTonemap(hdr.rgb * kExposure), hdr.a);
+    vec2 texel = 1.0 / vec2(textureSize(hdrColor, 0));
+    vec3 center = tonemapAt(fragUV);
+    vec3 up = tonemapAt(fragUV + vec2(0.0, texel.y));
+    vec3 down = tonemapAt(fragUV - vec2(0.0, texel.y));
+    vec3 left = tonemapAt(fragUV - vec2(texel.x, 0.0));
+    vec3 right = tonemapAt(fragUV + vec2(texel.x, 0.0));
+
+    // Per-channel CAS weight: distance of the local min/max window from
+    // 0/1 measures how much headroom there is to steepen this neighborhood
+    // without clipping; sqrt biases mid-contrast regions toward fuller
+    // sharpening. w is the (negative) cross-neighbor weight of the usual
+    // normalized 5-tap sharpen kernel.
+    vec3 mn = min(center, min(min(up, down), min(left, right)));
+    vec3 mx = max(center, max(max(up, down), max(left, right)));
+    vec3 amp = sqrt(clamp(min(mn, 1.0 - mx) / max(mx, vec3(1e-4)), 0.0, 1.0));
+    vec3 w = amp * mix(-0.125, -0.2, kSharpness);
+    vec3 sharpened = (center + (up + down + left + right) * w) / (1.0 + 4.0 * w);
+
+    outColor = vec4(clamp(sharpened, 0.0, 1.0), texture(hdrColor, fragUV).a);
 }

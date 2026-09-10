@@ -82,6 +82,11 @@ public:
     void beginTreeLodBenchmark();
     // 0: legacy rays, 1: stable PCF maps, 2: contact-hardening PCSS maps.
     void setTreeShadowMode(int mode) { treeShadowMode_ = mode; shadowHistoryReset_ = true; }
+    // App-local deterministic driving check (fixed timestep, forward drive
+    // held between fixed frames) for inspecting temporal artifacts --
+    // ghosting/trails behind the moving tank -- in automated captures,
+    // where desktop key injection is unavailable/unreliable.
+    void setDrivePreview(bool enabled) { drivePreview_ = enabled; }
     void setShadowPreview(bool enabled, bool freezeWind) {
         shadowPreview_ = enabled; freezeWind_ = freezeWind;
     }
@@ -152,6 +157,7 @@ private:
     bool shadowHistoryReset_ = true;
     bool shadowPreview_ = false;
     bool freezeWind_ = false;
+    bool drivePreview_ = false;
     bool prevShadowsKeyDown_ = false;
     std::optional<ScreenshotRequest> screenshotRequest_;
     int screenshotCounter_ = 0;  // suffixes F12-triggered screenshot filenames

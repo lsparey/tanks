@@ -125,12 +125,13 @@ constexpr float kWaterMaxDepth = 0.9f;
 // How far in from the terrain's actual edge the play-area boundary sits,
 // as a fraction of the terrain's total width (see BoundaryGenerator).
 constexpr float kBoundaryInsetFraction = 0.1f;
-// Tall enough to clear the tallest procedural trees (Mesh::treeBark/
-// treeLeaves puts those at roughly 2-5 world units depending on their
-// random instance scale -- see Application::spawnTrees) with comfortable
-// margin, so the wall of light reads as taller than the treeline rather
-// than poking out partway through it.
-constexpr float kBoundaryWallHeight = 7.0f;
+// Roughly treeline height (Mesh::treeBark/treeLeaves puts trees at about
+// 2-5 world units depending on their random instance scale -- see
+// Application::spawnTrees). It used to be 7.0 to clear every tree with
+// margin, but with the brighter laser-red boost that read as a dominant
+// glowing curtain on distant ridge lines; a lower wall keeps the ground
+// line as the boundary's anchor and the wall as its glow.
+constexpr float kBoundaryWallHeight = 4.5f;
 
 // Digits are drawn as seven-segment glyphs made of HudRenderer quads --
 // there's no font/text rendering in the HUD, and a segmented display is the
@@ -510,9 +511,14 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
         Texture::fromPixels(*context_, *commands_, 1, 1, whitePixel, /*repeat=*/false));
     // Tiles since the tank model's own UV layout isn't a single clean 0..1
     // island per part -- see CamoTextureGenerator.
-    std::vector<uint8_t> camoPixels = CamoTextureGenerator::generate(256);
+    // 1024, up from 256: the whole tank shares this one atlas, so at 256 a
+    // hull filling half the 1280-wide window got well under one texel per
+    // pixel and its painted camo edges read as out-of-focus blobs. The
+    // generator keeps the blotch pattern at its 256-texture scale (see
+    // CamoTextureGenerator::kPatternSize), so this only crispens the edges.
+    std::vector<uint8_t> camoPixels = CamoTextureGenerator::generate(1024);
     camoTexture_ = std::make_unique<Texture>(
-        Texture::fromPixels(*context_, *commands_, 256, 256, camoPixels, /*repeat=*/true));
+        Texture::fromPixels(*context_, *commands_, 1024, 1024, camoPixels, /*repeat=*/true));
     std::vector<uint8_t> metalPixels = MetalTextureGenerator::generate(128);
     metalTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 128, 128, metalPixels, /*repeat=*/true));
@@ -799,13 +805,17 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
     // rough grass has a lot more dark clumps mixed in than pale ones.
     // spawnGrassClumps assigns variants uniformly at random per tuft, so
     // this palette is what actually produces the map-wide variation.
+    // The bright end tracks GrassTextureGenerator's olive turf palettes: a
+    // tuft may sit anywhere on the ground blend, so its albedo must not
+    // exceed the brightest ground tone by much or it reads as a pale
+    // mint-green star stuck onto the turf rather than growing out of it.
     const std::array<glm::vec3, kTreeVariantCount> grassPalette = {
         glm::vec3(0.07f, 0.13f, 0.045f),  // near-black moss
         glm::vec3(0.10f, 0.19f, 0.07f),   // dark olive
         glm::vec3(0.13f, 0.23f, 0.08f),   // dark green
-        glm::vec3(0.19f, 0.34f, 0.11f),   // medium green
-        glm::vec3(0.26f, 0.42f, 0.15f),   // lighter green
-        glm::vec3(0.33f, 0.4f, 0.14f),    // dry yellow-green
+        glm::vec3(0.15f, 0.29f, 0.10f),   // medium green
+        glm::vec3(0.18f, 0.33f, 0.12f),   // lighter green
+        glm::vec3(0.26f, 0.30f, 0.11f),   // dry yellow-green
     };
     for (int i = 0; i < kTreeVariantCount; ++i) {
         grassClumpMeshes_.push_back(std::make_unique<Mesh>(
@@ -1184,7 +1194,7 @@ void Application::mainLoop() {
         }
 
         double now = glfwGetTime();
-        float deltaTime = (weaponPreview_ || shadowPreview_) ? 1.0f/60.0f : static_cast<float>(now - lastFrameTime_);
+        float deltaTime = (weaponPreview_ || shadowPreview_ || drivePreview_) ? 1.0f/60.0f : static_cast<float>(now - lastFrameTime_);
         lastFrameTime_ = now;
         // Bound float phase precision without a discontinuity: every wind
         // frequency completes an integer number of cycles in 128 seconds.
@@ -1305,6 +1315,12 @@ void Application::mainLoop() {
 
         const auto simulationStart = FrameProfiler::Clock::now();
         // Deterministic, app-local visual check: never inject desktop input.
+        // The drive preview holds forward drive through the normal input
+        // path for 3.5 simulated seconds, so screenshots between frames
+        // ~120 and 300 catch the tank at speed for temporal-artifact
+        // (ghosting/trail) inspection.
+        if (drivePreview_ && frameCounter_ == 90) input_->holdKey(GLFW_KEY_W);
+        if (drivePreview_ && frameCounter_ == 300) input_->releaseKey(GLFW_KEY_W);
         if (weaponPreview_ && frameCounter_ == 90) fireProjectile();
         if (weaponPreview_ && frameCounter_ == 180) {
             glm::vec3 point = tank_->position() + tank_->forward()*3.8f;

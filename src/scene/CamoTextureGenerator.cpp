@@ -71,12 +71,21 @@ std::vector<uint8_t> CamoTextureGenerator::generate(uint32_t size) {
     const glm::vec3 tan(0.30f, 0.25f, 0.15f);
     const glm::vec3 black(0.03f, 0.03f, 0.03f);
 
-    float fsize = static_cast<float>(size);
+    // Blotch coordinates live in a fixed 256-unit pattern space regardless
+    // of the actual texture resolution: every frequency below was tuned in
+    // texel units when this texture was 256^2, so sampling that same field
+    // with finer steps is what lets a higher-resolution texture sharpen the
+    // painted band edges without also shrinking the camo scheme's scale.
+    // Tiling is unaffected -- the full texture still spans exactly one
+    // pattern period in each axis.
+    constexpr float kPatternSize = 256.0f;
+    const float fsize = kPatternSize;
+    const float patternStep = kPatternSize / static_cast<float>(size);
 
     for (uint32_t y = 0; y < size; ++y) {
         for (uint32_t x = 0; x < size; ++x) {
-            float fx = static_cast<float>(x);
-            float fy = static_cast<float>(y);
+            float fx = static_cast<float>(x) * patternStep;
+            float fy = static_cast<float>(y) * patternStep;
 
             // Domain-warp the sample point with its own (differently
             // seeded) tileable noise field before evaluating the main

@@ -61,12 +61,21 @@ public:
         std::array<glm::vec4, kMaxDynamicLights> dynamicLightColorIntensity{};
         // English countryside daylight, in linear colour. Shared by direct
         // light, sky rendering, fog, and reflection misses (basic.frag).
-        glm::vec4 sunColor{1.0f, 0.96f, 0.88f, 0.72f};  // rgb, intensity
+        // Sun-to-ambient sits near 4:1 -- real broken-cloud daylight is
+        // roughly 4-6:1 sun:sky illuminance. The earlier 0.72/0.30 (~2.4:1)
+        // left everything in the midtones: a flat, low-contrast image whose
+        // shadows read as uniform teal blobs. The ACES curve in
+        // tonemap.frag absorbs the brighter sunlit end.
+        glm::vec4 sunColor{1.0f, 0.96f, 0.88f, 1.35f};  // rgb, intensity
         glm::vec4 skyZenith{0.18f, 0.29f, 0.43f, 0.0f};
         glm::vec4 skyHorizon{0.53f, 0.61f, 0.67f, 0.0f};
-        glm::vec4 ambientColor{0.72f, 0.81f, 0.89f, 0.30f};
+        glm::vec4 ambientColor{0.72f, 0.81f, 0.89f, 0.34f};
         glm::vec4 cloudColor{0.82f, 0.85f, 0.86f, 0.46f};  // rgb, coverage threshold
-        glm::vec4 atmosphere{45.0f, 0.0035f, 0.25f, 0.006f};  // fog start/density, UV scale, sun radius
+        // Fog density lowered from 0.0035 now that basic.frag's aerial-
+        // perspective desaturation carries part of the depth cue -- the fog
+        // term only needs to finish the fade into the sky, not sell the
+        // whole distance impression by itself.
+        glm::vec4 atmosphere{45.0f, 0.0030f, 0.25f, 0.006f};  // fog start/density, UV scale, sun radius
         glm::vec4 weaponEffects{0}; // x: active ground scorch count
         std::array<glm::vec4, 16> scorchPositionRadius{};
         std::array<glm::vec4, 16> scorchParameters{}; // x: opacity

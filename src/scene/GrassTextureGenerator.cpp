@@ -78,29 +78,33 @@ float fbm(float x, float y, int octaves, float basePeriod) {
 std::vector<uint8_t> GrassTextureGenerator::generate(uint32_t size, uint32_t variant) {
     std::vector<uint8_t> pixels(static_cast<size_t>(size) * size * 4);
 
-    // Cool, moisture-rich temperate greens model the look of English grass.
-    // Green remains clearly dominant in every palette and even the warmer
-    // meadow variant avoids the yellow/straw tones the old random pair could
-    // produce. Four related palettes retain natural patch variation when
-    // Application chooses two to blend across the terrain each run.
-    glm::vec3 darkGreen(0.025f, 0.12f, 0.035f);
-    glm::vec3 midGreen(0.055f, 0.255f, 0.075f);
-    glm::vec3 lightGreen(0.11f, 0.38f, 0.135f);
+    // Linear-albedo turf palettes (the texture is R8G8B8A8_UNORM, so these
+    // bytes are sampled as-is, not sRGB-decoded). Tuned by eye against the
+    // British-summertime target between two rejected endpoints: the original
+    // palettes (green up to ~4.6x red) tonemapped into a saturated cartoon
+    // green, while a strictly reflectance-measured olive (~1.5-2x red) lost
+    // the verdant look entirely. Green sits around 2.2-2.8x red here --
+    // clearly lush, but with enough red/yellow in it to stay grounded. Four
+    // related palettes retain natural patch variation when Application
+    // chooses two to blend across the terrain each run.
+    glm::vec3 darkGreen(0.035f, 0.085f, 0.028f);
+    glm::vec3 midGreen(0.075f, 0.185f, 0.052f);
+    glm::vec3 lightGreen(0.125f, 0.275f, 0.085f);
     switch (variant % 4) {
-        case 1:  // mixed meadow -- subtly warmer, but still healthy green
-            darkGreen = glm::vec3(0.035f, 0.12f, 0.025f);
-            midGreen = glm::vec3(0.075f, 0.24f, 0.055f);
-            lightGreen = glm::vec3(0.14f, 0.34f, 0.09f);
+        case 1:  // mixed meadow -- warmer, drier, faintly straw-tinged
+            darkGreen = glm::vec3(0.045f, 0.090f, 0.026f);
+            midGreen = glm::vec3(0.095f, 0.175f, 0.045f);
+            lightGreen = glm::vec3(0.155f, 0.245f, 0.070f);
             break;
-        case 2:  // shaded, blue-green growth beneath trees and hedges
-            darkGreen = glm::vec3(0.018f, 0.09f, 0.04f);
-            midGreen = glm::vec3(0.035f, 0.19f, 0.085f);
-            lightGreen = glm::vec3(0.07f, 0.30f, 0.15f);
+        case 2:  // shaded, cooler growth beneath trees and hedges
+            darkGreen = glm::vec3(0.028f, 0.070f, 0.034f);
+            midGreen = glm::vec3(0.055f, 0.145f, 0.062f);
+            lightGreen = glm::vec3(0.095f, 0.225f, 0.100f);
             break;
-        case 3:  // fresh spring pasture -- brighter new growth
-            darkGreen = glm::vec3(0.03f, 0.14f, 0.025f);
-            midGreen = glm::vec3(0.06f, 0.29f, 0.05f);
-            lightGreen = glm::vec3(0.12f, 0.42f, 0.105f);
+        case 3:  // fresh pasture -- the greenest, lushest variant
+            darkGreen = glm::vec3(0.035f, 0.100f, 0.026f);
+            midGreen = glm::vec3(0.072f, 0.200f, 0.046f);
+            lightGreen = glm::vec3(0.120f, 0.295f, 0.075f);
             break;
         default:
             break;

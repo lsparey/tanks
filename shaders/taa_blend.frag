@@ -67,9 +67,30 @@ void main() {
     vec3 right = texture(currentColor, fragUV + vec2(texelSize.x, 0.0)).rgb;
     vec3 neighborMin = min(current, min(min(up, down), min(left, right)));
     vec3 neighborMax = max(current, max(max(up, down), max(left, right)));
-    history = clamp(history, neighborMin, neighborMax);
 
-    vec3 blended = mix(current, history, kHistoryWeight);
+    // Ghost rejection: clamping alone only bounds a bad history sample to
+    // the nearest edge of the neighborhood box -- it still blends that
+    // wrong-but-bounded color in at full kHistoryWeight, and at 0.85 the
+    // residual error halves only every ~4 frames. Behind a moving tank
+    // that read as an obvious multi-frame trail: the revealed background
+    // reprojects into history that still holds tank color (and the tank's
+    // own rotating wheels/tread shoes land on stale history too). How far
+    // outside the box the raw sample sits -- normalized by the box's own
+    // span so ordinary jitter noise on high-contrast edges doesn't
+    // trigger it -- is a direct measure of "this history belongs to a
+    // different surface", so scale the history weight down by it and let
+    // the current frame take over within a frame or two. Weight is never
+    // reduced below (1-kGhostRejectionMax) of normal, keeping some damping
+    // so legitimate one-frame spikes (specular glints) don't strobe.
+    vec3 boxSpan = max(neighborMax - neighborMin, vec3(1e-4));
+    vec3 clampedHistory = clamp(history, neighborMin, neighborMax);
+    float clampDist = length((history - clampedHistory) / boxSpan);
+    const float kGhostRejectionScale = 2.0;
+    const float kGhostRejectionMax = 0.8;
+    float rejection = min(clampDist * kGhostRejectionScale, 1.0) * kGhostRejectionMax;
+    float historyWeight = kHistoryWeight * (1.0 - rejection);
+
+    vec3 blended = mix(current, clampedHistory, historyWeight);
     vec3 neighborAvg = (up + down + left + right) * 0.25;
     vec3 sharpened = max(blended + (current - neighborAvg) * kSharpenAmount, vec3(0.0));
     outColor = vec4(sharpened, 1.0);

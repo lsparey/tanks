@@ -35,7 +35,7 @@ int main(int argc, char** argv) {
     try {
         bool profile = false;
         int treeShadowMode = 2;
-        bool shadowPreview = false, freezeWind = false;
+        bool shadowPreview = false, freezeWind = false, drivePreview = false;
         auto treeLodMode = Application::TreeLodMode::Reduced;
         bool treeLodBenchmark = false;
         std::optional<uint32_t> seed;
@@ -62,6 +62,7 @@ int main(int argc, char** argv) {
             }
             if (std::strcmp(argv[i], "--shadow-preview") == 0) shadowPreview = true;
             if (std::strcmp(argv[i], "--freeze-wind") == 0) freezeWind = true;
+            if (std::strcmp(argv[i], "--drive-preview") == 0) drivePreview = true;
             if (std::strcmp(argv[i], "--tree-shadows") == 0) {
                 if (++i >= argc) throw std::runtime_error("--tree-shadows requires maps, soft, or rays");
                 if (std::strcmp(argv[i], "maps") == 0) treeShadowMode = 1;
@@ -135,6 +136,7 @@ int main(int argc, char** argv) {
                         landform.value_or(MacroTerrain::Landform::Mixed), terrainResolution.value_or(257), refinementPasses, showTerrainMenu);
         app.setTreeShadowMode(treeShadowMode);
         app.setShadowPreview(shadowPreview,freezeWind);
+        app.setDrivePreview(drivePreview);
         app.setTreeLodMode(treeLodMode);
         if (treeLodBenchmark) app.beginTreeLodBenchmark();
         app.run();

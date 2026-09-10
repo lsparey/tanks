@@ -62,7 +62,17 @@ std::unique_ptr<Mesh> BoundaryGenerator::buildLineMesh(VulkanContext& ctx, Comma
 
     std::vector<Vertex> vertices;
     vertices.reserve(pointCount * 2);
-    const glm::vec3 white(1.0f);  // the texture itself carries the red color
+    // The texture carries the red colour; this vertex colour is a deliberate
+    // HDR boost on top of it (the unlit path in basic.frag writes
+    // fragColor * texColor straight into the linear HDR target, skipping fog
+    // and lighting). At 1.0 the line tonemapped to a dull orange-tan band
+    // that read as bare earth on distant ridges; pushed well above 1.0 the
+    // ACES curve keeps it a vivid red-hot line -- it should read as a laser
+    // marking the play area, not as geology. Red-selective rather than a
+    // uniform boost: ACES desaturates bright values toward white, so evenly
+    // boosting the texture's warm tones rendered as peach; suppressing G/B
+    // here keeps the tonemapped result saturated laser-red.
+    const glm::vec3 emissiveBoost(4.5f, 1.1f, 0.9f);
 
     float distanceAlong = 0.0f;
     for (size_t i = 0; i < pointCount; ++i) {
@@ -81,8 +91,8 @@ std::unique_ptr<Mesh> BoundaryGenerator::buildLineMesh(VulkanContext& ctx, Comma
         float rightY = terrain.heightAt(rightXZ.x, rightXZ.y) + kGroundOffset;
 
         float v = distanceAlong * kTextureRepeatsPerUnit;
-        vertices.push_back({{leftXZ.x, leftY, leftXZ.y}, up, white, {0.0f, v}});
-        vertices.push_back({{rightXZ.x, rightY, rightXZ.y}, up, white, {1.0f, v}});
+        vertices.push_back({{leftXZ.x, leftY, leftXZ.y}, up, emissiveBoost, {0.0f, v}});
+        vertices.push_back({{rightXZ.x, rightY, rightXZ.y}, up, emissiveBoost, {1.0f, v}});
 
         distanceAlong += glm::length(next - p);
     }
@@ -125,7 +135,11 @@ std::unique_ptr<Mesh> BoundaryGenerator::buildWallMesh(VulkanContext& ctx, Comma
 
     std::vector<Vertex> vertices;
     vertices.reserve(pointCount * 2);
-    const glm::vec3 white(1.0f);  // the texture itself carries the red glow color
+    // Same red-selective HDR boost as the ground line's vertex colour
+    // above, kept a step dimmer so the translucent wall reads as the line's
+    // glow rising off the ground rather than a second, competing light
+    // source.
+    const glm::vec3 emissiveBoost(2.8f, 0.7f, 0.6f);
     const glm::vec3 outNormal(0.0f, 0.0f, 1.0f);  // unused by the unlit shader path; any unit vector works
 
     float distanceAlong = 0.0f;
@@ -138,8 +152,8 @@ std::unique_ptr<Mesh> BoundaryGenerator::buildWallMesh(VulkanContext& ctx, Comma
         // BoundaryTextureGenerator::generateWall's alpha gradient (opaque
         // near v=0, faded out by v=1).
         float u = distanceAlong * kTextureRepeatsPerUnit;
-        vertices.push_back({{p.x, baseY, p.y}, outNormal, white, {u, 0.0f}});
-        vertices.push_back({{p.x, baseY + wallHeight, p.y}, outNormal, white, {u, 1.0f}});
+        vertices.push_back({{p.x, baseY, p.y}, outNormal, emissiveBoost, {u, 0.0f}});
+        vertices.push_back({{p.x, baseY + wallHeight, p.y}, outNormal, emissiveBoost, {u, 1.0f}});
 
         distanceAlong += glm::length(next - p);
     }

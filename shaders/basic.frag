@@ -1382,8 +1382,8 @@ void main() {
     // (mix(shallowColor, deepColor, depthT), see buildMesh) by projecting
     // back onto that known line -- avoids needing a dedicated depth vertex
     // attribute just for this. Must track WaterGenerator.cpp's palette.
-    const vec3 kWaterShallowColor = vec3(0.09, 0.16, 0.14);
-    const vec3 kWaterDeepColor = vec3(0.01, 0.025, 0.045);
+    const vec3 kWaterShallowColor = vec3(0.085, 0.125, 0.075);
+    const vec3 kWaterDeepColor = vec3(0.012, 0.022, 0.018);
     float waterDepthT = 0.0;
     if (isWater) {
         vec3 span = kWaterDeepColor - kWaterShallowColor;
@@ -1409,7 +1409,10 @@ void main() {
         // top of that. Deep end lowered from 0.95 -- fully opaque dark water
         // combined with any reflection blend read as a milky/hazy film
         // rather than dark, clear, and just slightly reflective.
-        float depthAlphaFloor = mix(0.18, 0.7, waterDepthT);
+        // Shallow floor raised from 0.18: with the bed that visible, a pond
+        // over grey rock read as a sheet of mercury rather than water with
+        // its own body of colour.
+        float depthAlphaFloor = mix(0.3, 0.78, waterDepthT);
         finalAlpha = max(depthAlphaFloor, mix(pc.opacity * 0.4, 0.6, waterFresnel));
     } else {
         // Rough surfaces reflect the environment more weakly/diffusely than
@@ -1457,7 +1460,7 @@ void main() {
     // this mix at 1.0 (no darkening at all in shallow water) was what left
     // most of a shallow pond looking barely different from, and about as
     // bright as, the grass around it.
-    vec3 baseContribution = isWater ? base * mix(0.45, 0.07, waterDepthT) : base;
+    vec3 baseContribution = isWater ? base * mix(0.4, 0.05, waterDepthT) : base;
     // A true blend rather than adding the reflection on top of the full
     // base color -- the previous `base + env*reflectivity` double-counts
     // brightness (at reflectivity 0.4 you'd get 100% of base AND 40% of a
@@ -1476,6 +1479,23 @@ void main() {
     vec3 fogColor = skyGradient(viewToFragDir);
     float fogDist = max(currentViewDist - frame.atmosphere.x, 0.0);
     float fogFactor = 1.0 - exp(-fogDist * frame.atmosphere.y);
+
+    // Aerial perspective, separate from (and starting before) the fog term:
+    // real haze mutes saturation and cool-shifts colour long before it
+    // whites anything out. With only the exponential fog above, mid-distance
+    // trees stayed fully saturated and then hills abruptly went milky --
+    // there was no gradual tonal recession tying foreground to horizon.
+    // Ramps in from just past the chase-cam range and saturates at ~50%
+    // desaturation so even the far edge keeps some of its own colour; the
+    // fog mix below then carries the final fade into the sky. Skips the sky
+    // and unlit (boundary-line) paths, which returned earlier.
+    const float kAerialStart = 25.0;
+    const float kAerialDensity = 0.0045;
+    const float kAerialMax = 0.5;
+    float aerialT = (1.0 - exp(-max(currentViewDist - kAerialStart, 0.0) * kAerialDensity)) * kAerialMax;
+    float resultLuma = dot(result, vec3(0.2126, 0.7152, 0.0722));
+    result = mix(result, vec3(resultLuma) * vec3(0.95, 0.99, 1.06), aerialT);
+
     result = mix(result, fogColor, fogFactor);
 
     outColor = vec4(result, finalAlpha);
