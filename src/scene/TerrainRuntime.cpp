@@ -155,24 +155,77 @@ std::vector<TreeInstance> placeTrees(const State& state, uint32_t seed, int vari
     float half = state.ground.heightmap().worldSize * .5f - 3;
     float radius = barkRadius * 1.4f;
     std::mt19937 rng(seed ^ 0x302u);
-    std::uniform_real_distribution<float> coordDist(-half, half), yawDist(0, 6.2831853f), scaleDist(.8f, 1.4f);
+    std::uniform_real_distribution<float> coordDist(-half, half), yawDist(0, 6.2831853f), unitDist(0, 1);
     std::uniform_int_distribution<int> variantDist(0, variants - 1);
+
+    auto steepness = [&](glm::vec2 at) { return 1.f - state.ground.contactNormalAt(at.x, at.y).y; };
+    // Soil appeal weights the survivors: flat ground beats a hillside, and
+    // moist ground inside the shoreline apron (but clear of the water) most of all.
+    auto appeal = [&](glm::vec2 at) {
+        float score = 1.f - steepness(at) * 4.f;
+        auto shore = state.water->shorelineDistanceAt(at.x, at.y);
+        if (shore && *shore > radius) score += .5f;
+        return score;
+    };
+
+    // Thomas-style cluster process: tight coppices sharing a dominant species
+    // and stature, sized so members pack near the spacing floor, with a few
+    // open-grown loners in the clearings between. Area-weighted picking keeps
+    // density constant, so large groves read as woods and small ones as copses.
+    struct Grove { glm::vec2 center; float radius, statureBias; int variant; };
+    std::vector<Grove> groves;
+    float totalWeight = 0;
+    for (int g = 0; g < 7; ++g) {
+        glm::vec2 center(coordDist(rng), coordDist(rng));
+        for (int attempt = 0; attempt < 24; ++attempt) {
+            if (steepness(center) < .1f && state.allowsScenery(center, radius)) break;
+            center = {coordDist(rng), coordDist(rng)};
+        }
+        groves.push_back({center, 3.5f + 5 * unitDist(rng), .2f * unitDist(rng) - .1f, variantDist(rng)});
+        totalWeight += groves.back().radius * groves.back().radius;
+    }
+    auto pickGrove = [&]() -> const Grove* {
+        float pick = unitDist(rng) * totalWeight;
+        for (const auto& grove : groves)
+            if ((pick -= grove.radius * grove.radius) <= 0) return &grove;
+        return &groves.back();
+    };
+
     std::vector<TreeInstance> trees;
     for (int i = 0; i < 100; ++i) {
+        // Membership is decided per tree, not per attempt: a full grove spills
+        // outward around its edge instead of defecting into the clearings.
+        const Grove* home = unitDist(rng) < .88f ? pickGrove() : nullptr;
         bool found = false;
         glm::vec2 pos(0);
         for (int attempt = 0; attempt < 256; ++attempt) {
-            glm::vec2 candidate(coordDist(rng), coordDist(rng));
+            // Late attempts go blind uniform so unusable groves cannot make an
+            // otherwise placeable terrain exhaust.
+            bool blind = attempt >= 192;
+            glm::vec2 candidate;
+            if (home && !blind) {
+                float spread = home->radius * (1 + attempt * .03f);
+                float away = spread * std::pow(unitDist(rng), .7f), angle = yawDist(rng);
+                candidate = home->center + away * glm::vec2(std::cos(angle), std::sin(angle));
+                if (std::abs(candidate.x) > half || std::abs(candidate.y) > half) continue;
+            } else {
+                candidate = {coordDist(rng), coordDist(rng)};
+            }
+            if (steepness(candidate) > .19f) continue; // past ~37 degrees nothing roots
             if (glm::length(candidate - spawnXZ) < 8 || !state.allowsScenery(candidate, radius)) continue;
             if (std::any_of(trees.begin(), trees.end(), [&](const auto& tree) {
                     return glm::length(glm::vec2(tree.position.x, tree.position.z) - candidate) < 3;
                 })) continue;
+            if (!blind && unitDist(rng) > appeal(candidate)) continue;
+            if (blind) home = nullptr; // rescued uniformly: style it as a loner
             pos = candidate; found = true; break;
         }
         if (!found) throw std::runtime_error("cannot place all 100 trees safely on selected terrain");
         TreeInstance tree;
         tree.position = {pos.x, state.ground.heightAt(pos.x, pos.y), pos.y};
-        tree.yaw = yawDist(rng); tree.scale = scaleDist(rng); tree.meshVariant = variantDist(rng);
+        tree.yaw = yawDist(rng);
+        tree.scale = home ? 1.1f + home->statureBias + .4f * unitDist(rng) - .2f : 1.f + .4f * unitDist(rng);
+        tree.meshVariant = home && unitDist(rng) < .7f ? home->variant : variantDist(rng);
         trees.push_back(std::move(tree));
     }
     return trees;

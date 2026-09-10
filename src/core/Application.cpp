@@ -1554,35 +1554,71 @@ void Application::spawnTrees() {
     constexpr float kEdgeMargin = 3.0f;
     constexpr float kMinDistanceFromSpawn = 8.0f;
     constexpr float kMinDistanceBetweenTrees = 3.0f;
-    constexpr int kMaxAttemptsPerTree = 30;
+    constexpr int kMaxAttemptsPerTree = 60;
 
     std::mt19937 rng(worldSeed_ ^ 0x302u);
     float half = terrain_->worldSize() * 0.5f - kEdgeMargin;
     std::uniform_real_distribution<float> coordDist(-half, half);
     std::uniform_real_distribution<float> yawDist(0.0f, 6.2831853f);
-    std::uniform_real_distribution<float> scaleDist(0.8f, 1.4f);
+    std::uniform_real_distribution<float> unitDist(0.0f, 1.0f);
     std::uniform_int_distribution<int> variantDist(0, static_cast<int>(treeBarkMeshes_.size()) - 1);
+
+    // Legacy twin of TerrainRuntime::placeTrees's grove clustering: tight
+    // coppices sharing a dominant species and stature, loners in the clearings.
+    struct Grove { glm::vec2 center; float radius, statureBias; int variant; };
+    std::vector<Grove> groves;
+    float totalWeight = 0.0f;
+    for (int g = 0; g < 7; ++g) {
+        glm::vec2 center(coordDist(rng), coordDist(rng));
+        for (int attempt = 0; attempt < 24; ++attempt) {
+            if (!isUnderwater(center.x, center.y) && terrain_->normalAt(center.x, center.y).y > 0.9f) break;
+            center = {coordDist(rng), coordDist(rng)};
+        }
+        groves.push_back({center, 3.5f + 5.0f * unitDist(rng), 0.2f * unitDist(rng) - 0.1f, variantDist(rng)});
+        totalWeight += groves.back().radius * groves.back().radius;
+    }
+    auto pickGrove = [&]() -> const Grove* {
+        float pick = unitDist(rng) * totalWeight;
+        for (const auto& grove : groves)
+            if ((pick -= grove.radius * grove.radius) <= 0.0f) return &grove;
+        return &groves.back();
+    };
 
     std::vector<glm::vec2> placed;
     for (int i = 0; i < kTreeCount; ++i) {
+        const Grove* home = unitDist(rng) < 0.88f ? pickGrove() : nullptr;
         glm::vec2 pos{0.0f, 0.0f};
         for (int attempt = 0; attempt < kMaxAttemptsPerTree; ++attempt) {
-            glm::vec2 candidate(coordDist(rng), coordDist(rng));
+            // The last few attempts go blind uniform, matching the historical
+            // permissive fallback that always yields a position.
+            bool blind = attempt >= kMaxAttemptsPerTree - 8;
+            glm::vec2 candidate;
+            if (home && !blind) {
+                float spread = home->radius * (1.0f + attempt * 0.03f);
+                float away = spread * std::pow(unitDist(rng), 0.7f), angle = yawDist(rng);
+                candidate = home->center + away * glm::vec2(std::cos(angle), std::sin(angle));
+                if (std::abs(candidate.x) > half || std::abs(candidate.y) > half) continue;
+            } else {
+                candidate = {coordDist(rng), coordDist(rng)};
+            }
             bool tooCloseToSpawn = glm::length(candidate - spawnXZ_) < kMinDistanceFromSpawn;
             bool tooCloseToOther = std::any_of(placed.begin(), placed.end(), [&](glm::vec2 p) {
                 return glm::length(p - candidate) < kMinDistanceBetweenTrees;
             });
             bool underwater = isUnderwater(candidate.x, candidate.y);
+            bool steep = terrain_->normalAt(candidate.x, candidate.y).y < 0.81f;
             pos = candidate;
-            if (!tooCloseToSpawn && !tooCloseToOther && !underwater) break;
+            if (!tooCloseToSpawn && !tooCloseToOther && !underwater && !steep) break;
+            if (blind) home = nullptr; // rescued uniformly: style it as a loner
         }
         placed.push_back(pos);
 
         TreeInstance tree;
         tree.position = glm::vec3(pos.x, terrain_->heightAt(pos.x, pos.y), pos.y);
         tree.yaw = yawDist(rng);
-        tree.scale = scaleDist(rng);
-        tree.meshVariant = variantDist(rng);
+        tree.scale = home ? 1.1f + home->statureBias + 0.4f * unitDist(rng) - 0.2f
+                          : 1.0f + 0.4f * unitDist(rng);
+        tree.meshVariant = home && unitDist(rng) < 0.7f ? home->variant : variantDist(rng);
         trees_.push_back(tree);
     }
 }

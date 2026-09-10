@@ -41,8 +41,9 @@ struct State {
 // and are freed when it leaves loading. Unaccepted valley builds are rejected.
 State retain(TerrainGenerator::BuildResult& build);
 
-// Preserves 100 trees and the existing spacing/scale/variant distributions.
-// The radius bounds all bark variants at unit scale. Failure is explicit;
-// no rejected last candidate is forced into water or the reserved route.
+// Places 100 trees as grove clusters with scattered loners, preferring flat,
+// moist ground and rejecting steep slopes; spacing stays >= 3 m and scales in
+// [.8, 1.4]. The radius bounds all bark variants at unit scale. Failure is
+// explicit; no rejected last candidate is forced into water or the route.
 std::vector<TreeInstance> placeTrees(const State&, uint32_t seed, int variants, float barkRadius);
 } // namespace TerrainRuntime
