@@ -912,13 +912,24 @@ void main() {
                   : currentViewDist < 45.0 ? 1 : 0;
     int leafSamples = currentViewDist < 18.0 ? 4 : 2;
     bool shadowsEnabled = frame.windTime.z > 0.5;
+    // Tree leaves in the mapped-shadow modes skip their per-pixel ray
+    // queries entirely: canopy self-shadowing (the dominant lighting cue on
+    // foliage) already comes from mappedTreeShadow below, and leaves are
+    // visually noisy enough geometry that the remaining ray-only effects
+    // (solid-occluder shadows from terrain/tank onto leaves, contact AO
+    // inside a crown) don't read at gameplay distance. Measured ~3.5ms of an
+    // 18ms foliage-lighting pass on the Arc A370M target. kTreeFoliage is a
+    // specialization constant, so the main pipeline compiles this away and
+    // every other material's rays are untouched; the legacy ray mode (F6)
+    // also keeps the full ray path for comparison.
+    bool foliageRaysSkipped = kTreeFoliage && frame.treeShadowParams.x > .5;
     // Skip the ray queries entirely rather than just discarding their
     // result -- the point of the toggle is to measure/avoid their cost, not
     // just their visual effect.
     // x: solid-occluder visibility. y: foliage transmission. Kept separate
     // rather than pre-multiplied -- see the temporal-blend comment below for
     // why one combined value can't be filtered with a single policy.
-    vec2 rawShadowFoliage = shadowsEnabled
+    vec2 rawShadowFoliage = shadowsEnabled && !foliageRaysSkipped
         ? traceSoftShadow(rayOrigin, toLight, kShadowTMax, noiseSeed, shadowSamples, shadowEdgeSamples,
                           leafSamples)
         : vec2(1.0);
@@ -926,7 +937,7 @@ void main() {
     float rawFoliage = rawShadowFoliage.y;
     // A different derived seed so AO's samples aren't identical to shadow's.
     float aoSeed = fract(noiseSeed * 2.718281828 + 0.31415926);
-    float rawAO = shadowsEnabled && frame.treeShadowParams.w > .5 ? traceAO(rayOrigin, rayNormal, aoSeed, aoSamples, kAORadius, kAOStrength) : 1.0;
+    float rawAO = shadowsEnabled && !foliageRaysSkipped && frame.treeShadowParams.w > .5 ? traceAO(rayOrigin, rayNormal, aoSeed, aoSamples, kAORadius, kAOStrength) : 1.0;
 
     // Temporal accumulation: blend this frame's noisy few-sample estimates
     // with history reprojected from last frame, so both terms converge
@@ -964,7 +975,10 @@ void main() {
     float foliageFactor = rawFoliage;
     float aoFactor = rawAO;
     float shadowDisagreementHistory = 0.0;
-    if (shadowsEnabled && frame.treeShadowParams.z < .5 && prevClip.w > 0.001) {
+    // foliageRaysSkipped also skips the whole history read/blend: with the
+    // raw estimates pinned at 1.0 there is nothing to accumulate, and the
+    // reprojected history taps were a measurable slice of the foliage pass.
+    if (shadowsEnabled && !foliageRaysSkipped && frame.treeShadowParams.z < .5 && prevClip.w > 0.001) {
         vec2 prevNDC = prevClip.xy / prevClip.w;
         // Y is flipped relative to the textbook NDC->UV formula because the
         // app renders with a negative-viewport-height trick (corrects

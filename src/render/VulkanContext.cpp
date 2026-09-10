@@ -283,20 +283,16 @@ void VulkanContext::pickPhysicalDevice() {
     std::cout << "Ray query support: " << (queryRayTracingSupport(physicalDevice_) ? "yes" : "no")
                << std::endl;
 
-    // 4x MSAA if the device supports it for both color and depth at once,
-    // otherwise 2x, otherwise none -- 4x is the usual sweet spot between
-    // visibly smoothing triangle edges (the tank's now-faceted hull panels
-    // in particular) and cost; this hobby project has no need to reach for
-    // 8x.
-    VkSampleCountFlags sampleCounts =
-        props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts;
-    if (sampleCounts & VK_SAMPLE_COUNT_4_BIT) {
-        msaaSamples_ = VK_SAMPLE_COUNT_4_BIT;
-    } else if (sampleCounts & VK_SAMPLE_COUNT_2_BIT) {
-        msaaSamples_ = VK_SAMPLE_COUNT_2_BIT;
-    } else {
-        msaaSamples_ = VK_SAMPLE_COUNT_1_BIT;
-    }
+    // No MSAA: TAA (see TaaBlendPass) now handles edge anti-aliasing, and
+    // paying for both was the single largest avoidable cost on the Arc
+    // A370M target -- the main pass writes five attachments (HDR color,
+    // shadow history, foliage history, velocity, depth), and multisampling
+    // all of them 4x quadrupled raster work on the ~3M-triangle tree
+    // foliage as well as attachment bandwidth on a 96-bit-bus GPU. The
+    // HistoryBuffer/ResolveTarget MSAA scratch images and the resolve setup
+    // in Application::drawFrame all key off this value, so single-sample
+    // here removes those images and resolves entirely.
+    msaaSamples_ = VK_SAMPLE_COUNT_1_BIT;
     std::cout << "MSAA samples: " << msaaSamples_ << std::endl;
 
     QueueFamilyIndices indices = findQueueFamilies(physicalDevice_, surface_);

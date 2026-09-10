@@ -2566,7 +2566,28 @@ void Application::drawFrame() {
         ubo.dynamicLightPosRadius[i] = glm::vec4(light.position, light.radius);
         ubo.dynamicLightColorIntensity[i] = glm::vec4(light.color, light.currentIntensity());
     }
-    ubo.treeShadowMatrices = TreeShadowCascades::build(camera_.position(), glm::vec3(ubo.lightDir));
+    // Round-robin cascade refresh: cascade 0 (the 18-unit clipmap, where
+    // wind sway and nearby detail actually read) re-renders every frame;
+    // cascades 1 and 2 refresh every 2nd and 4th frame, on offset phases so
+    // they never both land on the same frame. Their content lags wind sway
+    // and camera translation by up to 1/3 frames, which is below what reads
+    // at 18+/50+ units. All three refresh together whenever the map is
+    // uninitialized or a mode toggle just reset shadow history (F5/F6). The
+    // UBO carries each cascade's *rendered* matrix, so skipped cascades stay
+    // self-consistent -- see treeShadowRenderedMatrices_'s comment.
+    std::array<bool, TreeShadowCascades::kCount> cascadeUpdates{};
+    {
+        const bool forceAllCascades = shadowHistoryReset_ || !treeShadowMap_->initialized();
+        const auto freshMatrices =
+            TreeShadowCascades::build(camera_.position(), glm::vec3(ubo.lightDir));
+        for (uint32_t i = 0; i < TreeShadowCascades::kCount; ++i) {
+            const bool scheduled =
+                i == 0 || (i == 1 ? frameCounter_ % 2 == 0 : frameCounter_ % 4 == 2);
+            cascadeUpdates[i] = forceAllCascades || scheduled;
+            if (cascadeUpdates[i]) treeShadowRenderedMatrices_[i] = freshMatrices[i];
+        }
+    }
+    ubo.treeShadowMatrices = treeShadowRenderedMatrices_;
     ubo.treeShadowWidths = glm::vec4(2.f*TreeShadowCascades::kHalfWidths[0],
         2.f*TreeShadowCascades::kHalfWidths[1],2.f*TreeShadowCascades::kHalfWidths[2],TreeShadowCascades::kDepthRange);
     ubo.treeShadowParams = glm::vec4(float(treeShadowMode_),float(TreeShadowCascades::kResolution),
@@ -2606,9 +2627,15 @@ void Application::drawFrame() {
         if (!sphereIntersectsFrustum(planes, center, radius)) continue;
         float projectedRadius =
             projectedRadiusPixels(ubo.view, ubo.proj, viewportHeight, center, radius);
+        // Raised from 90/45 after profiling on the Arc A370M target: with
+        // grove clustering, the old bands kept several full-detail bark
+        // meshes on screen at once (~10ms of a ~47ms frame in the bark
+        // pass alone). At 720p a 3.5-unit-radius tree crosses 130px of
+        // projected radius only within ~14 units -- close enough that the
+        // full skeleton's silhouette detail is actually resolvable.
         tree.lod = selectLodWithHysteresis(tree.lod, projectedRadius,
-                                           /*nearThreshold=*/90.0f,
-                                           /*farThreshold=*/45.0f);
+                                           /*nearThreshold=*/130.0f,
+                                           /*farThreshold=*/70.0f);
         if (treeLodMode_ == TreeLodMode::Far) tree.lod = 2;
         if (treeLodMode_ == TreeLodMode::Full) tree.lod = 0;
         size_t group = static_cast<size_t>(tree.lod) * treeVariantCount + tree.meshVariant;
@@ -2745,6 +2772,9 @@ void Application::drawFrame() {
     std::array<std::vector<InstanceBatch>, TreeShadowCascades::kCount> shadowFoliageBatches;
     if (shadowsEnabled_ && treeShadowMode_ != 0) {
         for (uint32_t cascade=0; cascade<TreeShadowCascades::kCount; ++cascade) {
+            // Skipped cascades keep their previous map contents (and their
+            // rendered matrix in the UBO), so they need no caster batches.
+            if (!cascadeUpdates[cascade]) continue;
             std::vector<std::vector<RasterInstance>> groups(treeVariantCount);
             for (const auto& tree : trees_) {
                 auto placement = windInstance(tree.worldMatrix(),ubo.windTime.x,ubo.windTime.y);
@@ -2830,6 +2860,11 @@ void Application::drawFrame() {
                                 0,1,&shadowFrameSet,0,nullptr);
         vkCmdBindPipeline(frame.commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline_->treeShadowHandle());
         for (uint32_t cascade=0; cascade<TreeShadowCascades::kCount; ++cascade) {
+            // Round-robin: leave a skipped cascade's depth layer untouched
+            // this frame (see cascadeUpdates above). On the forced first/
+            // reset frame every cascade renders, so no layer is ever read
+            // with undefined contents.
+            if (!cascadeUpdates[cascade]) continue;
             treeShadowMap_->beginCascade(frame.commandBuffer,cascade);
             if (shadowsEnabled_ && treeShadowMode_ != 0) {
                 Pipeline::PushConstants shadowPc{};
@@ -2871,35 +2906,30 @@ void Application::drawFrame() {
     // of here.
     VkImage colorImage = swapchain_->image(imageIndex);
     VkImage historyWriteImage = historyBuffer_->image(currentFrame_);
-    // hdrTarget_'s resolve image and the persistent history slot above are
-    // both single-sample and now serve as MSAA *resolve targets* rather
-    // than the attachments actually drawn into -- the pipeline (created with
-    // rasterizationSamples = ctx_.msaaSamples()) renders into these
-    // multisampled scratch images instead, which the driver resolves
-    // (averages down) into the single-sample targets at the end of the
-    // render pass (see the resolveImageView fields below).
-    VkImage msaaHdrImage = hdrTarget_->msaaImage();
-    VkImage msaaVelocityImage = velocityTarget_->msaaImage();
-    VkImage msaaHistoryImage = historyBuffer_->msaaImage();
     VkImage foliageHistoryWriteImage = foliageHistoryBuffer_->image(currentFrame_);
-    VkImage msaaFoliageHistoryImage = foliageHistoryBuffer_->msaaImage();
+    // With MSAA enabled, hdrTarget_'s resolve image and the persistent
+    // history slot above are both single-sample and serve as MSAA *resolve
+    // targets* rather than the attachments actually drawn into -- the
+    // pipeline (created with rasterizationSamples = ctx_.msaaSamples())
+    // renders into multisampled scratch images instead, which the driver
+    // resolves (averages down) into the single-sample targets at the end of
+    // the render pass. Single-sample mode (the default now that TAA covers
+    // anti-aliasing) has no scratch images (see HistoryBuffer/ResolveTarget)
+    // and draws straight into the single-sample targets, so their barriers
+    // below are all that's needed.
+    const bool msaa = context_->msaaSamples() != VK_SAMPLE_COUNT_1_BIT;
 
     // All attachments are fully overwritten this frame (LOAD_OP_CLEAR), so
     // treating oldLayout as UNDEFINED is correct regardless of prior layout:
     // it tells the driver not to preserve contents, matching the clear. The
     // resolve targets (hdrTarget_->image(), historyWriteImage) also need to
     // be in COLOR_ATTACHMENT_OPTIMAL up front since that's the layout the
-    // resolve operation writes through.
-    VkImageMemoryBarrier2 toAttachments[] = {
-        imageBarrier(msaaHdrImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
-                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                     0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
+    // resolve operation writes through. (For historyWriteImage and
+    // foliageHistoryWriteImage, the slot's previous content -- from 2 frames
+    // ago -- was already handed off as history input last frame, so
+    // oldLayout=UNDEFINED discarding it is fine.)
+    std::vector<VkImageMemoryBarrier2> toAttachments = {
         imageBarrier(hdrTarget_->image(), VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
-                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                     0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
-        imageBarrier(msaaVelocityImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
                      0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
@@ -2912,29 +2942,25 @@ void Application::drawFrame() {
                      VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                      VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
                      VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT),
-        imageBarrier(msaaHistoryImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
-                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                     0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
-        // This slot's previous content (from 2 frames ago) was already
-        // transitioned to SHADER_READ_ONLY_OPTIMAL for the OTHER slot's use
-        // as history input last frame; oldLayout=UNDEFINED just discards it,
-        // which is fine since we're about to overwrite it (via resolve) here.
         imageBarrier(historyWriteImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
                      0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
-        imageBarrier(msaaFoliageHistoryImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
-                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                     0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
-        // Same "previous content already handed off as history input, safe
-        // to discard" reasoning as historyWriteImage above.
         imageBarrier(foliageHistoryWriteImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
                      0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
     };
+    if (msaa) {
+        for (VkImage image : {hdrTarget_->msaaImage(), velocityTarget_->msaaImage(),
+                              historyBuffer_->msaaImage(), foliageHistoryBuffer_->msaaImage()}) {
+            toAttachments.push_back(imageBarrier(
+                image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT));
+        }
+    }
 
     VkMemoryBarrier2 asToShaderBarrier{};
     asToShaderBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
@@ -2947,56 +2973,45 @@ void Application::drawFrame() {
     depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     depInfo.memoryBarrierCount = 1;
     depInfo.pMemoryBarriers = &asToShaderBarrier;
-    depInfo.imageMemoryBarrierCount = 9;
-    depInfo.pImageMemoryBarriers = toAttachments;
+    depInfo.imageMemoryBarrierCount = static_cast<uint32_t>(toAttachments.size());
+    depInfo.pImageMemoryBarriers = toAttachments.data();
     vkCmdPipelineBarrier2(frame.commandBuffer, &depInfo);
 
-    VkRenderingAttachmentInfo colorAttachment{};
-    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    colorAttachment.imageView = hdrTarget_->msaaImageView();
-    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    colorAttachment.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
-    colorAttachment.resolveImageView = hdrTarget_->imageView();
-    colorAttachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    // With MSAA off, the "resolve" images are rendered into directly: no
+    // resolve step, and the results must actually be stored. The MSAA form
+    // draws into scratch and resolves, so the scratch store is DONT_CARE.
+    auto sceneAttachment = [msaa](VkImageView msaaView, VkImageView resolveView) {
+        VkRenderingAttachmentInfo attachment{};
+        attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        attachment.imageView = msaa ? msaaView : resolveView;
+        attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        attachment.resolveMode = msaa ? VK_RESOLVE_MODE_AVERAGE_BIT : VK_RESOLVE_MODE_NONE;
+        attachment.resolveImageView = msaa ? resolveView : VK_NULL_HANDLE;
+        attachment.resolveImageLayout =
+            msaa ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+        attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachment.storeOp = msaa ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE;
+        return attachment;
+    };
+
+    VkRenderingAttachmentInfo colorAttachment =
+        sceneAttachment(hdrTarget_->msaaImageView(), hdrTarget_->imageView());
     colorAttachment.clearValue.color = {{0.45f, 0.65f, 0.85f, 1.0f}};
 
-    VkRenderingAttachmentInfo historyAttachment{};
-    historyAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    historyAttachment.imageView = historyBuffer_->msaaImageView();
-    historyAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    historyAttachment.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
-    historyAttachment.resolveImageView = historyBuffer_->imageView(currentFrame_);
-    historyAttachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    historyAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    historyAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    VkRenderingAttachmentInfo historyAttachment =
+        sceneAttachment(historyBuffer_->msaaImageView(), historyBuffer_->imageView(currentFrame_));
     historyAttachment.clearValue.color.float32[0] = 1.0f;      // neutral: "fully lit" where nothing draws
     historyAttachment.clearValue.color.float32[1] = 1.0f;      // neutral: "no AO occlusion"
     historyAttachment.clearValue.color.float32[2] = 50000.0f;  // huge distance: always fails disocclusion check
 
-    VkRenderingAttachmentInfo foliageHistoryAttachment{};
-    foliageHistoryAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    foliageHistoryAttachment.imageView = foliageHistoryBuffer_->msaaImageView();
-    foliageHistoryAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    foliageHistoryAttachment.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
-    foliageHistoryAttachment.resolveImageView = foliageHistoryBuffer_->imageView(currentFrame_);
-    foliageHistoryAttachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    foliageHistoryAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    foliageHistoryAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    VkRenderingAttachmentInfo foliageHistoryAttachment = sceneAttachment(
+        foliageHistoryBuffer_->msaaImageView(), foliageHistoryBuffer_->imageView(currentFrame_));
     foliageHistoryAttachment.clearValue.color.float32[0] = 1.0f;  // neutral: fully open, no foliage above
 
     // Cleared to zero: "no motion" wherever nothing draws (sky, gaps),
     // matching the existing zero-velocity convention for static geometry.
-    VkRenderingAttachmentInfo velocityAttachment{};
-    velocityAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    velocityAttachment.imageView = velocityTarget_->msaaImageView();
-    velocityAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    velocityAttachment.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
-    velocityAttachment.resolveImageView = velocityTarget_->imageView();
-    velocityAttachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    velocityAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    velocityAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    VkRenderingAttachmentInfo velocityAttachment =
+        sceneAttachment(velocityTarget_->msaaImageView(), velocityTarget_->imageView());
     velocityAttachment.clearValue.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
 
     VkRenderingAttachmentInfo colorAttachments[] = {colorAttachment, historyAttachment,

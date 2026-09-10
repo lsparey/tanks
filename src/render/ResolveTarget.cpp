@@ -53,6 +53,10 @@ void ResolveTarget::create(VkExtent2D extent) {
     viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     VK_CHECK(vkCreateImageView(ctx_.device(), &viewInfo, nullptr, &imageView_));
 
+    // Single-sample rendering draws straight into image_ (no resolve), so
+    // the multisampled scratch image would never be touched -- skip it.
+    if (ctx_.msaaSamples() == VK_SAMPLE_COUNT_1_BIT) return;
+
     VkImageCreateInfo msaaImageInfo = imageInfo;
     msaaImageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     msaaImageInfo.samples = ctx_.msaaSamples();

@@ -329,6 +329,12 @@ private:
     std::vector<std::unique_ptr<AccelerationStructure>> treeLeafBLAS_;  // one per treeFoliageMeshes_ variant
     std::unique_ptr<SceneAccelerationStructure> sceneAS_;
     std::unique_ptr<TreeShadowMap> treeShadowMap_;
+    // The light-space matrix each shadow cascade was last actually rendered
+    // with. Cascades refresh round-robin (see drawFrame's cascadeUpdates),
+    // so the UBO must keep serving a skipped cascade's rendered matrix --
+    // sampling a stale layer through this frame's freshly snapped matrix
+    // would shift every shadow by the camera's motion since that render.
+    std::array<glm::mat4, TreeShadowCascades::kCount> treeShadowRenderedMatrices_{};
     std::unique_ptr<HistoryBuffer> historyBuffer_;
     // Single-channel (R16_SFLOAT) sibling buffer for the independently,
     // fixed-alpha smoothed foliage-transmission factor -- see basic.frag's

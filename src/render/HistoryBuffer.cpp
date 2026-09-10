@@ -109,6 +109,11 @@ void HistoryBuffer::create(VkExtent2D extent) {
         VK_CHECK(vkCreateImageView(ctx_.device(), &viewInfo, nullptr, &imageViews_[i]));
     }
 
+    // Single-sample rendering draws straight into the slot images (no
+    // resolve), so the multisampled scratch image would never be touched --
+    // skip it. See ResolveTarget::create for the same rule.
+    if (ctx_.msaaSamples() == VK_SAMPLE_COUNT_1_BIT) return;
+
     VkImageCreateInfo msaaImageInfo{};
     msaaImageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     msaaImageInfo.imageType = VK_IMAGE_TYPE_2D;

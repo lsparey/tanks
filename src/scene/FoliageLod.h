@@ -34,8 +34,13 @@ inline Selection select(float pixels) {
 // retains a selected level within 10% of its budget, without drawing a pair.
 inline Selection selectByFootprint(float pixelsPerModelUnit, int previousLod, unsigned seed = 0) {
     const float stagger = .9f + .1f * float((seed * 747796405u) & 255u) / 255.f;
-    const float middleBudget = 1.5f * stagger * (previousLod >= 1 ? 1.1f : 1.f);
-    const float farBudget = 2.f * stagger * (previousLod >= 2 ? 1.1f : 1.f);
+    // Budgets doubled from 1.5/2.0 after profiling on the Arc A370M target:
+    // the old values kept full-detail boughs out to ~60 units (~3M foliage
+    // triangles/frame through the depth, lighting and cascade-0 shadow
+    // passes). A ~3px cell footprint on leaf blobs is below what reads at
+    // 720p, especially with TAA now smoothing the switch.
+    const float middleBudget = 3.f * stagger * (previousLod >= 1 ? 1.1f : 1.f);
+    const float farBudget = 4.f * stagger * (previousLod >= 2 ? 1.1f : 1.f);
     if (pixelsPerModelUnit * kFarVoxelSize <= farBudget) return {2,2,1};
     if (pixelsPerModelUnit * kMiddleVoxelSize <= middleBudget) return {1,1,1};
     return {0,0,1};
