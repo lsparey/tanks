@@ -27,4 +27,14 @@ layout(set = 0, binding = 0) uniform FrameUBO {
     mat4 treeShadowMatrices[3];
     vec4 treeShadowWidths; // xyz: full world widths, w: depth range
     vec4 treeShadowParams; // x: 0 rays/1 PCF/2 PCSS, y: resolution, z: reset history, w: AO enabled
+    // Last frame's tank world matrices, for the motion-vector buffer -- see
+    // basic.vert and Pipeline::FrameUBO's comment.
+    mat4 prevTankHullModel;
+    mat4 prevTankTurretModel;
+    mat4 prevTankBarrelModel;
+    // Current view-proj without the TAA sub-pixel jitter -- motion vectors
+    // must be jitter-free on both ends (prevViewProj is unjittered too), or
+    // the jitter delta leaks into every velocity and TAA resamples history
+    // off texel-center every frame. See Pipeline::FrameUBO.
+    mat4 viewProjUnjittered;
 } frame;

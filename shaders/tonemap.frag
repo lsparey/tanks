@@ -1,13 +1,21 @@
 #version 460
 
 // Single exposure/tonemap/display-encoding stage. Everything upstream
-// (shaders/basic.frag) now writes raw linear HDR color into HdrTarget;
+// (shaders/basic.frag) now writes raw linear HDR color into a ResolveTarget;
 // this is the one place that maps it down to the swapchain's sRGB output.
 
 layout(location = 0) in vec2 fragUV;
 layout(location = 0) out vec4 outColor;
 
 layout(set = 0, binding = 0) uniform sampler2D hdrColor;
+// UV-space (current minus previous) motion-vector buffer -- see basic.frag.
+// Only consumed by the debug visualization below today; a future TAA blend
+// pass will read it for real.
+layout(set = 0, binding = 1) uniform sampler2D velocityBuffer;
+
+layout(push_constant) uniform PushConstants {
+    float showVelocityDebug;
+} pc;
 
 // The swapchain attachment's format is sRGB (see Swapchain::imageFormat_),
 // so the driver auto-encodes whatever linear color this shader writes --
@@ -33,7 +41,22 @@ vec3 acesFilmicTonemap(vec3 x) {
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
 
+// Real per-frame UV-space deltas are small (a fraction of a percent even for
+// a fast camera pan or the tank's own recoil kick), so this needs a large
+// multiplier to read as anything but flat grey in an 8-bit screenshot.
+// Tuned to show ordinary camera motion/recoil/wind sway clearly without
+// saturating solid; a much faster pan will still clip to a flat tint.
+const float kVelocityDebugScale = 150.0;
+
 void main() {
+    if (pc.showVelocityDebug > 0.5) {
+        // Zero motion reads as flat grey; amplified x/y tint shows
+        // direction/magnitude. Verification-only -- see TonemapPass's
+        // comment and PLAN.md's "Linear HDR and temporal image stability".
+        vec2 velocity = texture(velocityBuffer, fragUV).rg;
+        outColor = vec4(clamp(vec3(0.5) + vec3(velocity * kVelocityDebugScale, 0.0), 0.0, 1.0), 1.0);
+        return;
+    }
     vec4 hdr = texture(hdrColor, fragUV);
     outColor = vec4(acesFilmicTonemap(hdr.rgb * kExposure), hdr.a);
 }

@@ -32,11 +32,18 @@ class Tank {
 public:
     // Matches the tank material branch in basic.frag.
     enum class Surface { Armour = 5, Tracks = 6, Barrel = 7 };
+    // Which of Tank's world/prevWorldMatrix() pairs this part's worldMatrix
+    // actually came from -- independent of Surface, since e.g. Surface::
+    // Tracks covers both a hull-attached mesh (trackMesh_) and a turret-
+    // attached one (turretDetailMesh_). Lets the motion-vector shader code
+    // look up the right previous matrix without guessing from materialType.
+    enum class PoseGroup { Hull, Turret, Barrel };
     struct DrawPart {
         const Mesh* mesh;
         glm::mat4 worldMatrix;
         VkDeviceAddress blasAddress;
         Surface surface = Surface::Armour;
+        PoseGroup poseGroup = PoseGroup::Hull;
     };
     struct GearBatch {
         std::unique_ptr<Mesh> mesh;
@@ -75,6 +82,16 @@ public:
     // Initial placement uses the accepted ground and first route heading.
     void placeAt(glm::vec3 position, glm::vec2 forward, const Terrain& terrain);
     glm::vec4 surfaceBounds() const { return surfaceBounds_; }
+    // Snapshotted at the start of update(), before this frame's integration
+    // mutates the pose -- i.e. "the world matrix as it was last frame".
+    // Hull/turret/barrel pose comes from a stateful spring/rigid-body
+    // simulation (see springTowards()), not a pure function of time, so
+    // unlike wind bending this can't be recomputed analytically for an
+    // arbitrary past instant; it has to be captured explicitly each frame.
+    // Used for the rendered motion-vector buffer (see basic.vert/frag).
+    glm::mat4 prevHullWorldMatrix() const { return prevHullMatrix_; }
+    glm::mat4 prevTurretWorldMatrix() const { return prevTurretMatrix_; }
+    glm::mat4 prevBarrelWorldMatrix() const { return prevBarrelMatrix_; }
     // Physical ground-contact locations used by independent tread trails.
     // They follow the stable gameplay pose rather than the oscillating
     // suspension render pose.
@@ -195,4 +212,9 @@ private:
     float turretTurnSpeedRadians_ = 0.6f;    // rad/s, turret -- slower than hull for finer aiming
 
     glm::mat4 modelCorrection_{1.0f};
+
+    // See prevHullWorldMatrix()/prevTurretWorldMatrix()/prevBarrelWorldMatrix().
+    glm::mat4 prevHullMatrix_{1.0f};
+    glm::mat4 prevTurretMatrix_{1.0f};
+    glm::mat4 prevBarrelMatrix_{1.0f};
 };

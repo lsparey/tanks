@@ -3,8 +3,15 @@
 #include "frame.glsl"
 #include "tree_wind.glsl"
 layout(location = 0) in vec3 inPosition;
+// Must byte-match src/render/RasterInstance.h (and basic.vert's copy) --
+// this shader indexes the same SSBO, so a missing field here silently
+// shifts every instance's stride and reads garbage matrices (which is how
+// tree/tank shadows once vanished when previousModel was added to the C++
+// struct but not here). previousModel itself is unused by this depth-only
+// pass; it exists purely to keep the layout in sync.
 struct RasterInstance {
     mat4 model;
+    mat4 previousModel;
     vec4 wind;
     vec4 previousWind;
     vec4 foliageFade;

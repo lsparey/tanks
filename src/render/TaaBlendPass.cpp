@@ -1,4 +1,4 @@
-#include "TonemapPass.h"
+#include "TaaBlendPass.h"
 #include "DrawStatistics.h"
 
 #include <fstream>
@@ -34,32 +34,33 @@ VkShaderModule loadShaderModule(VkDevice device, const char* relativePath) {
     return module;
 }
 
+struct PushConstants {
+    float historyValid;
+    float taaEnabled;
+};
+
 }  // namespace
 
-TonemapPass::TonemapPass(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthFormat) : ctx_(ctx) {
-    // Binding 0: the resolved linear HDR scene color. Binding 1: the
-    // resolved velocity buffer, sampled only by the debug visualization
-    // mode today (see PushConstants::showVelocityDebug below); a future TAA
-    // blend pass will read it for real.
-    VkDescriptorSetLayoutBinding bindings[2]{};
-    bindings[0].binding = 0;
-    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    bindings[0].descriptorCount = 1;
-    bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    bindings[1].binding = 1;
-    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    bindings[1].descriptorCount = 1;
-    bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+TaaBlendPass::TaaBlendPass(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthFormat) : ctx_(ctx) {
+    // Binding 0: current frame's linear HDR color. Binding 1: resolved
+    // velocity buffer. Binding 2: last frame's blended TAA history.
+    VkDescriptorSetLayoutBinding bindings[3]{};
+    for (uint32_t i = 0; i < 3; ++i) {
+        bindings[i].binding = i;
+        bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[i].descriptorCount = 1;
+        bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    }
 
     VkDescriptorSetLayoutCreateInfo setLayoutInfo{};
     setLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    setLayoutInfo.bindingCount = 2;
+    setLayoutInfo.bindingCount = 3;
     setLayoutInfo.pBindings = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx_.device(), &setLayoutInfo, nullptr, &descriptorSetLayout_));
 
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 2 * CommandContext::kFramesInFlight;
+    poolSize.descriptorCount = 3 * CommandContext::kFramesInFlight;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -68,10 +69,8 @@ TonemapPass::TonemapPass(VulkanContext& ctx, VkFormat colorFormat, VkFormat dept
     poolInfo.maxSets = CommandContext::kFramesInFlight;
     VK_CHECK(vkCreateDescriptorPool(ctx_.device(), &poolInfo, nullptr, &descriptorPool_));
 
-    // One set per frame in flight: the source binding points at the TAA
-    // history's per-frame write slot (see TaaBlendPass's header comment on
-    // why a single shared set rewritten from drawFrame would race the other
-    // in-flight frame's command buffer).
+    // One set per frame in flight -- see the header's comment on why these
+    // must never be rewritten while the other frame is still on the GPU.
     std::array<VkDescriptorSetLayout, CommandContext::kFramesInFlight> layouts;
     layouts.fill(descriptorSetLayout_);
     VkDescriptorSetAllocateInfo allocInfo{};
@@ -84,7 +83,7 @@ TonemapPass::TonemapPass(VulkanContext& ctx, VkFormat colorFormat, VkFormat dept
     VkPushConstantRange pushConstantRange{};
     pushConstantRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     pushConstantRange.offset = 0;
-    pushConstantRange.size = sizeof(float);  // showVelocityDebug, see render()
+    pushConstantRange.size = sizeof(PushConstants);
 
     VkPipelineLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -95,7 +94,7 @@ TonemapPass::TonemapPass(VulkanContext& ctx, VkFormat colorFormat, VkFormat dept
     VK_CHECK(vkCreatePipelineLayout(ctx_.device(), &layoutInfo, nullptr, &layout_));
 
     VkShaderModule vertModule = loadShaderModule(ctx_.device(), "tonemap.vert.spv");
-    VkShaderModule fragModule = loadShaderModule(ctx_.device(), "tonemap.frag.spv");
+    VkShaderModule fragModule = loadShaderModule(ctx_.device(), "taa_blend.frag.spv");
 
     VkPipelineShaderStageCreateInfo vertStage{};
     vertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -136,9 +135,9 @@ TonemapPass::TonemapPass(VulkanContext& ctx, VkFormat colorFormat, VkFormat dept
     multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
     // No depth test/write: this pass fully overwrites every pixel of the
-    // swapchain image regardless of any prior depth content. depthFormat is
-    // still declared for pipeline/attachment compatibility, matching
-    // HudRenderer's identical comment/pattern.
+    // history slot it renders into regardless of any prior depth content.
+    // depthFormat is still declared for pipeline/attachment compatibility,
+    // matching HudRenderer/TonemapPass's identical comment/pattern.
     VkPipelineDepthStencilStateCreateInfo depthStencil{};
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depthStencil.depthTestEnable = VK_FALSE;
@@ -188,7 +187,7 @@ TonemapPass::TonemapPass(VulkanContext& ctx, VkFormat colorFormat, VkFormat dept
     vkDestroyShaderModule(ctx_.device(), fragModule, nullptr);
 }
 
-TonemapPass::~TonemapPass() {
+TaaBlendPass::~TaaBlendPass() {
     if (pipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(ctx_.device(), pipeline_, nullptr);
     if (layout_ != VK_NULL_HANDLE) vkDestroyPipelineLayout(ctx_.device(), layout_, nullptr);
     if (descriptorPool_ != VK_NULL_HANDLE) vkDestroyDescriptorPool(ctx_.device(), descriptorPool_, nullptr);
@@ -196,48 +195,55 @@ TonemapPass::~TonemapPass() {
         vkDestroyDescriptorSetLayout(ctx_.device(), descriptorSetLayout_, nullptr);
 }
 
-void TonemapPass::updateSourceDescriptor(size_t frameIndex, VkImageView hdrView,
-                                         VkSampler hdrSampler) {
+void TaaBlendPass::updateSourceDescriptor(VkImageView hdrView, VkSampler hdrSampler,
+                                           VkImageView velocityView, VkSampler velocitySampler) {
+    // The HDR/velocity sources don't ping-pong -- identical on every set.
+    for (VkDescriptorSet set : descriptorSets_) {
+        VkDescriptorImageInfo imageInfos[2]{};
+        imageInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfos[0].imageView = hdrView;
+        imageInfos[0].sampler = hdrSampler;
+        imageInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfos[1].imageView = velocityView;
+        imageInfos[1].sampler = velocitySampler;
+
+        VkWriteDescriptorSet writes[2]{};
+        for (uint32_t i = 0; i < 2; ++i) {
+            writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet = set;
+            writes[i].dstBinding = i;
+            writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[i].descriptorCount = 1;
+            writes[i].pImageInfo = &imageInfos[i];
+        }
+        vkUpdateDescriptorSets(ctx_.device(), 2, writes, 0, nullptr);
+    }
+}
+
+void TaaBlendPass::updateHistoryDescriptor(size_t frameIndex, VkImageView historyView,
+                                           VkSampler historySampler) {
     VkDescriptorImageInfo imageInfo{};
     imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imageInfo.imageView = hdrView;
-    imageInfo.sampler = hdrSampler;
+    imageInfo.imageView = historyView;
+    imageInfo.sampler = historySampler;
 
     VkWriteDescriptorSet write{};
     write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     write.dstSet = descriptorSets_[frameIndex];
-    write.dstBinding = 0;
+    write.dstBinding = 2;
     write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     write.descriptorCount = 1;
     write.pImageInfo = &imageInfo;
     vkUpdateDescriptorSets(ctx_.device(), 1, &write, 0, nullptr);
 }
 
-void TonemapPass::updateVelocityDescriptor(VkImageView velocityView, VkSampler velocitySampler) {
-    // The velocity source doesn't ping-pong -- identical on every set.
-    for (VkDescriptorSet set : descriptorSets_) {
-        VkDescriptorImageInfo imageInfo{};
-        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imageInfo.imageView = velocityView;
-        imageInfo.sampler = velocitySampler;
-
-        VkWriteDescriptorSet write{};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = set;
-        write.dstBinding = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.descriptorCount = 1;
-        write.pImageInfo = &imageInfo;
-        vkUpdateDescriptorSets(ctx_.device(), 1, &write, 0, nullptr);
-    }
-}
-
-void TonemapPass::render(VkCommandBuffer cmd, size_t frameIndex, bool showVelocityDebug) {
+void TaaBlendPass::render(VkCommandBuffer cmd, size_t frameIndex, bool historyValid,
+                          bool taaEnabled) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1,
                              &descriptorSets_[frameIndex], 0, nullptr);
-    float debugFlag = showVelocityDebug ? 1.0f : 0.0f;
-    vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float), &debugFlag);
+    PushConstants pc{historyValid ? 1.0f : 0.0f, taaEnabled ? 1.0f : 0.0f};
+    vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     ++DrawStatistics::calls;
 }

@@ -12,13 +12,14 @@
 
 #include "../render/AccelerationStructure.h"
 #include "../render/CommandContext.h"
-#include "../render/HdrTarget.h"
 #include "../render/HistoryBuffer.h"
 #include "../render/HudRenderer.h"
 #include "../render/Mesh.h"
 #include "../render/Pipeline.h"
+#include "../render/ResolveTarget.h"
 #include "../render/SceneAccelerationStructure.h"
 #include "../render/Swapchain.h"
+#include "../render/TaaBlendPass.h"
 #include "../render/Texture.h"
 #include "../render/TonemapPass.h"
 #include "../render/TreeShadowMap.h"
@@ -146,6 +147,7 @@ private:
     bool prevAoKeyDown_ = false;
     bool reflectionRaysEnabled_ = true;
     bool prevReflectionKeyDown_ = false;
+    bool prevVelocityDebugKeyDown_ = false;
     bool shadowHistoryReset_ = true;
     bool shadowPreview_ = false;
     bool freezeWind_ = false;
@@ -319,9 +321,27 @@ private:
     std::unique_ptr<HistoryBuffer> foliageHistoryBuffer_;
     // Linear HDR scene-color target the main pass resolves into, and the
     // single tonemap pass that maps it down to the swapchain's sRGB image
-    // right before the HUD draws on top -- see HdrTarget/TonemapPass.
-    std::unique_ptr<HdrTarget> hdrTarget_;
+    // right before the HUD draws on top -- see ResolveTarget/TonemapPass.
+    std::unique_ptr<ResolveTarget> hdrTarget_;
+    // Resolved UV-space motion-vector buffer -- see shaders/basic.frag and
+    // PLAN.md's "Linear HDR and temporal image stability". Consumed by
+    // TaaBlendPass's reprojection; F10 also toggles visualizing it directly
+    // via TonemapPass for verification.
+    std::unique_ptr<ResolveTarget> velocityTarget_;
     std::unique_ptr<TonemapPass> tonemapPass_;
+    bool showVelocityDebug_ = false;
+    // Ping-ponged TAA color history -- reuses HistoryBuffer verbatim (its
+    // MSAA scratch image goes unused here; see TaaBlendPass's comment for
+    // why that's an accepted tradeoff). TaaBlendPass writes this frame's
+    // blended result into slot(currentFrame_) and TonemapPass reads it
+    // straight from there afterward.
+    std::unique_ptr<HistoryBuffer> taaHistory_;
+    std::unique_ptr<TaaBlendPass> taaBlendPass_;
+    bool taaEnabled_ = true;
+    bool prevTaaKeyDown_ = false;
+    // Both ping-pong slots need one real write before either holds a
+    // meaningful "previous frame" -- unlike firstFrame_'s single-frame case.
+    uint32_t taaHistoryPrimedFrames_ = 0;
 
     bool isUnderwater(float x, float z) const;
     bool allowsScenery(glm::vec2 center, float radius) const;

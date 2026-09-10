@@ -1,11 +1,14 @@
-#include "HdrTarget.h"
+#include "ResolveTarget.h"
 
 #include "VulkanCheck.h"
 #include "VulkanUtils.h"
 
-HdrTarget::HdrTarget(VulkanContext& ctx, VkExtent2D extent) : ctx_(ctx) { create(extent); }
+ResolveTarget::ResolveTarget(VulkanContext& ctx, VkExtent2D extent, VkFormat format)
+    : ctx_(ctx), format_(format) {
+    create(extent);
+}
 
-void HdrTarget::create(VkExtent2D extent) {
+void ResolveTarget::create(VkExtent2D extent) {
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     samplerInfo.magFilter = VK_FILTER_LINEAR;
@@ -23,7 +26,7 @@ void HdrTarget::create(VkExtent2D extent) {
     imageInfo.extent = {extent.width, extent.height, 1};
     imageInfo.mipLevels = 1;
     imageInfo.arrayLayers = 1;
-    imageInfo.format = kFormat;
+    imageInfo.format = format_;
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -46,7 +49,7 @@ void HdrTarget::create(VkExtent2D extent) {
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image = image_;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = kFormat;
+    viewInfo.format = format_;
     viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     VK_CHECK(vkCreateImageView(ctx_.device(), &viewInfo, nullptr, &imageView_));
 
@@ -70,12 +73,12 @@ void HdrTarget::create(VkExtent2D extent) {
     msaaViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     msaaViewInfo.image = msaaImage_;
     msaaViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    msaaViewInfo.format = kFormat;
+    msaaViewInfo.format = format_;
     msaaViewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     VK_CHECK(vkCreateImageView(ctx_.device(), &msaaViewInfo, nullptr, &msaaImageView_));
 }
 
-void HdrTarget::destroy() {
+void ResolveTarget::destroy() {
     if (msaaImageView_ != VK_NULL_HANDLE) vkDestroyImageView(ctx_.device(), msaaImageView_, nullptr);
     if (msaaImage_ != VK_NULL_HANDLE) vkDestroyImage(ctx_.device(), msaaImage_, nullptr);
     if (msaaMemory_ != VK_NULL_HANDLE) vkFreeMemory(ctx_.device(), msaaMemory_, nullptr);
@@ -96,9 +99,9 @@ void HdrTarget::destroy() {
     }
 }
 
-void HdrTarget::recreate(VkExtent2D extent) {
+void ResolveTarget::recreate(VkExtent2D extent) {
     destroy();
     create(extent);
 }
 
-HdrTarget::~HdrTarget() { destroy(); }
+ResolveTarget::~ResolveTarget() { destroy(); }

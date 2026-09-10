@@ -8,15 +8,24 @@
 // then copied to any bark/foliage batches that reference that placement.
 struct RasterInstance {
     glm::mat4 model{1};
+    // Last frame's model matrix, for the motion-vector buffer (see basic.vert/
+    // frag). Static placements (trees, shrubs) pass the same matrix for both
+    // -- only wind bending moves them, already carried separately via wind/
+    // previousWind below. The tank's gear/track-shoe batches currently do the
+    // same (previousModel == model) as a documented limitation: their real
+    // per-shoe/per-wheel rotation isn't snapshotted yet, so fast spin motion
+    // is under-represented until that's added.
+    glm::mat4 previousModel{1};
     glm::vec4 wind{0};
     glm::vec4 previousWind{0};
     // x: fine coverage, y: +1 fine/-1 coarse/0 stable, z: stable group seed; w: history reactivity.
     glm::vec4 foliageFade{0};
 };
-static_assert(offsetof(RasterInstance, wind) == 64);
-static_assert(offsetof(RasterInstance, previousWind) == 80);
-static_assert(offsetof(RasterInstance, foliageFade) == 96);
-static_assert(sizeof(RasterInstance) == 112);
+static_assert(offsetof(RasterInstance, previousModel) == 64);
+static_assert(offsetof(RasterInstance, wind) == 128);
+static_assert(offsetof(RasterInstance, previousWind) == 144);
+static_assert(offsetof(RasterInstance, foliageFade) == 160);
+static_assert(sizeof(RasterInstance) == 176);
 
 inline glm::vec3 treeWind(const glm::mat4& model, float seconds) {
     constexpr float omega = 6.28318530718f / 128.f;
@@ -31,5 +40,6 @@ inline glm::vec3 treeWind(const glm::mat4& model, float seconds) {
     return bend;
 }
 inline RasterInstance windInstance(const glm::mat4& model, float current, float previous) {
-    return {model, glm::vec4(treeWind(model,current),0), glm::vec4(treeWind(model,previous),0), glm::vec4(0)};
+    return {model, model, glm::vec4(treeWind(model,current),0), glm::vec4(treeWind(model,previous),0),
+            glm::vec4(0)};
 }

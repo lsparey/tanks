@@ -288,6 +288,27 @@ VkImageMemoryBarrier2 imageBarrier(VkImage image, VkImageAspectFlags aspect,
     return barrier;
 }
 
+// Radical-inverse in the given base -- the standard building block for a
+// Halton low-discrepancy sequence.
+float haltonRadicalInverse(uint32_t index, uint32_t base) {
+    float result = 0.0f;
+    float f = 1.0f;
+    while (index > 0) {
+        f /= static_cast<float>(base);
+        result += f * static_cast<float>(index % base);
+        index /= base;
+    }
+    return result;
+}
+
+// Halton(2,3), an 8-sample cycle -- a standard TAA camera-jitter sequence.
+// Returns a unit-square sample; the caller centers and scales it to a
+// sub-pixel NDC offset.
+glm::vec2 haltonJitter(uint32_t frameIndex) {
+    uint32_t i = (frameIndex % 8) + 1;  // Halton(*, base) is undefined at index 0
+    return glm::vec2(haltonRadicalInverse(i, 2), haltonRadicalInverse(i, 3));
+}
+
 }  // namespace
 
 Application::Application(std::optional<ScreenshotRequest> screenshotRequest, bool performanceReporting,
@@ -331,17 +352,40 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
     foliageHistoryBuffer_ = std::make_unique<HistoryBuffer>(
         *context_, *commands_, swapchain_->extent(), VK_FORMAT_R16_SFLOAT,
         VkClearColorValue{{1.0f, 0.0f, 0.0f, 0.0f}});
-    hdrTarget_ = std::make_unique<HdrTarget>(*context_, swapchain_->extent());
+    hdrTarget_ = std::make_unique<ResolveTarget>(*context_, swapchain_->extent(),
+                                                  VK_FORMAT_R16G16B16A16_SFLOAT);
+    velocityTarget_ =
+        std::make_unique<ResolveTarget>(*context_, swapchain_->extent(), VK_FORMAT_R16G16_SFLOAT);
+    // Ping-ponged TAA color history -- same format as hdrTarget_ since it
+    // holds a blended copy of that same linear HDR color. See TaaBlendPass's
+    // comment for why HistoryBuffer's unused MSAA scratch here is an
+    // accepted tradeoff.
+    taaHistory_ = std::make_unique<HistoryBuffer>(*context_, *commands_, swapchain_->extent(),
+                                                   VK_FORMAT_R16G16B16A16_SFLOAT,
+                                                   VkClearColorValue{{0.0f, 0.0f, 0.0f, 0.0f}});
     pipeline_ = std::make_unique<Pipeline>(*context_, hdrTarget_->format(),
                                             swapchain_->depthFormat(), historyBuffer_->format(),
-                                            foliageHistoryBuffer_->format());
+                                            foliageHistoryBuffer_->format(), velocityTarget_->format());
     treeShadowMap_ = std::make_unique<TreeShadowMap>(*context_);
     pipeline_->updateTreeShadowDescriptor(treeShadowMap_->view(), treeShadowMap_->sampler());
     hud_ = std::make_unique<HudRenderer>(*context_, swapchain_->imageFormat(),
                                           swapchain_->depthFormat());
+    taaBlendPass_ = std::make_unique<TaaBlendPass>(*context_, taaHistory_->format(),
+                                                    swapchain_->depthFormat());
+    taaBlendPass_->updateSourceDescriptor(hdrTarget_->imageView(), hdrTarget_->sampler(),
+                                          velocityTarget_->imageView(), velocityTarget_->sampler());
     tonemapPass_ = std::make_unique<TonemapPass>(*context_, swapchain_->imageFormat(),
                                                   swapchain_->depthFormat());
-    tonemapPass_->updateSourceDescriptor(hdrTarget_->imageView(), hdrTarget_->sampler());
+    tonemapPass_->updateVelocityDescriptor(velocityTarget_->imageView(), velocityTarget_->sampler());
+    // Per-frame-in-flight sets, written once here (and on resize), never
+    // from drawFrame -- see TaaBlendPass's header comment. Frame i's blend
+    // writes taaHistory_ slot i and reads slot 1-i (last frame's result);
+    // tonemap then reads the freshly-written slot i.
+    for (size_t i = 0; i < CommandContext::kFramesInFlight; ++i) {
+        taaBlendPass_->updateHistoryDescriptor(i, taaHistory_->imageView(1 - i),
+                                               taaHistory_->sampler());
+        tonemapPass_->updateSourceDescriptor(i, taaHistory_->imageView(i), taaHistory_->sampler());
+    }
     if (showTerrainMenu) {
         if (!selectTerrain(valleyTerrain, landform, terrainResolution, refinementPasses)) return;
         // Time spent choosing settings is not loading time.
@@ -958,7 +1002,10 @@ void Application::cleanup() noexcept {
     historyBuffer_.reset();
     foliageHistoryBuffer_.reset();
     tonemapPass_.reset();
+    taaBlendPass_.reset();
+    taaHistory_.reset();
     hdrTarget_.reset();
+    velocityTarget_.reset();
     sceneAS_.reset();
     for (auto& meshes : treeReflectionBLAS_) meshes.clear();
     treeLeafBLAS_.clear();
@@ -1189,6 +1236,21 @@ void Application::mainLoop() {
                           << " (F9 toggles; sky reflection retained)\n" << std::flush;
             }
             prevReflectionKeyDown_ = reflectionKey;
+
+            bool velocityDebugKey = glfwGetKey(window_, GLFW_KEY_F10) == GLFW_PRESS;
+            if (velocityDebugKey && !prevVelocityDebugKeyDown_) {
+                showVelocityDebug_ = !showVelocityDebug_;
+                std::cout << "Velocity debug view " << (showVelocityDebug_ ? "on" : "off")
+                          << " (F10 toggles)\n";
+            }
+            prevVelocityDebugKeyDown_ = velocityDebugKey;
+
+            bool taaKey = glfwGetKey(window_, GLFW_KEY_F11) == GLFW_PRESS;
+            if (taaKey && !prevTaaKeyDown_) {
+                taaEnabled_ = !taaEnabled_;
+                std::cout << "TAA " << (taaEnabled_ ? "on" : "off") << " (F11 toggles)\n";
+            }
+            prevTaaKeyDown_ = taaKey;
 
             bool cameraToggleDown = glfwGetKey(window_, GLFW_KEY_C) == GLFW_PRESS;
             if (cameraToggleDown && !prevCameraToggleKeyDown_) {
@@ -1996,13 +2058,22 @@ void Application::recreateSwapchainDependentResources() {
     historyBuffer_->recreate(*commands_, swapchain_->extent());
     foliageHistoryBuffer_->recreate(*commands_, swapchain_->extent());
     hdrTarget_->recreate(swapchain_->extent());
-    tonemapPass_->updateSourceDescriptor(hdrTarget_->imageView(), hdrTarget_->sampler());
+    velocityTarget_->recreate(swapchain_->extent());
+    taaHistory_->recreate(*commands_, swapchain_->extent());
+    taaHistoryPrimedFrames_ = 0;
+    taaBlendPass_->updateSourceDescriptor(hdrTarget_->imageView(), hdrTarget_->sampler(),
+                                          velocityTarget_->imageView(), velocityTarget_->sampler());
+    tonemapPass_->updateVelocityDescriptor(velocityTarget_->imageView(), velocityTarget_->sampler());
     for (size_t i = 0; i < CommandContext::kFramesInFlight; ++i) {
         size_t readSlot = 1 - i;
         pipeline_->updateHistoryDescriptor(i, historyBuffer_->imageView(readSlot),
                                             historyBuffer_->sampler(),
                                             foliageHistoryBuffer_->imageView(readSlot),
                                             foliageHistoryBuffer_->sampler());
+        // Same read/write slot pairing as at startup -- see initialize().
+        taaBlendPass_->updateHistoryDescriptor(i, taaHistory_->imageView(readSlot),
+                                               taaHistory_->sampler());
+        tonemapPass_->updateSourceDescriptor(i, taaHistory_->imageView(i), taaHistory_->sampler());
     }
 }
 
@@ -2287,7 +2358,22 @@ void Application::drawFrame() {
 
     Pipeline::FrameUBO ubo{};
     ubo.view = camera_.viewMatrix();
-    ubo.proj = camera_.projMatrix(aspect);
+    // Unjittered: used below for the crosshair/aim-point projection, which
+    // must stay pixel-stable -- only ubo.proj (sent to the GPU for actual
+    // rendering) gets the sub-pixel jitter.
+    glm::mat4 unjitteredProj = camera_.projMatrix(aspect);
+    glm::mat4 jitteredProj = unjitteredProj;
+    // Sub-pixel jitter for TAA (see TaaBlendPass): a different NDC offset
+    // each frame lets the history blend reconstruct detail between pixel
+    // centers over several frames instead of always sampling the same
+    // point. glm::perspective's symmetric frustum leaves [2][0]/[2][1] at
+    // 0, so adding a small value there is a clean, depth-independent NDC
+    // offset -- the standard technique, rather than a separate post-multiply.
+    glm::vec2 jitterNDC = (haltonJitter(frameCounter_) - glm::vec2(0.5f)) *
+                          glm::vec2(2.0f / extent.width, 2.0f / extent.height);
+    jitteredProj[2][0] += jitterNDC.x;
+    jitteredProj[2][1] += jitterNDC.y;
+    ubo.proj = jitteredProj;
     // On the very first frame there's no real "previous" matrix yet --
     // using the leftover identity default would make reprojection treat
     // world position as if it were already clip space, which can land
@@ -2296,13 +2382,23 @@ void Application::drawFrame() {
     // (this frame onto itself) instead, which is always valid and just
     // reads the neutral 1.0 the history buffer was cleared to.
     if (firstFrame_) {
-        prevViewProj_ = ubo.proj * ubo.view;
+        prevViewProj_ = unjitteredProj * ubo.view;
         prevCameraPos_ = camera_.position();
         prevWindTime_ = static_cast<float>(windTime_);
         firstFrame_ = false;
     }
     ubo.prevViewProj = prevViewProj_;
+    ubo.viewProjUnjittered = unjitteredProj * ubo.view;
     ubo.prevCameraPos = glm::vec4(prevCameraPos_, 0.0f);
+    // Unlike prevViewProj/prevCameraPos, no first-frame self-reprojection
+    // case here -- Tank's own snapshot is already taken before the first
+    // update() call's initial ground/suspension settling, so frame 1 can
+    // show a brief, harmless spurious velocity in the debug view (see
+    // TonemapPass) while the tank settles onto the terrain; nothing else
+    // consumes this data yet.
+    ubo.prevTankHullModel = tank_->prevHullWorldMatrix();
+    ubo.prevTankTurretModel = tank_->prevTurretWorldMatrix();
+    ubo.prevTankBarrelModel = tank_->prevBarrelWorldMatrix();
     ubo.windTime = glm::vec4(static_cast<float>(windTime_), prevWindTime_,
                              shadowsEnabled_ ? 1.0f : 0.0f, reflectionRaysEnabled_ ? 1.0f : 0.0f);
     ubo.lightDir = glm::vec4(glm::normalize(glm::vec3(-0.45f, -0.55f, -0.8f)), 0.0f);
@@ -2445,8 +2541,16 @@ void Application::drawFrame() {
                 if constexpr (std::is_same_v<std::decay_t<decltype(value)>,RasterInstance>)
                     rasterInstances.push_back(value);
                 else
+                    // previousModel = value (not the struct's identity
+                    // default) matters here even for static rocks/crates --
+                    // otherwise their motion-vector reprojection would jump
+                    // from the world origin every frame. Gear/track-shoe
+                    // batches get the same treatment for now (documented
+                    // limitation: their real per-frame rotation isn't
+                    // snapshotted yet, so this reads as "didn't move" rather
+                    // than wrongly "teleported from the origin").
                     rasterInstances.push_back(wind ? windInstance(value,ubo.windTime.x,ubo.windTime.y)
-                                                   : RasterInstance{value});
+                                                   : RasterInstance{value, value});
             }
         }
         return batches;
@@ -2513,7 +2617,12 @@ void Application::drawFrame() {
     pipeline_->updateInstances(rasterInstances);
     pipeline_->updateFoliageDraws(foliageDraws);
     performanceSample_.ms[FrameProfiler::Visibility] = FrameProfiler::elapsedMs(phaseStart);
-    prevViewProj_ = ubo.proj * ubo.view;
+    // Unjittered on purpose -- see FrameUBO::viewProjUnjittered's comment.
+    // Only ubo.proj (rasterization) carries the TAA jitter; every consumer
+    // of prevViewProj (motion vectors, shadow/AO history reprojection)
+    // needs the stable matrix, or the per-frame jitter delta leaks into
+    // reprojection as a spurious sub-pixel motion.
+    prevViewProj_ = unjitteredProj * ubo.view;
     prevCameraPos_ = camera_.position();
     prevWindTime_ = ubo.windTime.x;
     ++frameCounter_;
@@ -2610,6 +2719,7 @@ void Application::drawFrame() {
     // (averages down) into the single-sample targets at the end of the
     // render pass (see the resolveImageView fields below).
     VkImage msaaHdrImage = hdrTarget_->msaaImage();
+    VkImage msaaVelocityImage = velocityTarget_->msaaImage();
     VkImage msaaHistoryImage = historyBuffer_->msaaImage();
     VkImage foliageHistoryWriteImage = foliageHistoryBuffer_->image(currentFrame_);
     VkImage msaaFoliageHistoryImage = foliageHistoryBuffer_->msaaImage();
@@ -2626,6 +2736,14 @@ void Application::drawFrame() {
                      0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
         imageBarrier(hdrTarget_->image(), VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                     0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
+        imageBarrier(msaaVelocityImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                     0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
+        imageBarrier(velocityTarget_->image(), VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
                      0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
@@ -2669,7 +2787,7 @@ void Application::drawFrame() {
     depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     depInfo.memoryBarrierCount = 1;
     depInfo.pMemoryBarriers = &asToShaderBarrier;
-    depInfo.imageMemoryBarrierCount = 7;
+    depInfo.imageMemoryBarrierCount = 9;
     depInfo.pImageMemoryBarriers = toAttachments;
     vkCmdPipelineBarrier2(frame.commandBuffer, &depInfo);
 
@@ -2708,8 +2826,21 @@ void Application::drawFrame() {
     foliageHistoryAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     foliageHistoryAttachment.clearValue.color.float32[0] = 1.0f;  // neutral: fully open, no foliage above
 
+    // Cleared to zero: "no motion" wherever nothing draws (sky, gaps),
+    // matching the existing zero-velocity convention for static geometry.
+    VkRenderingAttachmentInfo velocityAttachment{};
+    velocityAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    velocityAttachment.imageView = velocityTarget_->msaaImageView();
+    velocityAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    velocityAttachment.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+    velocityAttachment.resolveImageView = velocityTarget_->imageView();
+    velocityAttachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    velocityAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    velocityAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    velocityAttachment.clearValue.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+
     VkRenderingAttachmentInfo colorAttachments[] = {colorAttachment, historyAttachment,
-                                                     foliageHistoryAttachment};
+                                                     foliageHistoryAttachment, velocityAttachment};
 
     VkRenderingAttachmentInfo depthAttachment{};
     depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -2723,7 +2854,7 @@ void Application::drawFrame() {
     renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
     renderingInfo.renderArea = {{0, 0}, extent};
     renderingInfo.layerCount = 1;
-    renderingInfo.colorAttachmentCount = 3;
+    renderingInfo.colorAttachmentCount = 4;
     renderingInfo.pColorAttachments = colorAttachments;
     renderingInfo.pDepthAttachment = &depthAttachment;
 
@@ -2870,8 +3001,13 @@ void Application::drawFrame() {
         tankPc.reflectivity = 0.0f;
         // See Pipeline::PushConstants::isDynamicObject -- specularStrength
         // alone no longer uniquely identifies the tank now that its own
-        // parts use different values.
-        tankPc.isDynamicObject = 1.0f;
+        // parts use different values. The exact value (still >0.5, so every
+        // existing boolean check on this field is unaffected) also tells
+        // basic.vert which of FrameUBO's prevTankHullModel/Turret/Barrel
+        // matrices this non-instanced part's motion vector should use --
+        // see Tank::DrawPart::poseGroup, since Surface alone can't
+        // disambiguate (Tracks covers both a hull- and a turret-attached mesh).
+        tankPc.isDynamicObject = 1.0f + static_cast<float>(part.poseGroup);
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(tankPc), &tankPc);
@@ -3150,7 +3286,10 @@ void Application::drawFrame() {
     // barrel, screen center doesn't correspond to where a shot will go.
     glm::vec3 aimWorldPoint =
         tank_->muzzleWorldPosition() + tank_->aimDirection() * kAimProjectionDistance;
-    glm::vec4 aimClip = ubo.proj * ubo.view * glm::vec4(aimWorldPoint, 1.0f);
+    // Unjittered projection: the crosshair must stay pixel-stable, not
+    // wobble with TAA's per-frame sub-pixel jitter (see where ubo.proj is
+    // built above).
+    glm::vec4 aimClip = unjitteredProj * ubo.view * glm::vec4(aimWorldPoint, 1.0f);
     if (aimClip.w > 0.01f) {
         glm::vec2 aimNDC = glm::vec2(aimClip.x, aimClip.y) / aimClip.w;
         constexpr float kCrosshairArm = 0.025f;
@@ -3203,6 +3342,14 @@ void Application::drawFrame() {
                      VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                      VK_ACCESS_2_SHADER_READ_BIT),
+        // Always transitioned, even when the debug view is off -- the
+        // tonemap pass's descriptor set has this bound as SHADER_READ_ONLY
+        // regardless of which branch its shader takes at runtime.
+        imageBarrier(velocityTarget_->image(), VK_IMAGE_ASPECT_COLOR_BIT,
+                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                     VK_ACCESS_2_SHADER_READ_BIT),
         imageBarrier(historyWriteImage, VK_IMAGE_ASPECT_COLOR_BIT,
                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                      VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -3213,17 +3360,83 @@ void Application::drawFrame() {
                      VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                      VK_ACCESS_2_SHADER_READ_BIT),
+        // taaHistory_'s write slot for this frame (see TaaBlendPass below) --
+        // its previous content (written 2 frames ago) was already handed
+        // off as the *other* slot's history input by now, so UNDEFINED is
+        // safe to discard, same reasoning as the shadow/foliage history
+        // slots above.
+        imageBarrier(taaHistory_->image(currentFrame_), VK_IMAGE_ASPECT_COLOR_BIT,
+                     VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
     };
     VkDependencyInfo betweenScenesDepInfo{};
     betweenScenesDepInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    betweenScenesDepInfo.imageMemoryBarrierCount = 4;
+    betweenScenesDepInfo.imageMemoryBarrierCount = 6;
     betweenScenesDepInfo.pImageMemoryBarriers = betweenScenesBarriers;
     vkCmdPipelineBarrier2(frame.commandBuffer, &betweenScenesDepInfo);
 
-    // Single exposure/tonemap/display-encoding pass: maps hdrTarget_'s
-    // linear HDR result down into the swapchain's sRGB image, in the same
-    // position the 3D pass's MSAA resolve used to write directly -- see
-    // TonemapPass. Fully overwrites every pixel (LOAD_OP_DONT_CARE is safe).
+    // Basic TAA resolve: blends this frame's HDR color with a reprojected,
+    // neighborhood-clamped sample of last frame's blended result, writing
+    // into taaHistory_'s *other* slot -- see TaaBlendPass. historyValid is
+    // false until both ping-pong slots hold a real blended frame (unlike
+    // firstFrame_'s single-frame case elsewhere).
+    taaHistoryPrimedFrames_ = std::min(taaHistoryPrimedFrames_ + 1, 2u);
+    bool taaHistoryValid = taaHistoryPrimedFrames_ >= 2;
+    // No descriptor updates here: which history slot this frame reads is
+    // baked into its own per-frame-in-flight descriptor set at startup/
+    // resize. Rewriting a shared set from here raced the other in-flight
+    // frame's command buffer -- see TaaBlendPass's header comment.
+
+    VkRenderingAttachmentInfo taaColorAttachment{};
+    taaColorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    taaColorAttachment.imageView = taaHistory_->imageView(currentFrame_);
+    taaColorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    taaColorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    taaColorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+    VkRenderingInfo taaRenderingInfo{};
+    taaRenderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    taaRenderingInfo.renderArea = {{0, 0}, extent};
+    taaRenderingInfo.layerCount = 1;
+    taaRenderingInfo.colorAttachmentCount = 1;
+    taaRenderingInfo.pColorAttachments = &taaColorAttachment;
+
+    // Same standard (non-negated) viewport reasoning as tonemapViewport
+    // below -- this is also a fullscreen triangle in plain Vulkan NDC, no
+    // projection matrix involved.
+    VkViewport taaViewport{};
+    taaViewport.x = 0.0f;
+    taaViewport.y = 0.0f;
+    taaViewport.width = static_cast<float>(extent.width);
+    taaViewport.height = static_cast<float>(extent.height);
+    taaViewport.minDepth = 0.0f;
+    taaViewport.maxDepth = 1.0f;
+
+    vkCmdBeginRendering(frame.commandBuffer, &taaRenderingInfo);
+    vkCmdSetViewport(frame.commandBuffer, 0, 1, &taaViewport);
+    vkCmdSetScissor(frame.commandBuffer, 0, 1, &scissor);
+    taaBlendPass_->render(frame.commandBuffer, currentFrame_, taaHistoryValid, taaEnabled_);
+    vkCmdEndRendering(frame.commandBuffer);
+
+    // taaHistory_'s freshly-written slot needs to move from attachment-write
+    // to shader-read before the tonemap pass samples it.
+    VkImageMemoryBarrier2 taaToTonemapBarrier = imageBarrier(
+        taaHistory_->image(currentFrame_), VK_IMAGE_ASPECT_COLOR_BIT,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT);
+    VkDependencyInfo taaToTonemapDepInfo{};
+    taaToTonemapDepInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    taaToTonemapDepInfo.imageMemoryBarrierCount = 1;
+    taaToTonemapDepInfo.pImageMemoryBarriers = &taaToTonemapBarrier;
+    vkCmdPipelineBarrier2(frame.commandBuffer, &taaToTonemapDepInfo);
+
+    // Single exposure/tonemap/display-encoding pass: maps taaHistory_'s
+    // TAA-blended linear HDR result down into the swapchain's sRGB image, in
+    // the same position the 3D pass's MSAA resolve used to write directly --
+    // see TonemapPass. Fully overwrites every pixel (LOAD_OP_DONT_CARE is safe).
     VkRenderingAttachmentInfo tonemapColorAttachment{};
     tonemapColorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     tonemapColorAttachment.imageView = swapchain_->imageView(imageIndex);
@@ -3255,7 +3468,7 @@ void Application::drawFrame() {
     vkCmdBeginRendering(frame.commandBuffer, &tonemapRenderingInfo);
     vkCmdSetViewport(frame.commandBuffer, 0, 1, &tonemapViewport);
     vkCmdSetScissor(frame.commandBuffer, 0, 1, &scissor);
-    tonemapPass_->render(frame.commandBuffer);
+    tonemapPass_->render(frame.commandBuffer, currentFrame_, showVelocityDebug_);
     vkCmdEndRendering(frame.commandBuffer);
 
     // HudRenderer's pipeline declares a single color attachment, which is

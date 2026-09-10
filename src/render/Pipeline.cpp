@@ -24,7 +24,7 @@ std::vector<char> readFile(const std::string& path) {
 }  // namespace
 
 Pipeline::Pipeline(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthFormat,
-                   VkFormat historyFormat, VkFormat foliageHistoryFormat)
+                   VkFormat historyFormat, VkFormat foliageHistoryFormat, VkFormat velocityFormat)
     : ctx_(ctx),
       uniformBuffer_(ctx, sizeof(FrameUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
@@ -40,7 +40,7 @@ Pipeline::Pipeline(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthForma
     createHistorySetLayout();
     createDescriptorPoolAndSet();
     createPipelineLayout();
-    createPipeline(colorFormat, depthFormat, historyFormat, foliageHistoryFormat);
+    createPipeline(colorFormat, depthFormat, historyFormat, foliageHistoryFormat, velocityFormat);
 }
 
 Pipeline::~Pipeline() {
@@ -379,7 +379,7 @@ VkShaderModule Pipeline::loadShaderModule(const char* relativePath) {
 }
 
 void Pipeline::createPipeline(VkFormat colorFormat, VkFormat depthFormat, VkFormat historyFormat,
-                               VkFormat foliageHistoryFormat) {
+                               VkFormat foliageHistoryFormat, VkFormat velocityFormat) {
     VkShaderModule vertModule = loadShaderModule("basic.vert.spv");
     VkShaderModule fragModule = loadShaderModule("basic.frag.spv");
 
@@ -473,12 +473,20 @@ void Pipeline::createPipeline(VkFormat colorFormat, VkFormat depthFormat, VkForm
     foliageHistoryBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT;
     foliageHistoryBlendAttachment.blendEnable = VK_FALSE;
 
+    // Fourth color attachment: the resolved UV-space (current minus
+    // previous) motion vector -- see basic.frag/shaders/tonemap.frag. Only
+    // R/G are meaningful (x/y delta).
+    VkPipelineColorBlendAttachmentState velocityBlendAttachment{};
+    velocityBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT;
+    velocityBlendAttachment.blendEnable = VK_FALSE;
+
     VkPipelineColorBlendAttachmentState colorBlendAttachments[] = {
-        colorBlendAttachment, historyBlendAttachment, foliageHistoryBlendAttachment};
+        colorBlendAttachment, historyBlendAttachment, foliageHistoryBlendAttachment,
+        velocityBlendAttachment};
 
     VkPipelineColorBlendStateCreateInfo colorBlending{};
     colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    colorBlending.attachmentCount = 3;
+    colorBlending.attachmentCount = 4;
     colorBlending.pAttachments = colorBlendAttachments;
 
     VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
@@ -487,10 +495,11 @@ void Pipeline::createPipeline(VkFormat colorFormat, VkFormat depthFormat, VkForm
     dynamicState.dynamicStateCount = 2;
     dynamicState.pDynamicStates = dynamicStates;
 
-    VkFormat colorAttachmentFormats[] = {colorFormat, historyFormat, foliageHistoryFormat};
+    VkFormat colorAttachmentFormats[] = {colorFormat, historyFormat, foliageHistoryFormat,
+                                          velocityFormat};
     VkPipelineRenderingCreateInfo renderingInfo{};
     renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    renderingInfo.colorAttachmentCount = 3;
+    renderingInfo.colorAttachmentCount = 4;
     renderingInfo.pColorAttachmentFormats = colorAttachmentFormats;
     renderingInfo.depthAttachmentFormat = depthFormat;
 
@@ -520,12 +529,14 @@ void Pipeline::createPipeline(VkFormat colorFormat, VkFormat depthFormat, VkForm
     colorBlendAttachments[0].colorWriteMask = 0;
     colorBlendAttachments[1].colorWriteMask = 0;
     colorBlendAttachments[2].colorWriteMask = 0;
+    colorBlendAttachments[3].colorWriteMask = 0;
     VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
                                       &foliageDepthPipeline_));
     stages[1].module = fragModule;
     colorBlendAttachments[0] = colorBlendAttachment;
     colorBlendAttachments[1] = historyBlendAttachment;
     colorBlendAttachments[2] = foliageHistoryBlendAttachment;
+    colorBlendAttachments[3] = velocityBlendAttachment;
     depthStencil.depthWriteEnable = VK_FALSE;
     depthStencil.depthCompareOp = VK_COMPARE_OP_EQUAL;
     // basic.frag constant 0 fixes the material flags used by leafPc. Keep the
@@ -542,11 +553,21 @@ void Pipeline::createPipeline(VkFormat colorFormat, VkFormat depthFormat, VkForm
     vkDestroyShaderModule(ctx_.device(), foliageDepthModule, nullptr);
 
     // Soft weapon cards test against opaque geometry but never occlude later
-    // particles or overwrite terrain shadow/AO history through transparent pixels.
+    // particles or overwrite terrain shadow/AO history through transparent
+    // pixels. Velocity (attachment 3) is masked off too: the standard TAA
+    // treatment of transparents -- the opaque background's velocity stays in
+    // place underneath the card, so TAA keeps reprojecting the background
+    // correctly, and the card's own frame-to-frame change is bounded by the
+    // blend pass's neighborhood clamp. Writing a per-fragment value here
+    // instead would stomp the background's velocity across the entire
+    // billboard quad including its fully transparent texels, since these
+    // cards draw without discard (see basic.frag's alpha comment) and the
+    // velocity attachment doesn't blend.
     depthStencil.depthWriteEnable = VK_FALSE;
     rasterizer.cullMode = VK_CULL_MODE_NONE;
     colorBlendAttachments[1].colorWriteMask = 0;
     colorBlendAttachments[2].colorWriteMask = 0;
+    colorBlendAttachments[3].colorWriteMask = 0;
     VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
                                       &effectsPipeline_));
 

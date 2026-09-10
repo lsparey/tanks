@@ -242,6 +242,13 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
 void Tank::update(const InputManager& input, float deltaTime, const Terrain& terrain,
                    const std::vector<CollisionSystem::CircleObstacle>& obstacles,
                    float boundaryHalfExtent) {
+    // Capture last frame's final pose before anything below mutates it --
+    // see prevHullWorldMatrix()'s comment for why this can't be recomputed
+    // after the fact the way wind bending can.
+    prevHullMatrix_ = hullWorldMatrix();
+    prevTurretMatrix_ = turretWorldMatrix();
+    prevBarrelMatrix_ = barrelWorldMatrix();
+
     float throttle = 0.0f;
     if (input.isKeyDown(GLFW_KEY_W)) throttle += 1.0f;
     if (input.isKeyDown(GLFW_KEY_S)) throttle -= 1.0f;
@@ -609,28 +616,31 @@ glm::mat4 Tank::barrelWorldMatrix() const {
 
 std::vector<Tank::DrawPart> Tank::drawParts() const {
     std::vector<DrawPart> parts;
-    parts.push_back({hullMesh_.get(), hullWorldMatrix(), hullBLAS_->deviceAddress()});
+    parts.push_back({hullMesh_.get(), hullWorldMatrix(), hullBLAS_->deviceAddress(),
+                     Surface::Armour, PoseGroup::Hull});
     // Belt backing and fixed dark hull fittings remain rigid. The named
     // moving shoes/wheels were extracted into instanced batches at load time.
     if (trackMesh_) {
-        parts.push_back({trackMesh_.get(), hullWorldMatrix(), trackBLAS_->deviceAddress(), Surface::Tracks});
+        parts.push_back({trackMesh_.get(), hullWorldMatrix(), trackBLAS_->deviceAddress(),
+                         Surface::Tracks, PoseGroup::Hull});
     }
 
     if (turretMesh_ || barrelMesh_ || turretDetailMesh_) {
         glm::mat4 turretWorld = turretWorldMatrix();
         if (turretMesh_) {
-            parts.push_back({turretMesh_.get(), turretWorld, turretBLAS_->deviceAddress()});
+            parts.push_back({turretMesh_.get(), turretWorld, turretBLAS_->deviceAddress(),
+                             Surface::Armour, PoseGroup::Turret});
         }
         if (turretDetailMesh_) {
             parts.push_back({turretDetailMesh_.get(), turretWorld,
-                             turretDetailBLAS_->deviceAddress(), Surface::Tracks});
+                             turretDetailBLAS_->deviceAddress(), Surface::Tracks, PoseGroup::Turret});
         }
         // Independent elevation and recoil retain the barrel's authored
         // material coordinates, including the soot band at the muzzle.
         if (barrelMesh_) {
             parts.push_back(
                 {barrelMesh_.get(), barrelWorldMatrix(), barrelBLAS_->deviceAddress(),
-                 Surface::Barrel});
+                 Surface::Barrel, PoseGroup::Barrel});
         }
     }
     return parts;

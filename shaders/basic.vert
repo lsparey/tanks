@@ -11,6 +11,7 @@ layout(location = 3) in vec2 inUV;
 
 struct RasterInstance {
     mat4 model;
+    mat4 previousModel;
     vec4 wind;
     vec4 previousWind;
     vec4 foliageFade;
@@ -54,9 +55,32 @@ layout(location = 9) flat out vec4 fragFoliageFade;
 
 void main() {
     mat4 model = pc.isInstanced > 0.5 ? instanceData.instances[gl_InstanceIndex].model : pc.model;
+    // Previous-frame model matrix for the motion-vector buffer (see
+    // basic.frag). Instanced draws carry their own previousModel (static
+    // placements pass the same matrix for both -- see RasterInstance.h for
+    // why gear/track batches currently do too). The tank's non-instanced
+    // hull/turret/barrel parts select one of FrameUBO's snapshotted
+    // matrices via isDynamicObject, which Application encodes as
+    // 1/2/3 = hull/turret/barrel for exactly this purpose (see
+    // Tank::DrawPart::poseGroup) -- materialType alone can't tell them
+    // apart, since e.g. materialType 6 (Tracks) covers both a hull-attached
+    // and a turret-attached mesh. Everything else non-instanced is static,
+    // so its previousModel is just its own (unchanging) model.
+    mat4 previousModel;
+    if (pc.isInstanced > 0.5) {
+        previousModel = instanceData.instances[gl_InstanceIndex].previousModel;
+    } else if (pc.isDynamicObject > 0.5 && pc.isDynamicObject < 1.5) {
+        previousModel = frame.prevTankHullModel;
+    } else if (pc.isDynamicObject > 1.5 && pc.isDynamicObject < 2.5) {
+        previousModel = frame.prevTankTurretModel;
+    } else if (pc.isDynamicObject > 2.5) {
+        previousModel = frame.prevTankBarrelModel;
+    } else {
+        previousModel = pc.model;
+    }
     vec4 worldPos = model * vec4(inPosition, 1.0);
     vec4 renderPos = worldPos;
-    vec4 previousPos = worldPos;
+    vec4 previousPos = previousModel * vec4(inPosition, 1.0);
     vec3 renderNormal = inNormal;
     bool foliage = pc.materialType > 1.5 && pc.materialType < 2.5;
     bool bark = pc.materialType > 9.5 && pc.materialType < 10.5;
@@ -69,7 +93,7 @@ void main() {
         vec3 bend = instanceData.instances[gl_InstanceIndex].wind.xyz;
         vec3 previousBend = instanceData.instances[gl_InstanceIndex].previousWind.xyz;
         renderPos = model * vec4(bendTreePosition(inPosition, bend), 1.0);
-        previousPos = model * vec4(bendTreePosition(inPosition, previousBend), 1.0);
+        previousPos = previousModel * vec4(bendTreePosition(inPosition, previousBend), 1.0);
         // Inverse transpose of the bend Jacobian, before the rigid model
         // transform. This keeps illumination attached to the bent surface.
         renderNormal.y -= 2.0 * height * dot(bend, inNormal);

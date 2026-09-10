@@ -104,8 +104,9 @@ add_executable(tanks
     src/render/VoxelSurface.cpp
     src/render/Pipeline.cpp
     src/render/HudRenderer.cpp
-    src/render/HdrTarget.cpp
+    src/render/ResolveTarget.cpp
     src/render/TonemapPass.cpp
+    src/render/TaaBlendPass.cpp
     src/render/Texture.cpp
     src/render/SingleTimeCommands.cpp
     src/render/AccelerationStructure.cpp
@@ -154,7 +155,7 @@ target_link_libraries(tanks PRIVATE
 )
 
 include(cmake/CompileShaders.cmake)
-compile_shaders(tanks basic.vert basic.frag tree_shadow.vert foliage_depth.frag hud.vert hud.frag tonemap.vert tonemap.frag)
+compile_shaders(tanks basic.vert basic.frag tree_shadow.vert foliage_depth.frag hud.vert hud.frag tonemap.vert tonemap.frag taa_blend.frag)
 
 if(BUILD_TESTING)
     add_executable(tree_shadow_cascades_test tests/TreeShadowCascadesTest.cpp)

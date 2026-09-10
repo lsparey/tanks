@@ -73,12 +73,35 @@ public:
         std::array<glm::mat4, 3> treeShadowMatrices{};
         glm::vec4 treeShadowWidths{36.f,100.f,300.f,600.f};
         glm::vec4 treeShadowParams{2.f,2048.f,1.f,1.f};
+        // Last frame's tank world matrices, for the motion-vector buffer
+        // (see basic.vert/frag). The tank's pose is a stateful spring/
+        // rigid-body simulation, not a pure function of time, so this can't
+        // be recomputed the way wind bending's previousWind can -- Tank
+        // snapshots it once per frame (see Tank::prevHullWorldMatrix()).
+        // Lives here, not in PushConstants (already at Vulkan's guaranteed
+        // 128-byte minimum with no room) or RasterInstance (these 3 parts
+        // aren't instanced): there's only one tank, so this is scene-wide
+        // per-frame state exactly like prevViewProj/prevCameraPos above.
+        glm::mat4 prevTankHullModel{1.0f};
+        glm::mat4 prevTankTurretModel{1.0f};
+        glm::mat4 prevTankBarrelModel{1.0f};
+        // Current frame's view-proj WITHOUT the TAA sub-pixel jitter (proj
+        // above carries the jitter for rasterization). The motion-vector
+        // math must use jitter-free matrices on both ends (prevViewProj is
+        // also stored unjittered): the TAA history is a converged,
+        // effectively unjittered image, so a velocity that contains the
+        // frame-to-frame jitter delta makes every pixel resample history
+        // off texel-center every frame -- permanent bilinear blur plus a
+        // visible sub-pixel wobble of the whole scene.
+        glm::mat4 viewProjUnjittered{1.0f};
     };
 
     static_assert(offsetof(FrameUBO, windTime) == 240);
     static_assert(offsetof(FrameUBO, treeShadowMatrices) == 1008);
     static_assert(offsetof(FrameUBO, treeShadowParams) == 1216);
-    static_assert(sizeof(FrameUBO) == 1232);
+    static_assert(offsetof(FrameUBO, prevTankHullModel) == 1232);
+    static_assert(offsetof(FrameUBO, viewProjUnjittered) == 1424);
+    static_assert(sizeof(FrameUBO) == 1488);
 
     struct PushConstants {
         glm::mat4 model;
@@ -141,7 +164,7 @@ public:
     static_assert(sizeof(PushConstants) == 128);
 
     Pipeline(VulkanContext& ctx, VkFormat colorFormat, VkFormat depthFormat, VkFormat historyFormat,
-             VkFormat foliageHistoryFormat);
+             VkFormat foliageHistoryFormat, VkFormat velocityFormat);
     ~Pipeline();
 
     Pipeline(const Pipeline&) = delete;
@@ -183,7 +206,7 @@ private:
     void createDescriptorPoolAndSet();
     void createPipelineLayout();
     void createPipeline(VkFormat colorFormat, VkFormat depthFormat, VkFormat historyFormat,
-                        VkFormat foliageHistoryFormat);
+                        VkFormat foliageHistoryFormat, VkFormat velocityFormat);
     VkShaderModule loadShaderModule(const char* relativePath);
 
     VulkanContext& ctx_;

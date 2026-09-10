@@ -45,7 +45,7 @@ public:
     VkImageView imageView(size_t slot) const { return imageViews_[slot]; }
     VkSampler sampler() const { return sampler_; }
 
-    // Multisampled scratch write target (see HdrTarget::msaaImage() for the
+    // Multisampled scratch write target (see ResolveTarget::msaaImage() for the
     // same pattern) -- the pipeline renders history into this, and the
     // driver resolves it down into images_[frameIndex] at the end of the
     // render pass. Not ping-ponged: it's fully transient within a single

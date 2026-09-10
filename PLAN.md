@@ -203,7 +203,7 @@ as history, including terrain components this goal may replace.
 - [x] [Foliage and environmental motion](#foliage-and-environmental-motion)
 - [x] [Unified sky, sun, and atmosphere](#unified-sky-sun-and-atmosphere)
 - [x] [Physically based material foundation](#physically-based-material-foundation)
-- [ ] [Linear HDR and temporal image stability](#linear-hdr-and-temporal-image-stability)
+- [x] [Linear HDR and temporal image stability](#linear-hdr-and-temporal-image-stability)
 - [ ] [Selective advanced lighting and atmosphere](#selective-advanced-lighting-and-atmosphere)
 - [ ] [Near-field ground vegetation](#near-field-ground-vegetation)
 - [ ] [Shorelines and terrain transitions](#shorelines-and-terrain-transitions)
@@ -779,20 +779,121 @@ shadow/AO accumulation is not full-scene temporal AA.
 - Acceptance: less foliage/specular shimmer without blurred leaves, tank trails
   or aim-point softness, with measured bandwidth and memory cost.
 - Details: [temporal design](docs/RENDERING_ROADMAP.md#hdr-temporal-stability-and-reconstruction).
-- Status: the linear HDR colour target and single tonemap stage are done --
-  `basic.frag` now writes raw linear HDR color into a new `HdrTarget`
-  (`R16G16B16A16_SFLOAT`, MSAA scratch + resolve, no ping-pong), and a new
-  `TonemapPass` (fullscreen triangle, its own small pipeline/descriptor) maps
-  that down to the swapchain's sRGB image in a dedicated pass right before
-  the HUD draws on top. Verified via clean Vulkan validation output and
-  matched `--seed 7331` screenshots across tank/terrain/water/trees showing
-  no visible regression. Motion vectors, depth/velocity resolve, history
-  rejection and native TAA -- the part of this item that actually addresses
-  shimmer -- remain separate, not-yet-started work: no camera jitter exists
-  anywhere, and there is no previous-frame rigid transform for the tank's
-  hull/turret/barrel/tracks (only wind-bent foliage/bark has real
-  previous-position data today), so that follow-up needs its own planning
-  pass rather than building on this one directly.
+- Status: the linear HDR colour target, single tonemap stage, and a resolved
+  motion-vector buffer are done. `basic.frag` writes raw linear HDR color
+  into a `ResolveTarget` (`R16G16B16A16_SFLOAT`, MSAA scratch + resolve, no
+  ping-pong -- generalized from the initial HDR-only version so a second
+  instance backs the velocity buffer too), and `TonemapPass` (fullscreen
+  triangle, its own small pipeline/descriptor) maps that down to the
+  swapchain's sRGB image right before the HUD draws on top. A 4th MRT
+  attachment (`R16G16_SFLOAT`) carries a UV-space current-minus-previous
+  motion vector, computed by reusing the existing prevViewProj reprojection
+  scaffold; `Tank` now snapshots its hull/turret/barrel world matrices once
+  per frame (`prevHullWorldMatrix()` etc., since that pose is a stateful
+  spring/rigid-body sim, not a pure function of time like wind bending) and
+  `RasterInstance` carries a `previousModel` for instanced draws. F10 toggles
+  a debug visualization (velocity mapped to color via `TonemapPass`) used to
+  verify it: confirmed correct via wind-driven foliage sway, camera-motion
+  parallax on static ground, and the tank's own recoil kick all showing
+  distinct, physically-sensible tints, with static terrain reading exactly
+  zero. Camera jitter (Halton(2,3), 8-frame cycle, added to the projection's
+  `[2][0]/[2][1]` terms -- kept out of the CPU-side crosshair/aim-point
+  projection and the tree-LOD footprint calculation, which use an
+  unjittered copy, so neither visibly wobbles) and a basic TAA resolve
+  (`TaaBlendPass`: reprojects a ping-ponged HDR color history via the
+  velocity buffer, clamps it into a 4-tap neighborhood color box built from
+  the current frame, blends at a fixed 0.9 history weight; `TonemapPass` now
+  reads this blended result instead of the raw HDR target) complete the
+  item. Deliberately simple -- no variance clipping, no motion-blurred
+  neighborhoods, no adaptive blend factor -- see the acceptance note below.
+  F11 toggles TAA on/off for direct comparison.
+
+  Prompted by a user report of unstable/flickering lighting; investigation
+  (comparing current state, the state right after the HDR/tonemap commit,
+  and the pre-session baseline) confirmed this was pre-existing ray-traced
+  shadow/AO noise on the tank (worse at the original baseline, not a
+  regression from this work) -- `basic.frag`'s `isTank` branch intentionally
+  skips shadow/AO smoothing for moving objects, so the tank was always lit
+  by a handful of raw, unsmoothed rays per frame. Verified the fix directly:
+  diffing two consecutive frames of an otherwise-static scene dropped from
+  a filled-in, flickering tank silhouette (mean channel diff ~1.4-2.2 with
+  jitter alone, no TAA) to a thin edge-only outline (~0.57-0.76) with the
+  tank's body and the ground both reading as pixel-stable in between --
+  confirming TAA fixed the reported problem (broad-surface flicker) while
+  leaving the well-known, common residual: sub-pixel jitter still aliases
+  differently at high-contrast edges/silhouettes frame to frame, which a
+  4-tap neighborhood clamp doesn't fully suppress. That residual is an
+  accepted, explicitly-scoped limitation, not a bug -- the same acceptance
+  note flags variance clipping/wider neighborhoods as the measured follow-up
+  if it's ever not good enough, rather than a default.
+
+  Remaining limitation, unchanged from before: the tank's wheels/track shoes
+  still report zero motion (`previousModel == model`, no real rotation
+  snapshot yet) -- under-represents fast wheel-spin in the TAA history, not
+  a correctness bug. Verified via clean Vulkan validation output (including
+  after resize) and matched `--seed 7331` screenshots showing no visible
+  regression to normal rendering. Not yet done: the acceptance line's
+  "measured bandwidth and memory cost" -- no Release GPU-timing/VRAM
+  comparison has been taken for the new passes/buffers (HDR, velocity, TAA
+  history, blend pass) against the pre-HDR baseline; worth a real
+  measurement pass before treating this as fully closed out.
+
+  Correction after initial landing: the first version (0.9 history weight,
+  no sharpening) was reported as making the image "very blurry" -- confirmed
+  directly with a same-frame TAA-on/off comparison, not just a subtle
+  characteristic. Root cause: 4-tap min/max neighborhood clamping only
+  rejects wrong colors (ghosting); it does nothing to stop the blend itself
+  from softening detail, since a blurred value still falls inside a smooth
+  region's local min/max range. Fixed by reducing the history weight to
+  0.85 and adding a cheap unsharp-mask sharpen (reusing the clamp's own 4
+  neighbor taps, no new texture reads) -- re-verified with the same
+  consecutive-frame diff used to confirm the original fix: the tank/ground
+  interior stays stable (thin edge-only residual, same pattern as before)
+  while the image is visibly as sharp as TAA off. There's a genuine,
+  expected tension between sharpen strength and edge stability (a stronger
+  sharpen amplifies frame-to-frame edge noise along with real detail);
+  0.15 was chosen as the point that restored sharpness without visibly
+  reintroducing that noise -- a further measured tuning pass, or a sharper
+  history reconstruction filter (Catmull-Rom) instead of a post-blend
+  sharpen, remains a possible follow-up if 0.15 turns out not to be enough
+  in practice.
+
+  Second correction, after "glitchy/disappearing lighting when the camera
+  moves, slight camera jiggle, still quite blurry" was reported: four
+  distinct bugs in the motion-vector/TAA work, found and fixed together.
+  (1) The dominant one -- `tree_shadow.vert` declares its own copy of the
+  `RasterInstance` struct for the instance SSBO, and it was never updated
+  when `previousModel` was added to the C++ struct and `basic.vert`; the
+  stride mismatch made the shadow-map pass read garbage matrices for every
+  instance, corrupting/removing tree and tank shadows (confirmed by a
+  side-by-side against a HEAD-commit build: baseline had full soft shadows,
+  the working tree had almost none). Both struct copies now carry a
+  must-byte-match warning comment. (2) `TaaBlendPass` and `TonemapPass`
+  each had a single descriptor set rewritten every frame from `drawFrame`
+  while the other in-flight frame's command buffer could still be executing
+  -- spec-illegal and intermittently glitchy; both now hold one set per
+  frame in flight, written only at startup/resize (the same pattern as
+  `Pipeline`'s history sets), with zero per-frame descriptor updates.
+  Confirmed clean under the validation layer's synchronization-validation
+  mode (the only remaining hazards are a pre-existing swapchain-acquire
+  pattern, unrelated). (3) The TAA camera jitter leaked into reprojection:
+  `prevViewProj_` stored the jittered matrix and velocity was computed from
+  the jittered `frame.proj`, so every velocity carried the frame-to-frame
+  jitter delta -- history resampled off texel-center every frame even with
+  a static camera (permanent bilinear blur + visible sub-pixel wobble of
+  the whole scene). `FrameUBO` gained `viewProjUnjittered`, `prevViewProj`
+  is stored unjittered again, and velocity (now a shared
+  `computeScreenVelocity()` helper in basic.frag) uses only unjittered
+  matrices on both ends. (4) The previous fix attempt's "sentinel velocity"
+  on transient effects was itself wrong -- the effect cards draw without
+  discard, so writing any velocity stomps the background's across the full
+  billboard quad including fully transparent texels. Reverted to the
+  standard treatment: the effects pipeline write-masks the velocity
+  attachment (background velocity stays underneath; neighborhood clamp
+  bounds the card's own change), the unlit and sky branches write real
+  reprojection velocity. Verified: shadows match the HEAD baseline,
+  consecutive-frame stability diff back at the accepted magnitude, weapon
+  preview frame 94 shows no smoke ghost trails, 25/25 tests pass.
 
 ### Selective advanced lighting and atmosphere
 

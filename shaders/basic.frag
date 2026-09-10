@@ -79,6 +79,11 @@ layout(location = 1) out vec4 outShadowHistory;
 // Fixed-alpha-smoothed foliage-transmission factor -- see the comment on
 // historyFoliage above.
 layout(location = 2) out float outFoliageHistory;
+// UV-space (current minus previous) motion vector -- resolved and consumed
+// by TonemapPass's debug visualization today; a future TAA blend pass will
+// read it for real. See the velocity computation below main()'s existing
+// prevClip reprojection block, which this reuses.
+layout(location = 3) out vec2 outVelocity;
 
 // Hard visibility test via a single ray query: 1.0 if nothing occludes the
 // path from `origin` toward `direction`, 0.0 if something does.
@@ -366,8 +371,8 @@ float traceAO(vec3 origin, vec3 normal, float seedBase, int sampleCount, float r
     return 1.0 - strength * (occlusion / float(sampleCount));
 }
 
-// This shader writes raw linear HDR color (no tonemap, no exposure) into
-// HdrTarget; shaders/tonemap.frag is now the single place that maps the
+// This shader writes raw linear HDR color (no tonemap, no exposure) into a
+// ResolveTarget; shaders/tonemap.frag is now the single place that maps the
 // resolved HDR scene down to the swapchain's sRGB output. See that file's
 // comment for why (highlight clipping on an 8-bit target) and the ACES
 // curve itself, both moved there from here.
@@ -430,6 +435,26 @@ BrdfResult evaluateGGX(vec3 N, vec3 V, vec3 L, float roughness, float metalness,
     return r;
 }
 
+// UV-space (current minus previous) motion vector for this fragment, for
+// the TAA resolve (see TaaBlendPass/taa_blend.frag). Built from the
+// UNJITTERED matrices on both ends -- frame.proj carries the TAA sub-pixel
+// jitter for rasterization, but the history image TAA reprojects into is a
+// converged, effectively unjittered image, so a velocity containing the
+// frame-to-frame jitter delta would resample history off texel-center every
+// frame (permanent bilinear blur + visible sub-pixel wobble). Shares the
+// shadow-history reprojection's Y-flip convention (see that block's
+// comment in main) so both consumers of these images agree on orientation.
+vec2 computeScreenVelocity() {
+    vec4 currentClip = frame.viewProjUnjittered * vec4(fragWorldPos, 1.0);
+    vec4 prevClip = frame.prevViewProj * vec4(fragPrevWorldPos, 1.0);
+    if (currentClip.w <= 0.001 || prevClip.w <= 0.001) return vec2(0.0);
+    vec2 currentNDC = currentClip.xy / currentClip.w;
+    vec2 prevNDC = prevClip.xy / prevClip.w;
+    vec2 currentUV = vec2(currentNDC.x * 0.5 + 0.5, 0.5 - currentNDC.y * 0.5);
+    vec2 prevUV = vec2(prevNDC.x * 0.5 + 0.5, 0.5 - prevNDC.y * 0.5);
+    return currentUV - prevUV;
+}
+
 // Exponential distance fog, tinted by the plain sky gradient (not
 // skyColor's cloud-textured version -- see skyGradient's comment) -- gives
 // the terrain's ~255-unit corner-to-corner diagonal (see Camera::
@@ -482,6 +507,14 @@ void main() {
         outColor = vec4(color, alpha);
         outShadowHistory = vec4(0);
         outFoliageHistory = 1.0;
+        // Never lands: the effects pipeline write-masks the velocity
+        // attachment (see Pipeline.cpp) so these translucent cards keep the
+        // opaque background's velocity underneath -- the standard TAA
+        // treatment of transparents. Writing anything here would stomp the
+        // background's velocity across the whole billboard quad, including
+        // its fully transparent texels (this pipeline draws without
+        // discard -- see the alpha comment above).
+        outVelocity = vec2(0.0);
         return;
     }
     if (materialType > 3.5 && materialType < 4.5) {
@@ -489,6 +522,10 @@ void main() {
         outColor = vec4(skyColor(direction), 1.0);
         outShadowHistory = vec4(1.0, 1.0, length(fragWorldPos - frame.cameraPos.xyz), 0.0);
         outFoliageHistory = 1.0;
+        // Real reprojection velocity, not zero: under camera rotation the
+        // sky visibly moves across the screen, and a zero velocity would
+        // make TAA blend the un-moved previous sky into it (smearing).
+        outVelocity = computeScreenVelocity();
         return;
     }
     float currentViewDist = length(frame.cameraPos.xyz - fragWorldPos);
@@ -791,6 +828,15 @@ void main() {
         outColor = vec4(albedo, finalAlpha);
         outShadowHistory = vec4(1.0, 1.0, 50000.0, 0.0);
         outFoliageHistory = 1.0;
+        // Real reprojection velocity: this path covers both genuinely
+        // static geometry (the boundary wall) and transient quads (dust
+        // puffs, impact flashes). Camera-motion reprojection is exactly
+        // right for the former and a close approximation for the latter
+        // (their own drift between frames is small; the TAA neighborhood
+        // clamp bounds the residual error). A zero would smear everything
+        // here when the camera moves; a sentinel would kill TAA over the
+        // full quad footprint including its transparent texels.
+        outVelocity = computeScreenVelocity();
         return;
     }
 
@@ -872,6 +918,9 @@ void main() {
     // heavy, unconditional smoothing is exactly correct for a value with
     // nothing legitimate to react quickly to.
     vec4 prevClip = frame.prevViewProj * vec4(fragPrevWorldPos, 1.0);
+    // Motion vector for the TAA resolve, independent of whether the
+    // shadow/AO reprojection below is enabled -- see computeScreenVelocity.
+    outVelocity = computeScreenVelocity();
     float solidFactor = rawSolid;
     float foliageFactor = rawFoliage;
     float aoFactor = rawAO;
