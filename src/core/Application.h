@@ -12,6 +12,7 @@
 
 #include "../render/AccelerationStructure.h"
 #include "../render/CommandContext.h"
+#include "../render/HdrTarget.h"
 #include "../render/HistoryBuffer.h"
 #include "../render/HudRenderer.h"
 #include "../render/Mesh.h"
@@ -19,6 +20,7 @@
 #include "../render/SceneAccelerationStructure.h"
 #include "../render/Swapchain.h"
 #include "../render/Texture.h"
+#include "../render/TonemapPass.h"
 #include "../render/TreeShadowMap.h"
 #include "../render/VulkanContext.h"
 #include "../scene/Box.h"
@@ -315,6 +317,11 @@ private:
     // fixed-alpha smoothed foliage-transmission factor -- see basic.frag's
     // comment on why that value can't share historyBuffer_'s adaptive blend.
     std::unique_ptr<HistoryBuffer> foliageHistoryBuffer_;
+    // Linear HDR scene-color target the main pass resolves into, and the
+    // single tonemap pass that maps it down to the swapchain's sRGB image
+    // right before the HUD draws on top -- see HdrTarget/TonemapPass.
+    std::unique_ptr<HdrTarget> hdrTarget_;
+    std::unique_ptr<TonemapPass> tonemapPass_;
 
     bool isUnderwater(float x, float z) const;
     bool allowsScenery(glm::vec2 center, float radius) const;

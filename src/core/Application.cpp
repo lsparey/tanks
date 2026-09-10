@@ -331,13 +331,17 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
     foliageHistoryBuffer_ = std::make_unique<HistoryBuffer>(
         *context_, *commands_, swapchain_->extent(), VK_FORMAT_R16_SFLOAT,
         VkClearColorValue{{1.0f, 0.0f, 0.0f, 0.0f}});
-    pipeline_ = std::make_unique<Pipeline>(*context_, swapchain_->imageFormat(),
+    hdrTarget_ = std::make_unique<HdrTarget>(*context_, swapchain_->extent());
+    pipeline_ = std::make_unique<Pipeline>(*context_, hdrTarget_->format(),
                                             swapchain_->depthFormat(), historyBuffer_->format(),
                                             foliageHistoryBuffer_->format());
     treeShadowMap_ = std::make_unique<TreeShadowMap>(*context_);
     pipeline_->updateTreeShadowDescriptor(treeShadowMap_->view(), treeShadowMap_->sampler());
     hud_ = std::make_unique<HudRenderer>(*context_, swapchain_->imageFormat(),
                                           swapchain_->depthFormat());
+    tonemapPass_ = std::make_unique<TonemapPass>(*context_, swapchain_->imageFormat(),
+                                                  swapchain_->depthFormat());
+    tonemapPass_->updateSourceDescriptor(hdrTarget_->imageView(), hdrTarget_->sampler());
     if (showTerrainMenu) {
         if (!selectTerrain(valleyTerrain, landform, terrainResolution, refinementPasses)) return;
         // Time spent choosing settings is not loading time.
@@ -953,6 +957,8 @@ void Application::cleanup() noexcept {
     treeShadowMap_.reset();
     historyBuffer_.reset();
     foliageHistoryBuffer_.reset();
+    tonemapPass_.reset();
+    hdrTarget_.reset();
     sceneAS_.reset();
     for (auto& meshes : treeReflectionBLAS_) meshes.clear();
     treeLeafBLAS_.clear();
@@ -1989,6 +1995,8 @@ void Application::recreateSwapchainDependentResources() {
     swapchain_->recreate();
     historyBuffer_->recreate(*commands_, swapchain_->extent());
     foliageHistoryBuffer_->recreate(*commands_, swapchain_->extent());
+    hdrTarget_->recreate(swapchain_->extent());
+    tonemapPass_->updateSourceDescriptor(hdrTarget_->imageView(), hdrTarget_->sampler());
     for (size_t i = 0; i < CommandContext::kFramesInFlight; ++i) {
         size_t readSlot = 1 - i;
         pipeline_->updateHistoryDescriptor(i, historyBuffer_->imageView(readSlot),
@@ -2587,16 +2595,21 @@ void Application::drawFrame() {
     vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                          gpuTimestampPool_, timestampBase + 11);
 
+    // The presentable swapchain image is no longer touched by the main 3D
+    // pass at all -- it's now only written by the tonemap pass afterward
+    // (see the between-scenes barrier block below), so its own
+    // UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL transition happens there instead
+    // of here.
     VkImage colorImage = swapchain_->image(imageIndex);
     VkImage historyWriteImage = historyBuffer_->image(currentFrame_);
-    // The presentable swapchain image and the persistent history slot above
-    // are both single-sample and now serve as MSAA *resolve targets* rather
+    // hdrTarget_'s resolve image and the persistent history slot above are
+    // both single-sample and now serve as MSAA *resolve targets* rather
     // than the attachments actually drawn into -- the pipeline (created with
     // rasterizationSamples = ctx_.msaaSamples()) renders into these
     // multisampled scratch images instead, which the driver resolves
     // (averages down) into the single-sample targets at the end of the
     // render pass (see the resolveImageView fields below).
-    VkImage msaaColorImage = swapchain_->colorImage();
+    VkImage msaaHdrImage = hdrTarget_->msaaImage();
     VkImage msaaHistoryImage = historyBuffer_->msaaImage();
     VkImage foliageHistoryWriteImage = foliageHistoryBuffer_->image(currentFrame_);
     VkImage msaaFoliageHistoryImage = foliageHistoryBuffer_->msaaImage();
@@ -2604,15 +2617,15 @@ void Application::drawFrame() {
     // All attachments are fully overwritten this frame (LOAD_OP_CLEAR), so
     // treating oldLayout as UNDEFINED is correct regardless of prior layout:
     // it tells the driver not to preserve contents, matching the clear. The
-    // resolve targets (colorImage, historyWriteImage) also need to be in
-    // COLOR_ATTACHMENT_OPTIMAL up front since that's the layout the resolve
-    // operation writes through.
+    // resolve targets (hdrTarget_->image(), historyWriteImage) also need to
+    // be in COLOR_ATTACHMENT_OPTIMAL up front since that's the layout the
+    // resolve operation writes through.
     VkImageMemoryBarrier2 toAttachments[] = {
-        imageBarrier(msaaColorImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+        imageBarrier(msaaHdrImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
                      0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
-        imageBarrier(colorImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+        imageBarrier(hdrTarget_->image(), VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
                      0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
@@ -2662,10 +2675,10 @@ void Application::drawFrame() {
 
     VkRenderingAttachmentInfo colorAttachment{};
     colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    colorAttachment.imageView = swapchain_->colorImageView();
+    colorAttachment.imageView = hdrTarget_->msaaImageView();
     colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     colorAttachment.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
-    colorAttachment.resolveImageView = swapchain_->imageView(imageIndex);
+    colorAttachment.resolveImageView = hdrTarget_->imageView();
     colorAttachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -3173,21 +3186,23 @@ void Application::drawFrame() {
     vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                          gpuTimestampPool_, timestampBase + 6);
 
-    // HudRenderer's pipeline declares a single color attachment, which is
-    // incompatible with the 2-color-attachment scope above -- end that scope
-    // and start a fresh one-color-attachment scope for it. The color image
-    // stays in COLOR_ATTACHMENT_OPTIMAL throughout (no layout change), but
-    // still needs an execution/memory barrier ordering the 3D pass's writes
-    // before the HUD pass's; the history image transitions to
+    // The 3D pass's MRT scope is done. Before the tonemap pass can run:
+    // hdrTarget_'s resolved HDR image needs to move from attachment-write to
+    // shader-read, and the swapchain's presentable image (untouched so far
+    // this frame -- see its comment above) needs its first transition into
+    // COLOR_ATTACHMENT_OPTIMAL. The history images transition to
     // SHADER_READ_ONLY_OPTIMAL here too, ready to be the *other* slot's
     // input starting next frame.
     VkImageMemoryBarrier2 betweenScenesBarriers[] = {
-        imageBarrier(colorImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        imageBarrier(colorImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                      VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
+        imageBarrier(hdrTarget_->image(), VK_IMAGE_ASPECT_COLOR_BIT,
+                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                     VK_ACCESS_2_SHADER_READ_BIT),
         imageBarrier(historyWriteImage, VK_IMAGE_ASPECT_COLOR_BIT,
                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                      VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -3201,9 +3216,64 @@ void Application::drawFrame() {
     };
     VkDependencyInfo betweenScenesDepInfo{};
     betweenScenesDepInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    betweenScenesDepInfo.imageMemoryBarrierCount = 3;
+    betweenScenesDepInfo.imageMemoryBarrierCount = 4;
     betweenScenesDepInfo.pImageMemoryBarriers = betweenScenesBarriers;
     vkCmdPipelineBarrier2(frame.commandBuffer, &betweenScenesDepInfo);
+
+    // Single exposure/tonemap/display-encoding pass: maps hdrTarget_'s
+    // linear HDR result down into the swapchain's sRGB image, in the same
+    // position the 3D pass's MSAA resolve used to write directly -- see
+    // TonemapPass. Fully overwrites every pixel (LOAD_OP_DONT_CARE is safe).
+    VkRenderingAttachmentInfo tonemapColorAttachment{};
+    tonemapColorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    tonemapColorAttachment.imageView = swapchain_->imageView(imageIndex);
+    tonemapColorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    tonemapColorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    tonemapColorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+    VkRenderingInfo tonemapRenderingInfo{};
+    tonemapRenderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    tonemapRenderingInfo.renderArea = {{0, 0}, extent};
+    tonemapRenderingInfo.layerCount = 1;
+    tonemapRenderingInfo.colorAttachmentCount = 1;
+    tonemapRenderingInfo.pColorAttachments = &tonemapColorAttachment;
+
+    // Standard (non-negated) viewport, unlike the shared `viewport` used by
+    // the 3D pass and HUD above -- that one's negative height corrects
+    // GLM's y-up NDC convention for geometry transformed by a projection
+    // matrix. tonemap.vert builds its fullscreen triangle directly in plain
+    // Vulkan NDC (no such matrix involved), so applying that same
+    // correction here would flip the image a second time.
+    VkViewport tonemapViewport{};
+    tonemapViewport.x = 0.0f;
+    tonemapViewport.y = 0.0f;
+    tonemapViewport.width = static_cast<float>(extent.width);
+    tonemapViewport.height = static_cast<float>(extent.height);
+    tonemapViewport.minDepth = 0.0f;
+    tonemapViewport.maxDepth = 1.0f;
+
+    vkCmdBeginRendering(frame.commandBuffer, &tonemapRenderingInfo);
+    vkCmdSetViewport(frame.commandBuffer, 0, 1, &tonemapViewport);
+    vkCmdSetScissor(frame.commandBuffer, 0, 1, &scissor);
+    tonemapPass_->render(frame.commandBuffer);
+    vkCmdEndRendering(frame.commandBuffer);
+
+    // HudRenderer's pipeline declares a single color attachment, which is
+    // incompatible with the tonemap scope above -- end that scope and start
+    // a fresh one for the HUD. The color image stays in
+    // COLOR_ATTACHMENT_OPTIMAL throughout (no layout change), but still
+    // needs an execution/memory barrier ordering the tonemap pass's write
+    // before the HUD pass's LOAD read of the same image.
+    VkImageMemoryBarrier2 tonemapToHudBarrier = imageBarrier(
+        colorImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    VkDependencyInfo tonemapToHudDepInfo{};
+    tonemapToHudDepInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    tonemapToHudDepInfo.imageMemoryBarrierCount = 1;
+    tonemapToHudDepInfo.pImageMemoryBarriers = &tonemapToHudBarrier;
+    vkCmdPipelineBarrier2(frame.commandBuffer, &tonemapToHudDepInfo);
 
     VkRenderingAttachmentInfo hudColorAttachment{};
     hudColorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;

@@ -779,6 +779,20 @@ shadow/AO accumulation is not full-scene temporal AA.
 - Acceptance: less foliage/specular shimmer without blurred leaves, tank trails
   or aim-point softness, with measured bandwidth and memory cost.
 - Details: [temporal design](docs/RENDERING_ROADMAP.md#hdr-temporal-stability-and-reconstruction).
+- Status: the linear HDR colour target and single tonemap stage are done --
+  `basic.frag` now writes raw linear HDR color into a new `HdrTarget`
+  (`R16G16B16A16_SFLOAT`, MSAA scratch + resolve, no ping-pong), and a new
+  `TonemapPass` (fullscreen triangle, its own small pipeline/descriptor) maps
+  that down to the swapchain's sRGB image in a dedicated pass right before
+  the HUD draws on top. Verified via clean Vulkan validation output and
+  matched `--seed 7331` screenshots across tank/terrain/water/trees showing
+  no visible regression. Motion vectors, depth/velocity resolve, history
+  rejection and native TAA -- the part of this item that actually addresses
+  shimmer -- remain separate, not-yet-started work: no camera jitter exists
+  anywhere, and there is no previous-frame rigid transform for the tank's
+  hull/turret/barrel/tracks (only wind-bent foliage/bark has real
+  previous-position data today), so that follow-up needs its own planning
+  pass rather than building on this one directly.
 
 ### Selective advanced lighting and atmosphere
 

@@ -366,27 +366,11 @@ float traceAO(vec3 origin, vec3 normal, float seedBase, int sampleCount, float r
     return 1.0 - strength * (occlusion / float(sampleCount));
 }
 
-// The swapchain's attachment format is sRGB (see Swapchain::imageFormat_),
-// so the driver auto-encodes whatever linear color this shader writes --
-// but it does so straight onto an 8-bit target, meaning anything above 1.0
-// (the sun-glint specular term especially, exponent 150 on water) simply
-// clips to flat white with a hard edge. Compressing through a filmic curve
-// first gives those highlights a smooth rolloff instead, and pulls the
-// whole image's contrast a little closer to how a camera/eye actually
-// responds rather than the linear-clip default.
-const float kExposure = 1.0;
-
-// Narkowicz 2015 ACES filmic fit -- a widely-used cheap approximation of
-// the full ACES tonemap curve, accurate enough for this purpose without
-// needing the real curve's 3D LUT.
-vec3 acesFilmicTonemap(vec3 x) {
-    const float a = 2.51;
-    const float b = 0.03;
-    const float c = 2.43;
-    const float d = 0.59;
-    const float e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
+// This shader writes raw linear HDR color (no tonemap, no exposure) into
+// HdrTarget; shaders/tonemap.frag is now the single place that maps the
+// resolved HDR scene down to the swapchain's sRGB output. See that file's
+// comment for why (highlight clipping on an 8-bit target) and the ACES
+// curve itself, both moved there from here.
 
 const float kPi = 3.14159265359;
 
@@ -495,14 +479,14 @@ void main() {
         // No discard needed: this pipeline writes neither depth nor history.
         // Zero alpha is also compatible with devices without shader demotion.
         if (alpha < .002) alpha = 0.0;
-        outColor = vec4(acesFilmicTonemap(color*kExposure),alpha);
+        outColor = vec4(color, alpha);
         outShadowHistory = vec4(0);
         outFoliageHistory = 1.0;
         return;
     }
     if (materialType > 3.5 && materialType < 4.5) {
         vec3 direction = normalize(fragWorldPos - frame.cameraPos.xyz);
-        outColor = vec4(acesFilmicTonemap(skyColor(direction) * kExposure), 1.0);
+        outColor = vec4(skyColor(direction), 1.0);
         outShadowHistory = vec4(1.0, 1.0, length(fragWorldPos - frame.cameraPos.xyz), 0.0);
         outFoliageHistory = 1.0;
         return;
@@ -804,7 +788,7 @@ void main() {
     }
 
     if (unlit > 0.5) {
-        outColor = vec4(acesFilmicTonemap(albedo * kExposure), finalAlpha);
+        outColor = vec4(albedo, finalAlpha);
         outShadowHistory = vec4(1.0, 1.0, 50000.0, 0.0);
         outFoliageHistory = 1.0;
         return;
@@ -1394,5 +1378,5 @@ void main() {
     float fogFactor = 1.0 - exp(-fogDist * frame.atmosphere.y);
     result = mix(result, fogColor, fogFactor);
 
-    outColor = vec4(acesFilmicTonemap(result * kExposure), finalAlpha);
+    outColor = vec4(result, finalAlpha);
 }
