@@ -795,6 +795,71 @@ Mesh Mesh::shrub(VulkanContext& ctx, CommandContext& commands, glm::vec3 color, 
     return Mesh(ctx, commands, vertices, indices);
 }
 
+// Appends a single, gently bent grass blade -- a tapered triangle (wide at
+// the base in the local XZ plane, y=0, narrowing to a point at the tip)
+// baked with both triangle windings (see Mesh::dome's identical comment)
+// so it reads from any side despite the main pipeline's fixed backface
+// culling. `lean` offsets the tip sideways in XZ for a slightly bent look
+// rather than a rigid upright spike.
+void appendGrassBlade(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices, glm::vec2 base,
+                     float height, float width, glm::vec2 lean, float yaw, glm::vec3 color) {
+    float c = std::cos(yaw), s = std::sin(yaw);
+    glm::vec2 halfWidth(c * width * 0.5f, s * width * 0.5f);
+    glm::vec3 p0(base.x - halfWidth.x, 0.0f, base.y - halfWidth.y);
+    glm::vec3 p1(base.x + halfWidth.x, 0.0f, base.y + halfWidth.y);
+    glm::vec3 tip(base.x + lean.x, height, base.y + lean.y);
+    glm::vec3 flatNormal = glm::normalize(glm::cross(p1 - p0, tip - p0));
+    // Blended most of the way toward world-up rather than left as the raw
+    // flat (mostly-sideways) face normal. A real tuft's blades scatter and
+    // inter-reflect light between each other enough to read as evenly lit
+    // from most angles; a single flat per-blade normal without this fake
+    // left roughly half of any given tuft (whichever blades happened to
+    // face away from the sun) reading as a dark, near-silhouette spike
+    // against the sunlit lawn around it -- confirmed directly by sampling
+    // rendered pixel colors on a tuft, which came back a uniform dark green
+    // regardless of which way individual blades faced. This is the same
+    // "fake it toward up" idea real-time grass shading commonly leans on in
+    // place of simulating actual inter-blade light bounce.
+    glm::vec3 normal = glm::normalize(glm::mix(flatNormal, glm::vec3(0.0f, 1.0f, 0.0f), 0.55f));
+
+    uint32_t i0 = static_cast<uint32_t>(vertices.size());
+    vertices.push_back({p0, normal, color, glm::vec2(0.0f, 0.0f)});
+    vertices.push_back({p1, normal, color, glm::vec2(1.0f, 0.0f)});
+    vertices.push_back({tip, normal, color, glm::vec2(0.5f, 1.0f)});
+    indices.insert(indices.end(), {i0, i0 + 1, i0 + 2, i0, i0 + 2, i0 + 1});
+}
+
+// A small ground-level tuft of a handful of gently-leaning blades around a
+// shared base point -- the near-field ground vegetation's actual geometry
+// (real triangles, not an alpha-cutout billboard card: there's no existing
+// alpha-cutout foliage texture/pipeline path in this codebase to reuse --
+// see PLAN.md's "Near-field ground vegetation" for that tradeoff). `seed`
+// varies blade count/placement/lean per variant, the same way Mesh::shrub's
+// seed does for its blob jitter.
+Mesh Mesh::grassClump(VulkanContext& ctx, CommandContext& commands, glm::vec3 color, uint32_t seed) {
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> angleDist(0.0f, 2.0f * kPi);
+    std::uniform_real_distribution<float> radiusDist(0.0f, 0.1f);
+    std::uniform_real_distribution<float> heightDist(0.2f, 0.36f);
+    std::uniform_real_distribution<float> widthDist(0.05f, 0.08f);
+    std::uniform_real_distribution<float> leanDist(-0.09f, 0.09f);
+    std::uniform_real_distribution<float> shadeDist(0.7f, 1.3f);
+    constexpr int kBladeCount = 6;
+    for (int i = 0; i < kBladeCount; ++i) {
+        float placementAngle = angleDist(rng);
+        float placementRadius = radiusDist(rng);
+        glm::vec2 base(std::cos(placementAngle) * placementRadius,
+                       std::sin(placementAngle) * placementRadius);
+        glm::vec2 lean(leanDist(rng), leanDist(rng));
+        glm::vec3 bladeColor = glm::clamp(color * shadeDist(rng), 0.0f, 1.0f);
+        appendGrassBlade(vertices, indices, base, heightDist(rng), widthDist(rng), lean,
+                        angleDist(rng), bladeColor);
+    }
+    return Mesh(ctx, commands, vertices, indices);
+}
+
 Mesh::Geometry Mesh::treeBarkGeometry(glm::vec3 tint,
                     const TreeGenerator::Tree& tree, int lod) {
     lod = std::clamp(lod, 0, 2);

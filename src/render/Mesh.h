@@ -141,6 +141,14 @@ public:
     // way Mesh::rock's seed does.
     static Mesh shrub(VulkanContext& ctx, CommandContext& commands, glm::vec3 color, uint32_t seed);
 
+    // A small ground-level tuft of a handful of gently-leaning blade
+    // triangles around a shared base point, for near-field grass clumps
+    // scattered across grassy terrain (see Application::spawnGrassClumps).
+    // Real geometry, not a billboard card -- `seed` varies blade count/
+    // placement/lean per variant the same way Mesh::shrub's seed does.
+    static Mesh grassClump(VulkanContext& ctx, CommandContext& commands, glm::vec3 color,
+                           uint32_t seed);
+
 private:
     Buffer vertexBuffer_;
     Buffer indexBuffer_;

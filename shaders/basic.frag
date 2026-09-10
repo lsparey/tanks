@@ -99,6 +99,54 @@ float traceShadow(vec3 origin, vec3 direction, float tMax, uint mask) {
                : 0.0;
 }
 
+// Plain two-tone sky gradient, no clouds -- factored out of skyColor below
+// (further down, alongside the cloud-texture sampling it needs) so distance
+// fog and traceReflection/the ambient helper below, which don't need clouds,
+// can use just the smooth gradient. Using the full cloud-textured skyColor
+// for fog made the cloud pattern visibly bleed onto nearby opaque geometry
+// (tree trunks, rocks) any time that fragment's camera-to-surface direction
+// pointed even slightly upward, since fog blends in this color starting
+// close to the camera.
+vec3 skyGradient(vec3 dir) {
+    // Horizon haze stays pale, including for slightly downward fog rays.
+    return mix(frame.skyHorizon.rgb, frame.skyZenith.rgb,
+               pow(clamp(dir.y, 0.0, 1.0), 0.55));
+}
+
+// Directional ambient fill sourced from the same sky gradient the visible
+// dome/fog use, replacing what used to be a flat frame.ambientColor tint
+// applied identically regardless of surface orientation. A surface facing
+// mostly up toward the sky (grass, a tank's turret roof) now skews toward
+// the zenith tone; a surface facing sideways toward the horizon band skews
+// toward the horizon tone -- the same "which patch of sky does this surface
+// mostly see" idea skyGradient already uses for view rays, applied to
+// surface normals instead. Luma-matched to the old flat ambientColor.rgb so
+// the overall fill brightness this scene was tuned against doesn't shift --
+// only its color and per-surface directional variation do.
+//
+// kSkyTintStrength keeps that variation partial rather than a full swap: a
+// straight-up normal maps to raw skyZenith, which is a much more saturated
+// blue than the pale constant it replaces (a real hemisphere of sky is
+// mostly mid-elevation tones, not the exact zenith point, so going all the
+// way there overstates it). Even after re-matching luma, that lost too much
+// red relative to blue and, after the ACES tonemap, read as a visibly
+// cooler/duller image rather than an equally-bright, differently-tinted one
+// -- confirmed by comparing mean scene luminance before/after (changed by
+// under 0.3/255, i.e. not a real brightness drop) against the same
+// screenshots' visual "darker" impression, which tracked the red/blue
+// channel shift instead. Blending back toward the original tone keeps the
+// sky-tied directional effect visible while keeping most of the original
+// warmth.
+const float kSkyTintStrength = 0.4;
+vec3 skyAmbientTint(vec3 n) {
+    vec3 skyMix = mix(frame.skyHorizon.rgb, frame.skyZenith.rgb, n.y * 0.5 + 0.5);
+    vec3 luma = vec3(0.299, 0.587, 0.114);
+    float skyLuma = dot(skyMix, luma);
+    float baseLuma = dot(frame.ambientColor.rgb, luma);
+    vec3 tinted = skyMix * (baseLuma / max(skyLuma, 0.001));
+    return mix(frame.ambientColor.rgb, tinted, kSkyTintStrength);
+}
+
 // Traces a closest-hit reflection ray (no TerminateOnFirstHit -- reflections
 // need the *nearest* surface along the ray, not just any occluder). On a
 // hit, uses GL_EXT_ray_tracing_position_fetch to read the hit triangle's
@@ -135,7 +183,7 @@ bool traceReflection(vec3 origin, vec3 direction, float tMax, out vec3 hitColor)
     // modulated by whether the hit face points toward or away from the
     // light reads as "reflecting nearby lit/shadowed geometry" honestly,
     // without guessing a color that might be wrong.
-    hitColor = vec3(0.5) * (frame.ambientColor.rgb * frame.ambientColor.w +
+    hitColor = vec3(0.5) * (skyAmbientTint(hitNormal) * frame.ambientColor.w +
                             frame.sunColor.rgb * frame.sunColor.w * diffuse);
     return true;
 }
@@ -162,19 +210,6 @@ float valueNoise2D(vec2 p) {
     float d = hash21(i + vec2(1.0, 1.0));
     vec2 u = f * f * (3.0 - 2.0 * f);
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-}
-
-// Plain two-tone sky gradient, no clouds -- factored out of skyColor below
-// so distance fog (which tints toward this per-fragment, at every fog-
-// affected pixel on screen) can use just the smooth gradient. Using the
-// full cloud-textured skyColor there made the cloud pattern visibly bleed
-// onto nearby opaque geometry (tree trunks, rocks) any time that fragment's
-// camera-to-surface direction pointed even slightly upward, since fog
-// blends in this color starting close to the camera.
-vec3 skyGradient(vec3 dir) {
-    // Horizon haze stays pale, including for slightly downward fog rays.
-    return mix(frame.skyHorizon.rgb, frame.skyZenith.rgb,
-               pow(clamp(dir.y, 0.0, 1.0), 0.55));
 }
 
 // One environment evaluation for both visible sky and reflection misses.
@@ -1164,16 +1199,19 @@ void main() {
     // Ambient/fill term, darkened by AO at contact points (where the tank's
     // tracks, box bases, and tree trunks meet the ground) so those read as
     // grounded rather than floating; faces in shadow still read as dim
-    // rather than pure black.
-    vec3 lighting = frame.ambientColor.rgb * frame.ambientColor.w * aoFactor +
-                    frame.sunColor.rgb * frame.sunColor.w * diffuse;
+    // rather than pure black. Colored/directed by skyAmbientTint (see its
+    // comment) instead of a flat constant, so a fragment's fill light now
+    // visibly relates to the sky above it -- the same procedural sky the
+    // dome, fog and reflections all already read from.
+    vec3 ambientFill = skyAmbientTint(litNormal) * frame.ambientColor.w * aoFactor;
+    vec3 lighting = ambientFill + frame.sunColor.rgb * frame.sunColor.w * diffuse;
     if (materialType > 1.5 && materialType < 2.5) {
         // Thin-leaf transmission: sunlight behind the surface produces a
         // warm green lift, while wrap lighting keeps solid canopy blobs from
         // developing unnaturally black hemispheres.
         float wrappedDiffuse = max((dot(litNormal, toLight) + 0.35) / 1.35, 0.0) * shadowFactor;
         float transmission = pow(max(dot(-litNormal, toLight), 0.0), 2.0) * shadowFactor;
-        lighting = frame.ambientColor.rgb * frame.ambientColor.w * aoFactor +
+        lighting = ambientFill +
                    frame.sunColor.rgb * frame.sunColor.w * (0.85 * wrappedDiffuse + 0.22 * transmission);
         albedo *= mix(vec3(0.88, 0.98, 0.82), vec3(1.08, 1.16, 0.72), transmission);
     }
@@ -1306,7 +1344,7 @@ void main() {
         diffuseWeight = brdf.diffuseWeight;
         // Grazing-angle brightening is already inside the BRDF's own
         // Fresnel term above -- no separate rim term needed.
-        ambientSpecular = frame.ambientColor.rgb * frame.ambientColor.w * aoFactor *
+        ambientSpecular = skyAmbientTint(shadingNormal) * frame.ambientColor.w * aoFactor *
                           f0 * mix(1.0, 0.5, roughness);
     }
 
@@ -1389,13 +1427,26 @@ void main() {
     vec3 envColor = vec3(0.0);
     if (effectiveReflectivity > 0.01) {
         vec3 reflectDir = reflect(-viewDir, shadingNormal);
-        envColor = skyColor(reflectDir);
+        // Roughness-filtered environment sample: a mirror-smooth surface
+        // (roughness 0) samples the sky exactly along the reflection vector;
+        // a rougher surface blends toward skyAmbientTint(shadingNormal) --
+        // the same sky-derived hemisphere tint diffuse/ambientSpecular
+        // lighting above already uses, and the direction a fully rough
+        // "reflection" actually converges to (every incoming direction
+        // scattered roughly evenly across the surface's local hemisphere).
+        // There's no real prefiltered mip chain here (the sky is a
+        // procedural function, not a captured cubemap to blur), so this is
+        // the cheap analytic equivalent, not a full IBL pass -- see the
+        // roadmap's "Selective advanced lighting and atmosphere" entry.
+        vec3 sharpEnv = skyColor(reflectDir);
+        vec3 roughEnv = skyAmbientTint(shadingNormal);
+        envColor = mix(sharpEnv, roughEnv, roughness);
         vec3 reflectionHit;
         vec3 reflOrigin = fragWorldPos + normal * kShadowBias;
         // Independent of shadow/AO toggles. Keep the sky fallback when F9
         // disables closest-hit rays, isolating reflected-geometry cost.
         if (frame.windTime.w > .5 && traceReflection(reflOrigin, reflectDir, kShadowTMax, reflectionHit)) {
-            envColor = reflectionHit;
+            envColor = mix(reflectionHit, roughEnv, roughness);
         }
     }
 

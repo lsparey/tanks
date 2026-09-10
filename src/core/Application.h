@@ -33,6 +33,7 @@
 #include "../scene/InputManager.h"
 #include "../scene/Projectile.h"
 #include "../scene/RockInstance.h"
+#include "../scene/GrassClumpInstance.h"
 #include "../scene/ShrubInstance.h"
 #include "../scene/SmokePuff.h"
 #include "../scene/WeaponEffects.h"
@@ -264,6 +265,7 @@ private:
     std::vector<std::unique_ptr<Mesh>> treeLeafProxyMeshes_;
     std::array<std::vector<std::unique_ptr<Mesh>>,2> treeReflectionMeshes_;
     std::vector<std::unique_ptr<Mesh>> shrubMeshes_;  // small pool of distinct bush shapes
+    std::vector<std::unique_ptr<Mesh>> grassClumpMeshes_;  // small pool of distinct grass tufts
     std::unique_ptr<Mesh> cloudDomeMesh_;
     std::vector<Box> boxes_;
     std::vector<Projectile> projectiles_;
@@ -298,6 +300,13 @@ private:
     // more, much smaller, and never added to the ray-traced TLAS -- see
     // gatherRayTracingInstances).
     std::vector<RockInstance> smallRocks_;
+    // Near-field ground vegetation -- baked once over the whole terrain
+    // (see spawnGrassClumps), like smallRocks_ above, but culled per-frame
+    // to a short draw radius rather than smallRocks_'s longer one, since
+    // individual tufts are only meant to read up close (see PLAN.md's
+    // "Near-field ground vegetation"). Reuses leafMaterialSets_/materialType
+    // 2 (foliage) rather than a texture/pipeline of its own.
+    std::vector<GrassClumpInstance> grassClumps_;
     // Static collision circles for trees/rocks, built once after spawning
     // both -- see Tank::update.
     std::vector<CollisionSystem::CircleObstacle> obstacles_;
@@ -350,6 +359,7 @@ private:
     void spawnRocks();
     void spawnShrubs();
     void spawnSmallRocks();
+    void spawnGrassClumps();
     void spawnExplosion(glm::vec3 position);
     void spawnDynamicLight(glm::vec3 position, glm::vec3 color, float radius, float intensity,
                             float lifetime);

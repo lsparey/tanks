@@ -784,6 +784,33 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
         shrubMeshes_.push_back(std::make_unique<Mesh>(
             Mesh::shrub(*context_, *commands_, leafTint, static_cast<uint32_t>(i) + 101)));
     }
+    // Near-field grass tufts. Unlike shrubs, these carry their own real
+    // grass-green vertex color rather than a pale near-white multiplier --
+    // they're drawn with whiteMaterialSet_, not leafMaterialSets_ (see the
+    // grassClumps_ draw loop's comment on why), so this color IS the final
+    // albedo rather than a tint over a textured detail pass.
+    //
+    // One base tint per mesh variant (not just the per-blade shade jitter
+    // already inside Mesh::grassClump) -- a single shared tint across every
+    // tuft on the map read as flat and repetitive once there was enough of
+    // it to actually compare tuft to tuft. Weighted toward the darker end
+    // (mossy/shaded-patch greens) rather than centered, since an even
+    // spread still read as uniformly bright/yellow-green overall; real
+    // rough grass has a lot more dark clumps mixed in than pale ones.
+    // spawnGrassClumps assigns variants uniformly at random per tuft, so
+    // this palette is what actually produces the map-wide variation.
+    const std::array<glm::vec3, kTreeVariantCount> grassPalette = {
+        glm::vec3(0.07f, 0.13f, 0.045f),  // near-black moss
+        glm::vec3(0.10f, 0.19f, 0.07f),   // dark olive
+        glm::vec3(0.13f, 0.23f, 0.08f),   // dark green
+        glm::vec3(0.19f, 0.34f, 0.11f),   // medium green
+        glm::vec3(0.26f, 0.42f, 0.15f),   // lighter green
+        glm::vec3(0.33f, 0.4f, 0.14f),    // dry yellow-green
+    };
+    for (int i = 0; i < kTreeVariantCount; ++i) {
+        grassClumpMeshes_.push_back(std::make_unique<Mesh>(
+            Mesh::grassClump(*context_, *commands_, grassPalette[i], static_cast<uint32_t>(i) + 151)));
+    }
     // Geometry supplies sky directions; basic.frag shares the cloud lookup
     // and palette with water reflections, independently of the mesh UVs.
     cloudDomeMesh_ =
@@ -795,6 +822,7 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
     spawnRocks();
     spawnShrubs();
     spawnSmallRocks();
+    spawnGrassClumps();
 
     // Static collision circles for the tank's own movement (see
     // Tank::update) -- trees/rocks never move, so this is built once
@@ -1048,6 +1076,7 @@ void Application::cleanup() noexcept {
     treeShadowBounds_.clear();
     treeBarkMeshes_.clear();
     shrubMeshes_.clear();
+    grassClumpMeshes_.clear();
     trackMarkMesh_.reset();
     debrisEmberMesh_.reset();
     debrisChunkMesh_.reset();
@@ -1714,6 +1743,64 @@ void Application::spawnSmallRocks() {
                 if (!allowsScenery({px, pz}, radius) || (terrain_->state().reservation &&
                     glm::length(glm::vec2(px, pz) - spawnXZ_) < kMinDistanceFromSpawn + radius)) continue;
                 smallRocks_.push_back(rock);
+            }
+        }
+    }
+}
+
+void Application::spawnGrassClumps() {
+    // Same grid-scan idiom as spawnSmallRocks (density follows the visible
+    // terrain material rather than assuming a shape), inverted: grass wants
+    // LOW gravel/slope rather than high. terrainGravelAmount already folds
+    // in both the height-based soil/gravel blend and a slope term (see its
+    // own comment), so there's no separate steepness check needed here --
+    // steep ground already reads as high gravel and gets excluded the same
+    // way. This stands in for PLAN.md's "final soil/moisture and route
+    // fields" (the basic/legacy terrain path this project currently uses
+    // has neither -- see terrainGravelAmount's own callers) with the
+    // closest equivalent signal the basic generator actually exposes.
+    //
+    // A finer grid than scree's, since these are much cheaper individually
+    // (6 flat triangles vs. a subdivided icosphere) and meant to read as
+    // continuous ground cover up close rather than scattered rubble.
+    constexpr float kGridStep = 1.6f;
+    constexpr float kMaxGravelForGrass = 0.6f;
+    constexpr float kEdgeMargin = 3.0f;
+    constexpr float kMinDistanceFromSpawn = 4.0f;
+    constexpr float kJitter = kGridStep * 0.5f;
+    constexpr float kSpawnChance = 0.6f;
+
+    std::mt19937 rng(worldSeed_ ^ 0x9a5u);
+    std::uniform_real_distribution<float> jitterDist(-kJitter, kJitter);
+    std::uniform_real_distribution<float> yawDist(0.0f, 6.2831853f);
+    std::uniform_real_distribution<float> scaleDist(0.7f, 1.3f);
+    std::uniform_real_distribution<float> chanceDist(0.0f, 1.0f);
+    std::uniform_int_distribution<int> countDist(1, 2);
+    std::uniform_int_distribution<int> variantDist(0, static_cast<int>(grassClumpMeshes_.size()) - 1);
+
+    float half = terrain_->worldSize() * 0.5f - kEdgeMargin;
+    for (float gx = -half; gx <= half; gx += kGridStep) {
+        for (float gz = -half; gz <= half; gz += kGridStep) {
+            if (glm::length(glm::vec2(gx, gz) - spawnXZ_) < kMinDistanceFromSpawn) continue;
+            if (terrainGravelAmount(*terrain_, gx, gz) > kMaxGravelForGrass) continue;
+            if (chanceDist(rng) > kSpawnChance) continue;
+
+            int count = countDist(rng);
+            for (int k = 0; k < count; ++k) {
+                float px = gx + jitterDist(rng);
+                float pz = gz + jitterDist(rng);
+                if (isUnderwater(px, pz)) continue;
+
+                GrassClumpInstance clump;
+                clump.position = glm::vec3(px, terrain_->heightAt(px, pz), pz);
+                clump.yaw = yawDist(rng);
+                clump.scale = scaleDist(rng);
+                clump.meshVariant = variantDist(rng);
+                float radius =
+                    grassClumpMeshes_.at(clump.meshVariant)->horizontalBoundingRadius() * clump.scale;
+                if (!allowsScenery({px, pz}, radius) || (terrain_->state().reservation &&
+                    glm::length(glm::vec2(px, pz) - spawnXZ_) < kMinDistanceFromSpawn + radius)) continue;
+                grassClumps_.push_back(clump);
             }
         }
     }
@@ -2458,6 +2545,7 @@ void Application::drawFrame() {
     std::vector<std::vector<glm::mat4>> rockGroups(rockVariantCount * kLodCount);
     std::vector<std::vector<glm::mat4>> smallRockGroups(smallRockMeshes_.size());
     std::vector<std::vector<glm::mat4>> shrubGroups(shrubMeshes_.size());
+    std::vector<std::vector<glm::mat4>> grassGroups(grassClumpMeshes_.size());
     float viewportHeight = static_cast<float>(swapchain_->extent().height);
 
     for (TreeInstance& tree : trees_) {
@@ -2525,11 +2613,31 @@ void Application::drawFrame() {
         if (sphereIntersectsFrustum(planes, center, 0.8f * shrub.scale))
             shrubGroups[shrub.meshVariant].push_back(shrub.worldMatrix());
     }
+    for (const GrassClumpInstance& clump : grassClumps_) {
+        // Short draw radius, not just frustum culling -- these are only
+        // meant to read as ground cover up close (see PLAN.md's "near-
+        // field"), and cutting off just short of where distance fog
+        // (frame.atmosphere.x, ~45 units) starts means the encroaching haze
+        // masks the pop-in/out boundary instead of it being a visible hard
+        // edge on clear ground.
+        constexpr float kGrassDrawDistance = 40.0f;
+        if (glm::distance(camera_.position(), clump.position) > kGrassDrawDistance) continue;
+        glm::vec3 center = clump.position + glm::vec3(0.0f, 0.15f * clump.scale, 0.0f);
+        if (sphereIntersectsFrustum(planes, center, 0.3f * clump.scale))
+            grassGroups[clump.meshVariant].push_back(clump.worldMatrix());
+    }
     struct InstanceBatch {
         uint32_t first = 0;
         uint32_t count = 0;
     };
     std::vector<RasterInstance> rasterInstances;
+    // grassClumps_ is deliberately left out of this reserve: unlike the
+    // other pools, it's baked over the WHOLE terrain (tens of thousands of
+    // candidates), and almost all of that is cut by kGrassDrawDistance
+    // before it ever reaches here -- reserving for the full baked count
+    // would make every frame allocate for a size it never actually uses.
+    // The vector still grows normally (and stabilizes after the first
+    // frame) without it.
     rasterInstances.reserve(trees_.size()*64 + rocks_.size() + smallRocks_.size() +
                                      shrubs_.size());
     auto appendGroups = [&](const auto& groups, bool wind = false) {
@@ -2559,6 +2667,7 @@ void Application::drawFrame() {
     std::vector<InstanceBatch> rockBatches = appendGroups(rockGroups);
     std::vector<InstanceBatch> smallRockBatches = appendGroups(smallRockGroups);
     std::vector<InstanceBatch> shrubBatches = appendGroups(shrubGroups, true);
+    std::vector<InstanceBatch> grassBatches = appendGroups(grassGroups, true);
     performanceSample_.visibleProps = static_cast<double>(rasterInstances.size());
     auto gearBatches = appendGroups(tank_->gearTransforms());
     std::vector<VkDrawIndexedIndirectCommand> foliageDraws;
@@ -3158,6 +3267,29 @@ void Application::drawFrame() {
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(shrubPc), &shrubPc);
         shrubMeshes_[variant]->bindAndDrawInstanced(frame.commandBuffer, batch.count, batch.first);
+    }
+
+    // Near-field grass tufts. Not ray-traced (see GrassClumpInstance's
+    // comment). Unlike shrubs, deliberately NOT bound to leafMaterialSets_:
+    // that texture is dense, high-contrast mottled detail meant to multiply
+    // against an already brightly-lit rounded blob, and on a blade this
+    // thin its sampled/minified color reads as a uniformly dark speckle
+    // instead -- confirmed directly (swapping to whiteMaterialSet_ turned
+    // visibly-too-dark blades bright, isolating the texture as the actual
+    // cause rather than lighting/shadow/AO). whiteMaterialSet_ leaves each
+    // blade's own vertex color (see Mesh::grassClump) as the final albedo.
+    for (size_t variant = 0; variant < grassBatches.size(); ++variant) {
+        const InstanceBatch& batch = grassBatches[variant];
+        if (batch.count == 0) continue;
+        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(),
+                                 1, 1, &whiteMaterialSet_, 0, nullptr);
+        Pipeline::PushConstants grassPc{};
+        grassPc.materialType = 2.0f;
+        grassPc.isInstanced = 1.0f;
+        vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
+                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                            sizeof(grassPc), &grassPc);
+        grassClumpMeshes_[variant]->bindAndDrawInstanced(frame.commandBuffer, batch.count, batch.first);
     }
     vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                          gpuTimestampPool_, timestampBase + 4);

@@ -204,8 +204,8 @@ as history, including terrain components this goal may replace.
 - [x] [Unified sky, sun, and atmosphere](#unified-sky-sun-and-atmosphere)
 - [x] [Physically based material foundation](#physically-based-material-foundation)
 - [x] [Linear HDR and temporal image stability](#linear-hdr-and-temporal-image-stability)
-- [ ] [Selective advanced lighting and atmosphere](#selective-advanced-lighting-and-atmosphere)
-- [ ] [Near-field ground vegetation](#near-field-ground-vegetation)
+- [x] [Selective advanced lighting and atmosphere](#selective-advanced-lighting-and-atmosphere)
+- [x] [Near-field ground vegetation](#near-field-ground-vegetation)
 - [ ] [Shorelines and terrain transitions](#shorelines-and-terrain-transitions)
 - [ ] [Particle and smoke presentation](#particle-and-smoke-presentation)
 - [ ] [Camera presentation](#camera-presentation)
@@ -913,6 +913,67 @@ experiment only where it materially improves depth and target readability.
 - Full-scene path tracing, large volumetric weather and complex GI frameworks
   remain P3 research on this hardware.
 
+  Status: done via the "prefer analytic... before volumetric" reading of this
+  item, not sparse irradiance probes -- indirect lighting wasn't visibly
+  deficient enough after this to warrant them (see acceptance's own
+  conditional: "if indirect lighting remains visibly deficient"). Every
+  ambient light term in `basic.frag` (diffuse fill, the metal
+  `ambientSpecular` fill, `traceReflection`'s miss color) previously read a
+  single flat `frame.ambientColor` constant regardless of surface
+  orientation. Replaced with a new `skyAmbientTint(normal)` helper: mixes
+  `frame.skyHorizon`/`frame.skyZenith` (the same two colors the visible sky
+  dome and distance fog already use) by the surface normal's upward
+  component, then rescales to match `frame.ambientColor`'s original luma so
+  the overall fill brightness this scene was tuned against doesn't shift --
+  only its color and per-surface directional variation do (upward-facing
+  surfaces skew toward the zenith tone, sideways-facing toward the horizon
+  tone). Reflections: `envColor` used to be a razor-sharp `skyColor(reflectDir)`
+  sample at every roughness (only `effectiveReflectivity` scaled down with
+  roughness, which reduces how much the sample contributes but not how sharp
+  it looks). Now blends that sharp sample toward `skyAmbientTint(shadingNormal)`
+  by roughness -- literally the same sky-derived value diffuse lighting
+  uses, which is also the direction a fully-rough "reflection" converges
+  to (scattered evenly across the local hemisphere). No prefiltered
+  mip-mapped environment map: the sky here is a procedural function, not a
+  captured cubemap, so there's nothing to prefilter -- this is the cheap
+  analytic equivalent instead.
+
+  Verified with `--seed 7331` reference screenshots (tank, water, landscape,
+  trees) compared before/after: differences are a subtle, expected sky-tinted
+  shift (mean per-channel diff ~1-8/255) with no broken materials and no
+  change to non-lighting content. Water specifically (roughness 0.06, the
+  only material with reflectivity > 0 today) is visually unchanged, as
+  expected -- near-zero roughness barely blends away from the sharp sample.
+  25/25 tests pass.
+
+  Correction after initial landing: reported as making the scene "look a bit
+  darker." Measuring mean scene luminance before/after (not just per-channel
+  diff magnitude, which doesn't carry a sign) confirmed this wasn't really a
+  brightness drop -- under 0.3/255 either way -- but a genuine color-cast
+  problem: a straight-up surface normal mixed all the way to raw
+  `skyZenith`, which is a much more saturated blue than the pale constant it
+  replaced (a real sky hemisphere's average is closer to mid-elevation tones
+  than the exact zenith point), losing red relative to blue. Equal luma with
+  less red reads as a cooler, duller image after the ACES tonemap even
+  though total light didn't decrease. Added `kSkyTintStrength = 0.4` in
+  `skyAmbientTint` to blend back toward the original flat tone rather than
+  fully committing to the sky-derived color -- keeps the directional,
+  sky-tied variation the plan item calls for, at a strength that doesn't
+  visibly cool the image. Re-verified the same way (luma comparison plus a
+  fresh set of reference screenshots): red channel back close to the
+  original baseline, luma still flat, 25/25 tests still pass.
+
+  Limitation: only water currently has nonzero `reflectivity`, so the
+  roughness-filtered reflection path is exercised by exactly one material
+  today; it's implemented and correct for whenever another surface (e.g. a
+  future wet/polished material) sets reflectivity above 0. Also unaddressed:
+  the acceptance line's "bounded update latency and net acceptable GPU/memory
+  cost" doesn't really apply here (no new passes, buffers, or per-frame
+  update loop were added -- this is a pure per-fragment shader change with
+  zero extra cost), and aerial-perspective/cloud-shadow work beyond the
+  existing fog/cloud dome was judged out of scope for what "selective"
+  meant here.
+
 ### Near-field ground vegetation
 
 Add bounded grass/clump instances driven by final soil/moisture and route
@@ -923,6 +984,71 @@ should not become individual ray-tracing instances. Existing tree assets stay in
 - Priority: P2 after terrain/material integration and temporal stability.
 - Acceptance: believable ground scale/contact without a carpet of shimmer,
   visible density rings or excessive raster/TLAS cost.
+
+  Status: done, with one deliberate substitution -- this project is
+  currently using the basic/legacy terrain generator only (per explicit
+  direction earlier in this work), which produces no soil/moisture/route
+  fields at all (`TerrainGenerator::BuildResult`'s `generationFields`/
+  `erosion`/`drainage`/`water`/`streams`/`playability` are all
+  `std::nullopt` on that path). Density instead follows
+  `terrainGravelAmount` (the same height+slope material-blend function
+  `spawnSmallRocks` already uses, inverted: grass wants LOW gravel/slope,
+  scree wants high) -- the closest real signal the active generator
+  actually exposes, not a real moisture field.
+  New: `Mesh::grassClump`/`appendGrassBlade` (real flat-triangle blade
+  geometry, not an alpha-cutout billboard card -- there's no alpha-cutout
+  foliage texture/pipeline precedent anywhere in this codebase to reuse,
+  and building one was judged out of scope for this pass), a
+  `GrassClumpInstance` placement (mirrors `ShrubInstance`), and
+  `Application::spawnGrassClumps` (grid-scanned like `spawnSmallRocks`,
+  1.6-unit steps, whole terrain, baked once at load). Per-frame: frustum
+  culled plus a hard 40-unit draw radius (just short of where distance fog
+  starts, so the encroaching haze masks the cutoff rather than it being a
+  visible edge on clear ground -- a `dedicated smooth per-instance fade
+  would need a new instance field RasterInstance doesn't have; not done
+  here, see limitations). Instanced/wind-bent through the same
+  `RasterInstance`/`windInstance` path as shrubs (`materialType` 2,
+  foliage), drawn via the main pipeline, explicitly not added to the
+  ray-traced TLAS (matches the plan text exactly).
+  Correction found during verification: the first version bound
+  `leafMaterialSets_` (reusing tree foliage's texture, like shrubs do) and
+  rendered as visibly dark, near-black spikes. Diagnosed by swapping to
+  `whiteMaterialSet_` as a test -- blades turned bright, isolating the
+  leaf texture's own dark/high-contrast speckle (tuned for canopy detail
+  multiplied over an already-lit rounded blob, not a thin card sampled at
+  a minified mip) as the actual cause, not lighting/shadow/AO as first
+  suspected. Kept `whiteMaterialSet_` permanently and gave grass its own
+  real green vertex color instead of a texture-dependent tint. Also bent
+  each blade's flat per-triangle normal partway toward world-up (0.55) so
+  a tuft doesn't have half its blades read as unlit silhouettes purely
+  from which way they happen to face.
+  Verified: 25/25 tests pass, clean validation output, `--seed 7331`
+  screenshots (tank and landscape views) show tufts scattered plausibly
+  across grassy (non-gravel, non-underwater) ground with no visible density
+  ring, no crash against `Pipeline::kMaxRasterInstances` in any tested view.
+
+  Limitations: no smooth per-instance distance fade (hard cutoff, masked by
+  fog proximity rather than actually eliminated); no measured GPU/overdraw
+  cost comparison against a coverage-card alternative (acceptance's "test
+  geometry versus coverage cards" -- real geometry was chosen directly
+  based on this codebase having no alpha-cutout foliage precedent to build
+  the card version from, not from a measured comparison of both); shimmer
+  under camera motion specifically is unverified (this environment can only
+  capture single frames, not a moving sequence, for visual review).
+
+  Correction after initial landing: reported as needing more color
+  variation, darker especially -- the single shared `grassTint` (only
+  varied per-blade within one tuft, by a small +-15% shade jitter) read as
+  flat and repetitive once there was enough of it on screen to compare tuft
+  to tuft. Replaced with a 6-color palette (one per mesh variant, which
+  `spawnGrassClumps` already assigns uniformly at random per tuft), weighted
+  toward the darker/mossier end rather than centered -- an even spread
+  still read as uniformly bright/yellow-green overall, since real rough
+  grass has more dark clumps mixed in than pale ones. Also widened the
+  per-blade shade jitter (0.85-1.15x to 0.7-1.3x) for more variation within
+  a single tuft. Re-verified with fresh `--seed 7331` screenshots: a clear
+  mix of dark, medium and pale/yellow tufts now visible side by side, 25/25
+  tests still pass.
 
 ### Shorelines and terrain transitions
 
