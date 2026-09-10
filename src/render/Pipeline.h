@@ -66,11 +66,20 @@ public:
         // left everything in the midtones: a flat, low-contrast image whose
         // shadows read as uniform teal blobs. The ACES curve in
         // tonemap.frag absorbs the brighter sunlit end.
-        glm::vec4 sunColor{1.0f, 0.96f, 0.88f, 1.35f};  // rgb, intensity
-        glm::vec4 skyZenith{0.18f, 0.29f, 0.43f, 0.0f};
-        glm::vec4 skyHorizon{0.53f, 0.61f, 0.67f, 0.0f};
+        glm::vec4 sunColor{1.0f, 0.96f, 0.88f, 1.45f};  // rgb, intensity
+        // Sunny-day cumulus sky, matched against a Malvern-area summer
+        // reference photo: a genuinely blue zenith (the old 0.18/0.29/0.43
+        // tonemapped to a milky grey-blue wash), a pale but still-blue
+        // horizon, and HDR-bright cloud tops (above 1.0 so the ACES curve
+        // rolls them off as sunlit white) over the blue-grey bases that
+        // skyColor() derives from skyHorizon for dense-cloud cores.
+        glm::vec4 skyZenith{0.06f, 0.185f, 0.52f, 0.0f};
+        glm::vec4 skyHorizon{0.46f, 0.56f, 0.68f, 0.0f};
         glm::vec4 ambientColor{0.72f, 0.81f, 0.89f, 0.34f};
-        glm::vec4 cloudColor{0.82f, 0.85f, 0.86f, 0.46f};  // rgb, coverage threshold
+        // Cloud brightness just above 1.0: sunlit white against the blue
+        // sky once ACES rolls it off, without losing the soft wispy shapes
+        // (the original 0.82 tone read as grey haze on the bluer sky).
+        glm::vec4 cloudColor{1.12f, 1.10f, 1.06f, 0.46f};  // rgb, coverage threshold
         // Fog density lowered from 0.0035 now that basic.frag's aerial-
         // perspective desaturation carries part of the depth cue -- the fog
         // term only needs to finish the fade into the sky, not sell the

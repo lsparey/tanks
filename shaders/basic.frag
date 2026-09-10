@@ -109,8 +109,12 @@ float traceShadow(vec3 origin, vec3 direction, float tMax, uint mask) {
 // close to the camera.
 vec3 skyGradient(vec3 dir) {
     // Horizon haze stays pale, including for slightly downward fog rays.
+    // Exponent 0.42 (was 0.55) pulls the zenith blue further down toward
+    // the horizon: gameplay cameras mostly see sky at 10-40 degrees
+    // elevation, and with the slower curve that band stayed a pale wash
+    // instead of the clearly blue sky of the sunny-day reference.
     return mix(frame.skyHorizon.rgb, frame.skyZenith.rgb,
-               pow(clamp(dir.y, 0.0, 1.0), 0.55));
+               pow(clamp(dir.y, 0.0, 1.0), 0.42));
 }
 
 // Directional ambient fill sourced from the same sky gradient the visible

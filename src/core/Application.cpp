@@ -125,13 +125,12 @@ constexpr float kWaterMaxDepth = 0.9f;
 // How far in from the terrain's actual edge the play-area boundary sits,
 // as a fraction of the terrain's total width (see BoundaryGenerator).
 constexpr float kBoundaryInsetFraction = 0.1f;
-// Roughly treeline height (Mesh::treeBark/treeLeaves puts trees at about
-// 2-5 world units depending on their random instance scale -- see
-// Application::spawnTrees). It used to be 7.0 to clear every tree with
-// margin, but with the brighter laser-red boost that read as a dominant
-// glowing curtain on distant ridge lines; a lower wall keeps the ground
-// line as the boundary's anchor and the wall as its glow.
-constexpr float kBoundaryWallHeight = 4.5f;
+// A low glow band hugging the ground line rather than a wall: it started
+// at 7.0 (clearing every tree, ~2-5 units tall -- see spawnTrees), but with
+// the laser-red HDR boost anything tall read as a dominant glowing curtain
+// on distant ridge lines. Stepped down to 4.5 and then again to 2.5 on
+// review; the ground line itself is the boundary's anchor.
+constexpr float kBoundaryWallHeight = 2.5f;
 
 // Digits are drawn as seven-segment glyphs made of HudRenderer quads --
 // there's no font/text rendering in the HUD, and a segmented display is the

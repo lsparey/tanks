@@ -89,6 +89,13 @@ std::vector<uint8_t> CloudTextureGenerator::generate(uint32_t size) {
             float shape = fbm(u * 5.0f, v * 5.0f, 4, 5.0f);
             float detail = fbm(u * 20.0f + 41.3f, v * 20.0f + 7.1f, 3, 20.0f);
             float density = shape * 0.75f + detail * 0.25f;
+            // No contrast remap on the density field: hardening the fbm
+            // into high-contrast masses was tried for a more cumulus-like
+            // sky and rejected -- it flattened the interior detail and
+            // turned the soft noise contours into cut-out blob edges. The
+            // natural soft distribution reads far better; the sunny-sky
+            // look comes from the sky palette and cloud brightness instead
+            // (see FrameUBO's skyZenith/cloudColor).
 
             // Alpha carries linear density, so sky and reflections apply
             // the same coverage threshold without sRGB decoding the data.
