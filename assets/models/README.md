@@ -9,6 +9,16 @@ and the roof layout uses the supplied top drawing. Broad cheeks, rear grilles,
 paired drums, asymmetric hatches, optics and engine access panels are now
 represented. These references differ in equipment fit/perspective, so this
 remains a simplified interpretation, not a dimensionally exact replica.
+The isometric references add surface-following roof access panels, a chamfered
+loader hatch with gasket and hinges, cupola lid hardware, bolted front roof
+applique, shoulder seams, tie-downs, framed cooling grilles, rear tool bins,
+tow cables and hull access caps. The original armour cross-sections, barrel,
+skirts and running gear are retained. Raised deck hardware uses HullFittings
+to preserve the hull collision bounds.
+The complete turret, gun and attached fittings are raised by 0.08 model units
+from those profile landmarks to expose a small hull/armour gap. The mounting
+ring extends down to its original hull seating; gun pivots follow the imported
+barrel geometry automatically. Adjust `TURRET_RISE` in the generator to tune it.
 The [British Army's Challenger 2 overview](https://www.army.mod.uk/learn-and-explore/equipment/combat-vehicles/challenger-2/)
 provides additional vehicle context. No third-party mesh or texture is incorporated.
 
@@ -35,7 +45,7 @@ manual editor changes separately, or edit the script for reproducible changes.
 Use `--output-dir /tmp/tank-model-preview` to generate a separate copy.
 Neither Python nor Blender is required to build or run the game.
 
-The multi-view revision has 5,652 authored positions and 9,942 triangles. Objects are
+The isometric revision has 7,100 authored positions and 12,406 triangles. Objects are
 named individually, including left/right tread shoes, six road wheels per
 side, raised end wheels, hubs, deep skirts, armour, hatches, sights, aerials,
 rear auxiliary drums, and barrel sections.
@@ -66,6 +76,8 @@ python3 tools/preview_tank_profile.py /tmp/tank-profile.png
 python3 tools/preview_tank_profile.py /tmp/tank-front.png --view front
 python3 tools/preview_tank_profile.py /tmp/tank-rear.png --view rear
 python3 tools/preview_tank_profile.py /tmp/tank-top.png --view top
+python3 tools/preview_tank_profile.py /tmp/tank-iso-front.png --view iso-front --clay
+python3 tools/preview_tank_profile.py /tmp/tank-iso-rear.png --view iso-rear --clay
 ```
 
 This standard-library-only tool renders the authoring mesh orthographically,
@@ -76,6 +88,8 @@ It is an inspection preview, not an in-game render or a replacement for testing
 the exported OBJ. A subdued depth-step outline helps distinguish fittings in
 these previews; it is not an in-game rendering effect. See the
 [inspection views](../../docs/VISUAL_TARGET.md#tank-geometry-checkpoint).
+The two isometric views show the roof/deck surface details; `--clay` uses
+neutral grey inspection materials and works with every view.
 
 ## Deliberate limits
 
@@ -96,7 +110,7 @@ named rig and remains a supported static fallback.
 
 Individual suspension articulation, track sag and powered wheelspin are not
 implemented. Motion follows resolved hull travel, not engine/throttle demand.
-Small sprocket teeth, bolts and flexible skirts are omitted at this detail
+Small sprocket teeth, wheel bolts and flexible skirts are omitted at this detail
 level. Launchers, lamps and optics are static details, not new gameplay systems.
 The current camouflage is retained; desert paint, markings and photographic
 weathering from the new references are intentionally not copied.

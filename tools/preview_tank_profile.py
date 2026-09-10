@@ -14,18 +14,23 @@ from pathlib import Path
 from generate_tank_model import PROFILE_SCALE, build
 
 
-def render(output, view="side"):
+def render(output, view="side", clay=False):
     scale = 2
     width, height = 600*scale, 210*scale
     if view in ("front","rear"):
         width, height = 520, 470
     elif view == "top":
         width, height = 1200, 480
+    elif view in ("iso-front", "iso-rear"):
+        width, height = 1280, 900
     pixels = bytearray([245, 246, 244] * width * height)
     depth = [-math.inf] * (width * height)
     colours = {"Base": (105, 114, 82), "Turret": (105, 114, 82),
                "HullFittings": (105,114,82), "TurretDark": (45,49,43),
                "Tracks": (48, 51, 46), "Barrel": (65, 71, 54)}
+    if clay:
+        colours = {name: ((93, 102, 112) if name in ("Tracks", "TurretDark")
+                         else (155, 166, 178)) for name in colours}
     def project(p):
         x,y,z = p
         if view == "front":
@@ -34,9 +39,16 @@ def render(output, view="side"):
             return width/2-x*195,height-35-y*195,-z
         if view == "top":
             return (341-z/PROFILE_SCALE)*scale,height/2+x*180,y
+        if view in ("iso-front", "iso-rear"):
+            direction = 1 if view == "iso-front" else -1
+            horizontal = .8*x-direction*.6*z
+            distance = direction*.6*x+.8*z
+            return (width/2+horizontal*190, 565+(-.82*y+direction*.57*distance)*190,
+                    .57*y+direction*.82*distance)
         return (341-z/PROFILE_SCALE)*scale,(191-y/PROFILE_SCALE)*scale,x
     light = {"side":(.8,.6,0),"front":(-.3,.6,.74),
-             "rear":(.3,.6,-.74),"top":(.3,.88,.37)}[view]
+             "rear":(.3,.6,-.74),"top":(.3,.88,.37),
+             "iso-front":(.4,.82,.4),"iso-rear":(.4,.82,-.4)}[view]
     for _, material, vertices, faces in build().objects:
         projected = [project(p) for p in vertices]
         for face in faces:
@@ -91,6 +103,7 @@ def render(output, view="side"):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output",type=Path)
-    parser.add_argument("--view",choices=("side","front","rear","top"),default="side")
+    parser.add_argument("--view",choices=("side","front","rear","top","iso-front","iso-rear"),default="side")
+    parser.add_argument("--clay",action="store_true",help="Neutral grey inspection materials")
     args = parser.parse_args()
-    render(args.output,args.view)
+    render(args.output,args.view,args.clay)

@@ -13,6 +13,9 @@ from pathlib import Path
 # Landmarks measured from the user's 600x190 side elevation. The hull spans
 # image X=156..554; retain the existing 4.48-unit gameplay hull length.
 PROFILE_SCALE = 4.48 / (554 - 156)
+# Small lift requested after the isometric detail pass; keep the complete
+# turret/gun assembly together and extend its mounting ring down to the hull.
+TURRET_RISE = .08
 
 
 def profile(px, py):
@@ -28,6 +31,8 @@ class Model:
         self.objects = []
 
     def mesh(self, name, material, vertices, faces):
+        if material in ("Turret", "TurretDark", "Barrel") and name != "turret_ring":
+            vertices = [(x,y+TURRET_RISE,z) for x,y,z in vertices]
         self.objects.append((name, material, vertices, faces))
         self.lines += [f"o {name}", f"usemtl {material}", "s off"]
         self.lines += ["v " + " ".join(f"{v:.6f}" for v in p) for p in vertices]
@@ -104,6 +109,107 @@ def outline(width, rear, front, chamfer, y):
             (width,y,rear+chamfer), (width,y,front-chamfer),
             (width-chamfer,y,front), (-width+chamfer,y,front),
             (-width,y,front-chamfer), (-width,y,rear+chamfer)]
+
+
+def roof_height(x, z):
+    """Follow the existing turret's longitudinal roof facets exactly."""
+    sections = [profile(px, py) for px, py in ((222,98),(289,62),(365,57),(466,68))]
+    for (y0,z0),(y1,z1) in zip(sections,sections[1:]):
+        if z >= z1:
+            return y0+(y1-y0)*(z-z0)/(z1-z0)
+    return sections[-1][0]
+
+
+def hull_height(x, z):
+    sections = [(profile(px,top)[0],profile(px,side)[0],profile(px,top)[1])
+                for px,side,top in ((156,135,132),(174,128,119),(241,124,104),
+                                    (414,121,96),(554,117,94))]
+    shoulder = max(0,min(1,(abs(x)-.77)/.29))
+    for (top0,side0,z0),(top1,side1,z1) in zip(sections,sections[1:]):
+        if z >= z1:
+            t = (z-z0)/(z1-z0)
+            top,side = top0+(top1-top0)*t,side0+(side1-side0)*t
+            return top+(side-top)*shoulder
+    top,side,_ = sections[-1]
+    return top+(side-top)*shoulder
+
+
+def surface_plate(m, name, material, points, surface, offset=.003, thickness=.008):
+    """A shallow convex fitting seated on a sloped armour/deck surface."""
+    m.loft(name, material, [[(x,surface(x,z)+h,z) for x,z in points]
+                           for h in (offset,offset+thickness)])
+
+
+def roof_rect(m, name, material, x0, z0, x1, z1, offset=.003, thickness=.008):
+    surface_plate(m,name,material,[(x0,z0),(x1,z0),(x1,z1),(x0,z1)],
+                  roof_height,offset,thickness)
+
+
+def rod(m, name, material, start, end, radius=.008, sides=8):
+    direction = [end[i]-start[i] for i in range(3)]
+    m.tube(name,material,tuple((start[i]+end[i])/2 for i in range(3)),radius,
+           math.sqrt(sum(v*v for v in direction)),direction,sides)
+
+
+def roof_details(m):
+    # Thin overlapping plates and their exposed fasteners follow the glacis
+    # facet. Their footprint stays inside the approved armour cross-sections.
+    surface_plate(m,"gun_roof_applique","Turret",
+                  [(-.27,.62),(.21,.62),(.18,1.13),(-.22,1.13)],roof_height)
+    for side in (-1,1):
+        x = side*.255
+        rod(m,f"roof_applique_seam_{side}","TurretDark",
+            (x,roof_height(x,.64)+.014,.64),
+            (x*.80,roof_height(x,1.10)+.014,1.10),.006)
+        for i in range(5):
+            z = .67+i*.095
+            xx = x*(1-(z-.64)*.20/.46)
+            m.cylinder(f"roof_applique_bolt_{side}_{i}","Turret",
+                       (xx,roof_height(xx,z)+.024,z),.011,.010,axis=1,sides=6)
+        # Long shallow score lines on the shoulder beside the central plate.
+        for i in range(2):
+            x0 = side*(.33+i*.14)
+            rod(m,f"roof_shoulder_seam_{side}_{i}","TurretDark",
+                (x0,roof_height(x0,.65)+.005,.65),
+                (x0,roof_height(x0,.92)+.005,.92),.004,sides=6)
+
+    # Recessed hatch surround with a chamfered lid and transverse hinges.
+    hatch = [(.28,-.28),(.56,-.28),(.62,-.22),(.62,.06),
+             (.56,.12),(.28,.12),(.22,.06),(.22,-.22)]
+    surface_plate(m,"loader_hatch_gasket","TurretDark",hatch,roof_height)
+    lid = [(.42+(x-.42)*.91,-.08+(z+.08)*.91) for x,z in hatch]
+    surface_plate(m,"loader_hatch","Turret",lid,roof_height,.012,.013)
+    for x in (.30,.54):
+        y = roof_height(x,-.29)+.026
+        m.cylinder(f"loader_hinge_{x}","Turret",(x,y,-.29),.024,.075,sides=12)
+    y = roof_height(.42,.025)+.031
+    for x in (.36,.48):
+        m.box(f"loader_handle_foot_{x}","Turret",(x-.012,y-.01,.01),(x+.012,y+.024,.04))
+    rod(m,"loader_hatch_handle","TurretDark",(.36,y+.024,.025),(.48,y+.024,.025),.009)
+    # Cupola lid hinge, handle and a thin concentric rim inside its silhouette.
+    m.cylinder("commander_lid_rim","TurretDark",(-.33,1.489,-.12),.166,.005,axis=1)
+    m.cylinder("commander_lid_inset","Turret",(-.33,1.493,-.12),.152,.007,axis=1)
+    m.cylinder("commander_hinge","Turret",(-.33,1.49,-.30),.023,.17,sides=12)
+    rod(m,"commander_grab_handle","Turret",(-.40,1.515,-.04),(-.28,1.515,-.04),.011)
+
+    # Service covers used to be horizontal boxes partly buried in this facet.
+    for side in (-1,1):
+        x = side*.43
+        roof_rect(m,f"roof_access_gasket_{side}","TurretDark",x-.17,-1.08,x+.17,-.58)
+        roof_rect(m,f"roof_access_panel_{side}","Turret",x-.16,-1.07,x+.16,-.59,.011)
+        for z in (-1.01,-.65):
+            roof_rect(m,f"roof_hinge_{side}_{z}","Turret",x-.18,z-.025,x-.12,z+.025,.020,.013)
+        for z in (-1.16,-.48):
+            # U-shaped tie-downs have a real gap beneath the crossbar.
+            for dx in (-.038,.038):
+                roof_rect(m,f"roof_tie_foot_{side}_{z}_{dx}","Turret",x+dx-.009,z-.012,
+                          x+dx+.009,z+.012,.003,.025)
+            y = roof_height(x,z)+.030
+            rod(m,f"roof_tie_bar_{side}_{z}","Turret",(x-.038,y,z),(x+.038,y,z),.007)
+    # Small circular filler cap forward of the loader's hatch.
+    y = roof_height(.57,.43)
+    m.cylinder("roof_filler_seal","TurretDark",(.57,y+.011,.43),.050,.014,axis=1,sides=16)
+    m.cylinder("roof_filler_cap","Turret",(.57,y+.019,.43),.037,.014,axis=1,sides=16)
 
 
 def track(model, side):
@@ -232,18 +338,49 @@ def build():
         m.box(f"{label}_tail_light_housing", "HullFittings",(x-.13,.64,-2.43),(x+.13,.79,-2.34))
         for dx in (-.065,.065):
             m.box(f"{label}_tail_lens_{dx}", "Tracks",(x+dx-.046,.675,-2.448),(x+dx+.046,.742,-2.43))
-    # Raised rear engine deck with a few resolvable cooling louvres.
+    # Framed rear cooling banks: recessed dark beds, raised slats and hinges.
     m.box("engine_deck", "Base", (-.72,.94,-2.30),(.72,1.015,-1.51))
     # Top reference: two banks of grilles around a central service panel.
     for side in (-1,1):
         x = side*.44
         for bank,z in enumerate((-2.10,-1.73)):
             m.box(f"engine_grille_bed_{side}_{bank}", "Tracks",(x-.22,1.015,z-.145),(x+.22,1.024,z+.145))
-            for i in range(6):
-                zz = z-.13+i*.049
-                m.box(f"engine_louvre_{side}_{bank}_{i}", "Base",(x-.21,1.025,zz),(x+.21,1.039,zz+.022))
+            for i in range(10):
+                zz = z-.13+i*.028
+                m.box(f"engine_louvre_{side}_{bank}_{i}", "Base",(x-.21,1.025,zz),(x+.21,1.039,zz+.012))
+            for dx in (-.225,.225):
+                m.box(f"engine_grille_frame_side_{side}_{bank}_{dx}","HullFittings",
+                      (x+dx-.009,1.022,z-.155),(x+dx+.009,1.047,z+.155))
+            for dz in (-.15,.15):
+                m.box(f"engine_grille_frame_end_{side}_{bank}_{dz}","HullFittings",
+                      (x-.234,1.022,z+dz-.009),(x+.234,1.047,z+dz+.009))
+            m.box(f"engine_grille_spine_{side}_{bank}","HullFittings",
+                  (x-.009,1.038,z-.14),(x+.009,1.047,z+.14))
+            for dz in (-.09,.09):
+                m.cylinder(f"engine_grille_hinge_{side}_{bank}_{dz}","HullFittings",
+                           (x-side*.24,1.041,z+dz),.019,.066,axis=2,sides=8)
     m.box("engine_service_panel", "Base",(-.15,1.016,-2.27),(.15,1.042,-1.53))
     m.box("engine_service_handle", "Tracks",(-.07,1.043,-1.93),(.07,1.060,-1.90))
+    # Low rear fender tool bins and diagonal lid stiffeners remain inboard.
+    for side in (-1,1):
+        x = side*.87
+        m.box(f"rear_deck_toolbox_{side}","HullFittings",(x-.11,.90,-2.24),(x+.11,1.005,-1.59))
+        m.box(f"rear_deck_toolbox_lid_{side}","HullFittings",(x-.116,1.005,-2.25),(x+.116,1.018,-1.58))
+        for z in (-2.19,-1.86):
+            rod(m,f"toolbox_lid_brace_{side}_{z}","HullFittings",
+                (x-.085,1.024,z),(x+.085,1.024,z+.23),.008)
+        # A restrained tow cable follows the narrow exposed hull shoulder.
+        cable_z = (1.20,profile(241,0)[1],profile(414,0)[1],-1.35)
+        for i,(z0,z1) in enumerate(zip(cable_z,cable_z[1:])):
+            x0 = side*.94
+            rod(m,f"deck_tow_cable_{side}_{i}","Tracks",
+                (x0,hull_height(x0,z0)+.014,z0),
+                (x0,hull_height(x0,z1)+.014,z1),.012)
+        for i,z in enumerate((.97,.30,-.44,-1.17)):
+            # Circular flush access caps on the sloping hull shoulders.
+            points = [(side*.835+.049*math.cos(j*math.tau/12),
+                       z+.049*math.sin(j*math.tau/12)) for j in range(12)]
+            surface_plate(m,f"deck_access_cap_{side}_{i}","HullFittings",points,hull_height)
     # Rear lower plate, central towing assembly and spare wheel between drums.
     # Follow the approved side profile's rising rear belly, not a vertical
     # plate hanging down behind the track approach.
@@ -268,7 +405,8 @@ def build():
                [[(xx,y,z+offset) for xx,y,z in
                  ((x-.012,.30,1.557),(x+.012,.30,1.557),
                   (x+.012,.51,1.812),(x-.012,.51,1.812))] for offset in (0,.014)])
-    m.cylinder("turret_ring", "Turret", (0,.95,0),.69,.08,axis=1,sides=32)
+    m.cylinder("turret_ring", "Turret", (0,.95+TURRET_RISE/2,0),
+               .69,.08+TURRET_RISE,axis=1,sides=32)
     # Measured turret silhouette: long low roof, sloped cheeks, near-vertical
     # rear bustle. Cross-sections also taper its width rather than box extrusion.
     m.loft("turret_armour", "Turret",
@@ -306,17 +444,11 @@ def build():
         m.tube(f"cupola_periscope_{i}", "TurretDark",
                (-.33+.223*math.cos(a),1.43,-.12+.223*math.sin(a)),.025,.038,
                (math.cos(a),0,math.sin(a)),sides=4)
-    m.box("loader_hatch", "Turret",(.25,1.375,-.26),(.61,1.406,.10))
     m.box("commander_sight", "Turret",(-.48,1.32,.24),(-.25,1.605,.42))
     m.box("commander_sight_glass", "TurretDark",(-.452,1.445,.422),(-.277,1.574,.434))
     m.box("gunner_sight", "Turret",(.24,1.19,1.03),(.48,1.35,1.30))
     m.box("gunner_sight_glass", "TurretDark",(.269,1.247,1.303),(.452,1.321,1.315))
-    m.box("loader_hatch_handle", "TurretDark",(.36,1.406,-.10),(.50,1.431,-.07))
-    # Roof access plates and hinges remain shallow to preserve the side outline.
-    for x in (-.43,.43):
-        m.box(f"roof_access_panel_{x}", "Turret",(x-.17,1.32,-1.08),(x+.17,1.347,-.56))
-        for z in (-1.02,-.63):
-            m.box(f"roof_hinge_{x}_{z}", "TurretDark",(x-.16,1.346,z-.018),(x-.11,1.36,z+.018))
+    roof_details(m)
     m.cylinder("roof_sensor", "Turret",(-.18,1.485,-.39),.025,.21,axis=1,sides=12)
     for x,z in ((-.52,-.75),(.52,-.98)):
         m.cylinder(f"aerial_base_{x}", "Turret",(x,1.37,z),.035,.12,axis=1,sides=12)

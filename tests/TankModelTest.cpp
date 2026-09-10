@@ -11,6 +11,7 @@ void require(bool condition, const char* message) {
 }
 
 int main() {
+    constexpr float turretRise = .08f;
     const auto original = ModelLoader::load(std::string(ASSET_ROOT) + "/assets/models/tank.x");
     require(original.parts.size() >= 4, "Original model remains loadable");
     auto refined = ModelLoader::load(std::string(ASSET_ROOT) + "/assets/models/challenger2.obj");
@@ -59,7 +60,7 @@ int main() {
             // ground Y=181; hull X=156..554 spans 4.48 game units.
             constexpr float scale = 4.48f/398.0f;
             require(std::abs((high.z-low.z)-244*scale) < 1e-5f, "Long turret profile");
-            require(std::abs(high.y-124*scale) < 1e-5f, "Low turret roof profile");
+            require(std::abs(high.y-(124*scale+turretRise)) < 1e-5f, "Raised turret roof profile");
             float frontWidth = 0;
             for (const auto& v : part.vertices)
                 if (std::abs(v.position.z-high.z) < 1e-5f)
@@ -105,8 +106,10 @@ int main() {
     require(total > 5000 && total < 14000, "Multi-view triangle budget");
     require(std::abs((hullMax.x-hullMin.x)-2.222f) < .02f, "Original hull width retained");
     require(std::abs((hullMax.z-hullMin.z)-4.48f) < .02f, "Original hull length approximately retained");
+    require(std::abs(hullMax.y-1.042f) < 1e-5f, "Deck fittings do not enlarge hull collision bounds");
     constexpr float profileScale = 4.48f/398.0f;
-    require(std::abs((barrelMax.y+barrelMin.y)*.5f-97*profileScale) < 1e-5f, "Gun bore height");
+    require(std::abs((barrelMax.y+barrelMin.y)*.5f-(97*profileScale+turretRise)) < 1e-5f,
+            "Gun bore follows turret lift");
     require(std::abs(barrelMin.z-.80f) < 1e-5f && std::abs(barrelMax.z-333*profileScale) < 1e-5f,
             "Gun trunnion and muzzle positions");
 }
