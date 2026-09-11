@@ -45,7 +45,11 @@ manual editor changes separately, or edit the script for reproducible changes.
 Use `--output-dir /tmp/tank-model-preview` to generate a separate copy.
 Neither Python nor Blender is required to build or run the game.
 
-The isometric revision has 7,100 authored positions and 12,406 triangles. Objects are
+The rear cooling banks use four broad slats per panel, with simple frames and
+no crossing spines or small hinges. The rear turret vents use three wider
+slats each. This reduces fine overlapping edges at shallow rear camera angles.
+
+The current revision has 6,732 authored positions and 11,822 triangles. Objects are
 named individually, including left/right tread shoes, six road wheels per
 side, raised end wheels, hubs, deep skirts, armour, hatches, sights, aerials,
 rear auxiliary drums, and barrel sections.
@@ -78,6 +82,7 @@ python3 tools/preview_tank_profile.py /tmp/tank-rear.png --view rear
 python3 tools/preview_tank_profile.py /tmp/tank-top.png --view top
 python3 tools/preview_tank_profile.py /tmp/tank-iso-front.png --view iso-front --clay
 python3 tools/preview_tank_profile.py /tmp/tank-iso-rear.png --view iso-rear --clay
+python3 tools/preview_tank_profile.py /tmp/tank-rear-raised.png --view rear-raised --clay
 ```
 
 This standard-library-only tool renders the authoring mesh orthographically,

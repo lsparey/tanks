@@ -338,27 +338,24 @@ def build():
         m.box(f"{label}_tail_light_housing", "HullFittings",(x-.13,.64,-2.43),(x+.13,.79,-2.34))
         for dx in (-.065,.065):
             m.box(f"{label}_tail_lens_{dx}", "Tracks",(x+dx-.046,.675,-2.448),(x+dx+.046,.742,-2.43))
-    # Framed rear cooling banks: recessed dark beds, raised slats and hinges.
+    # Broad rear cooling slats stay readable at the shallow gameplay camera.
+    # No crossing spine or tiny hinges, and frame rails meet without overlap.
     m.box("engine_deck", "Base", (-.72,.94,-2.30),(.72,1.015,-1.51))
     # Top reference: two banks of grilles around a central service panel.
     for side in (-1,1):
         x = side*.44
         for bank,z in enumerate((-2.10,-1.73)):
             m.box(f"engine_grille_bed_{side}_{bank}", "Tracks",(x-.22,1.015,z-.145),(x+.22,1.024,z+.145))
-            for i in range(10):
-                zz = z-.13+i*.028
-                m.box(f"engine_louvre_{side}_{bank}_{i}", "Base",(x-.21,1.025,zz),(x+.21,1.039,zz+.012))
-            for dx in (-.225,.225):
+            for i in range(4):
+                zz = z-.128+i*.070
+                m.box(f"engine_louvre_{side}_{bank}_{i}", "Base",
+                      (x-.21,1.024,zz),(x+.21,1.041,zz+.046))
+            for dx in (-.222,.222):
                 m.box(f"engine_grille_frame_side_{side}_{bank}_{dx}","HullFittings",
-                      (x+dx-.009,1.022,z-.155),(x+dx+.009,1.047,z+.155))
-            for dz in (-.15,.15):
+                      (x+dx-.012,1.024,z-.159),(x+dx+.012,1.047,z+.159))
+            for dz in (-.147,.147):
                 m.box(f"engine_grille_frame_end_{side}_{bank}_{dz}","HullFittings",
-                      (x-.234,1.022,z+dz-.009),(x+.234,1.047,z+dz+.009))
-            m.box(f"engine_grille_spine_{side}_{bank}","HullFittings",
-                  (x-.009,1.038,z-.14),(x+.009,1.047,z+.14))
-            for dz in (-.09,.09):
-                m.cylinder(f"engine_grille_hinge_{side}_{bank}_{dz}","HullFittings",
-                           (x-side*.24,1.041,z+dz),.019,.066,axis=2,sides=8)
+                      (x-.21,1.024,z+dz-.012),(x+.21,1.047,z+dz+.012))
     m.box("engine_service_panel", "Base",(-.15,1.016,-2.27),(.15,1.042,-1.53))
     m.box("engine_service_handle", "Tracks",(-.07,1.043,-1.93),(.07,1.060,-1.90))
     # Low rear fender tool bins and diagonal lid stiffeners remain inboard.
@@ -431,9 +428,10 @@ def build():
                    (side*(.25+.12*(i%3)),.55,1))
         # Rear turret grille panels frame the broad, almost vertical bustle.
         m.box(f"turret_rear_grille_{side}", "TurretDark",(x-.235,1.005,-1.428),(x+.235,1.25,-1.412))
-        for i in range(4):
-            y = 1.03+i*.056
-            m.box(f"turret_rear_louvre_{side}_{i}", "Turret",(x-.222,y,-1.44),(x+.222,y+.017,-1.425))
+        for i in range(3):
+            y = 1.03+i*.072
+            m.box(f"turret_rear_louvre_{side}_{i}", "Turret",
+                  (x-.222,y,-1.44),(x+.222,y+.034,-1.428))
         # Low long bins define the turret footprint from above.
         m.box(f"turret_side_bin_{side}", "Turret",(side*.79-.045,1.07,-1.24),
               (side*.79+.045,1.25,-.30))
