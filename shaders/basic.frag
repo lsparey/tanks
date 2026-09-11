@@ -216,6 +216,14 @@ float valueNoise2D(vec2 p) {
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 
+// Slow shared cloud drift, in texture UV per second of wind time. Added
+// identically to the visible sky's lookup (skyColor) and the ground shadow
+// projection (cloudShadow), so passing shade always tracks the drawn cloud
+// field exactly. Roughly aligned with the smoke/foliage wind direction
+// (+x dominant); ~1 world unit of shadow travel per second -- ambient
+// motion, not weather-front speed.
+const vec2 kCloudDrift = vec2(0.0045, 0.0011);
+
 // One environment evaluation for both visible sky and reflection misses.
 // Colour is linear here; the final surface/sky output is tonemapped once.
 vec3 skyColor(vec3 dir) {
@@ -223,7 +231,7 @@ vec3 skyColor(vec3 dir) {
     // Identical directional mapping and mip choice for raster sky and
     // reflection misses. Fade clouds into horizon haze before the projection
     // becomes singular. No per-fragment FBM or additional ray queries.
-    vec2 uv = dir.xz / max(dir.y, 0.08) * frame.atmosphere.z;
+    vec2 uv = dir.xz / max(dir.y, 0.08) * frame.atmosphere.z - frame.windTime.x * kCloudDrift;
     float density = textureLod(environmentClouds, uv, 1.0).a;
     float cloudAlpha = smoothstep(frame.cloudColor.w, frame.cloudColor.w + 0.19, density)
                        * smoothstep(0.08, 0.18, dir.y);
@@ -236,6 +244,42 @@ vec3 skyColor(vec3 dir) {
                           1.0 - smoothstep(0.58, 0.86, density));
     cloudLight *= mix(vec3(1.0), frame.sunColor.rgb, sunAlignment * 0.4);
     return mix(color, cloudLight, cloudAlpha);
+}
+
+// Cloud shadows: project the shaded point along the sun direction onto the
+// same virtual cloud layer the sky dome samples, and reuse skyColor's exact
+// camera-anchored planar mapping (uv = dir.xz/dir.y * atmosphere.z for a
+// direction from the camera) so each visible cloud's shadow falls where
+// that cloud actually sits between the sun and the ground. One textureLod
+// of the already-bound cloud texture per fragment -- no rays, no extra
+// bindings. Sampled at a coarse mip so shadow edges stay soft/diffuse the
+// way real cloud shadows are (the cloud layer is far away and the sun is
+// not a point source); the coverage threshold matches skyColor's so ground
+// shade appears only under clouds that are actually drawn.
+// Above the camera, like the dome's projection. Deliberately lower than the
+// dome reads visually: one cloud mass spans ~0.2 UV of the texture, so the
+// plane height sets the shadow feature size on the ground (~0.2*H/0.25
+// world units). At 90 a single shade patch covered ~70 units -- reading as
+// a vignette on the whole map rather than passing cloud shade; 55 gives a
+// few distinct ~45-unit patches across the play area.
+const float kCloudPlaneHeight = 55.0;
+const float kCloudShadowStrength = 0.6;
+float cloudShadow(vec3 worldPos) {
+    vec3 toSun = normalize(-frame.lightDir.xyz);
+    float planeY = frame.cameraPos.y + kCloudPlaneHeight;
+    float t = (planeY - worldPos.y) / max(toSun.y, 0.15);
+    vec2 planePoint = worldPos.xz + toSun.xz * t;
+    vec2 uv = (planePoint - frame.cameraPos.xz) / kCloudPlaneHeight * frame.atmosphere.z -
+              frame.windTime.x * kCloudDrift;
+    // Same mip as skyColor's visible clouds -- a coarser mip averaged the
+    // density field toward its mean BEFORE the coverage threshold, which
+    // erased exactly the peaks the threshold is looking for and left almost
+    // no shadow at all. Softness comes from the wider smoothstep instead:
+    // ground shade ramps in across the cloud's fringe rather than tracing
+    // its drawn edge hard.
+    float density = textureLod(environmentClouds, uv, 1.0).a;
+    float cover = smoothstep(frame.cloudColor.w - 0.08, frame.cloudColor.w + 0.22, density);
+    return 1.0 - cover * kCloudShadowStrength;
 }
 
 // Reimplements TrackTextureGenerator's tread-link ridge pattern as a
@@ -1167,6 +1211,11 @@ void main() {
         foliageFactor = shadowsEnabled ? mappedTreeShadow(fragWorldPos, normal, toLight) : 1.0;
     if (frame.treeShadowParams.w < .5) aoFactor = 1.0;
     float shadowFactor = solidFactor * foliageFactor;
+    // Applied after the temporal-history writes above (which carry only the
+    // noisy ray-based terms): cloud shadow is smooth and deterministic, so
+    // it needs no accumulation and must not contaminate the history's
+    // disagreement classifier. Shares the F5 master shadows toggle.
+    if (shadowsEnabled) shadowFactor *= cloudShadow(fragWorldPos);
     // A sentinel distance while shadows are off, not currentViewDist: re-
     // enabling shouldn't let the very next frame trust a "fully lit" history
     // written for a reason that had nothing to do with the actual surface.
