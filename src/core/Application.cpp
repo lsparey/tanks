@@ -500,11 +500,14 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
     cloudTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 256, 256, cloudPixels, /*repeat=*/true));
     pipeline_->updateEnvironmentDescriptor(*cloudTexture_);
-    std::vector<uint8_t> cratePixels = CrateTextureGenerator::generate(128);
+    // 256, up from 128: the nail heads/knots the generator now bakes are a
+    // handful of texels each and read as blobs at 128 when a crate fills a
+    // meaningful part of the frame.
+    std::vector<uint8_t> cratePixels = CrateTextureGenerator::generate(256);
     // Mapped exactly once per cube face (see Mesh::cube's UV), not tiled,
     // so CLAMP rather than REPEAT.
     crateTexture_ = std::make_unique<Texture>(
-        Texture::fromPixels(*context_, *commands_, 128, 128, cratePixels, /*repeat=*/false));
+        Texture::fromPixels(*context_, *commands_, 256, 256, cratePixels, /*repeat=*/false));
     std::vector<uint8_t> whitePixel = {255, 255, 255, 255};
     whiteTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 1, 1, whitePixel, /*repeat=*/false));
@@ -623,17 +626,23 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
     shellMesh_ =
         std::make_unique<Mesh>(Mesh::shell(*context_, *commands_, glm::vec3(0.58f, 0.52f, 0.4f)));
     // An irregular blob rather than a literal flat-faced cube -- reads as
-    // an actual fireball/burst instead of a scaling box.
+    // an actual fireball/burst instead of a scaling box. HDR-bright (well
+    // above 1.0): drawn unlit straight into the linear HDR target, so after
+    // the ACES tonemap it reads as glowing fire rather than pale beige.
+    // Saturation over sheer luminance: pushing all three channels far above
+    // 1.0 just drives ACES to clip the blob to cream-white; a hot red-orange
+    // with restrained green/blue survives the tonemap as visible fire.
     flashMesh_ =
-        std::make_unique<Mesh>(Mesh::blobCluster(*context_, *commands_, glm::vec3(1.0f, 0.85f, 0.55f)));
+        std::make_unique<Mesh>(Mesh::blobCluster(*context_, *commands_, glm::vec3(2.4f, 0.95f, 0.18f)));
     // Explosion debris: a darker, splintered-looking chunk of the box
     // (normally lit, so it tumbles through the scene's light/shadow like
     // real debris) and a small, bright unlit ember (a spark/fire glow that
-    // ignores lighting entirely) -- see DebrisParticle and spawnExplosion.
+    // ignores lighting entirely; HDR like the flash above) -- see
+    // DebrisParticle and spawnExplosion.
     debrisChunkMesh_ =
         std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(0.32f, 0.22f, 0.12f)));
     debrisEmberMesh_ =
-        std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(1.0f, 0.55f, 0.1f)));
+        std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(3.2f, 1.25f, 0.22f)));
     // Neutral grey, drawn unlit and alpha-blended (see the smokePuffs_ draw
     // loop) -- muzzle blast and shell-trail wisps, see SmokePuff.h.
     smokePuffMesh_ =
@@ -1469,6 +1478,27 @@ void Application::applyReferenceCamera() {
         // Look from the down-sun side to include the crown and its ground shadow.
         target = tree.position + glm::vec3(-1.2f,.8f,-2.2f)*tree.scale;
         offset = glm::vec3(-4.f,3.f,-7.f)*tree.scale;
+    } else if (referenceView_ == "rocks" && !rocks_.empty()) {
+        // Close-up on the boulder cluster nearest the tank -- the reference
+        // framing for evaluating rock shape/material work.
+        const auto& rock = *std::min_element(
+            rocks_.begin(), rocks_.end(), [&](const RockInstance& a, const RockInstance& b) {
+                return glm::distance(a.position, tank_->position()) <
+                       glm::distance(b.position, tank_->position());
+            });
+        target = rock.position + glm::vec3(0.0f, 0.3f * rock.scale, 0.0f);
+        offset = glm::vec3(2.2f, 1.3f, -2.8f) * std::max(rock.scale, 1.0f);
+    } else if (referenceView_ == "props" && !boxes_.empty()) {
+        // Close-up on the crate nearest the tank -- the reference framing
+        // for evaluating prop materials (crate texture, nearby shrubs/rocks
+        // usually land in frame too at this distance).
+        const auto& box = *std::min_element(
+            boxes_.begin(), boxes_.end(), [&](const Box& a, const Box& b) {
+                return glm::distance(a.position, tank_->position()) <
+                       glm::distance(b.position, tank_->position());
+            });
+        target = box.position + glm::vec3(0.0f, 0.3f, 0.0f);
+        offset = {2.6f, 1.5f, -3.2f};
     } else if (referenceView_ == "landscape") {
         glm::vec2 at = spawnXZ_ + glm::vec2(0, 25);
         target = {at.x, terrain_->heightAt(at.x, at.y) + 3.0f, at.y};
@@ -1899,11 +1929,13 @@ void Application::spawnExplosion(glm::vec3 position) {
     // lifetime roughly matched to the debris burst below so nearby geometry
     // lights up for about as long as the explosion visually reads as
     // "happening".
-    spawnDynamicLight(position, glm::vec3(1.0f, 0.45f, 0.12f), /*radius=*/11.0f, /*intensity=*/18.0f,
-                       /*lifetime=*/0.3f);
+    spawnDynamicLight(position, glm::vec3(1.0f, 0.45f, 0.12f), /*radius=*/12.0f, /*intensity=*/18.0f,
+                       /*lifetime=*/0.4f);
 
     constexpr int kChunkCount = 7;
     constexpr int kEmberCount = 8;
+    constexpr int kFlameCount = 3;
+    constexpr int kSootPuffCount = 8;
 
     std::mt19937 rng(std::random_device{}());
     std::uniform_real_distribution<float> unit(-1.0f, 1.0f);
@@ -1913,6 +1945,35 @@ void Application::spawnExplosion(glm::vec3 position) {
         return glm::normalize(glm::vec3(unit(rng), upBias(rng), unit(rng)));
     };
     auto randomAxis = [&]() { return glm::normalize(glm::vec3(unit(rng), unit(rng), unit(rng))); };
+
+    // Radial flame tongues -- the same card renderer the muzzle flash uses
+    // (see the muzzleFlashes_ draw loop), pointed outward/upward from the
+    // burst instead of down a barrel. Longer-lived and bigger than a muzzle
+    // snap, so the fireball reads as licking flames rather than one blob.
+    for (int i = 0; i < kFlameCount; ++i) {
+        WeaponEffects::Flash flame;
+        flame.position = position + randomDirection() * 0.15f;
+        flame.direction = randomDirection();
+        flame.remaining = flame.lifetime = 0.16f;
+        flame.scale = 1.35f;
+        WeaponEffects::addBounded(muzzleFlashes_, flame, WeaponEffects::kMaxFlashes);
+    }
+
+    // Rising soot column: denser, darker smoke cards than muzzle blast
+    // smoke, with a brief fire-lit interior while young (see the soot branch
+    // in basic.frag's smoke-card path).
+    for (int i = 0; i < kSootPuffCount; ++i) {
+        WeaponEffects::Smoke puff;
+        puff.position = position + glm::vec3(unit(rng) * 0.35f, 0.2f + upBias(rng) * 0.3f,
+                                             unit(rng) * 0.35f);
+        puff.velocity = glm::vec3(unit(rng) * 1.3f, 2.2f + upBias(rng) * 2.0f, unit(rng) * 1.3f);
+        puff.remaining = puff.lifetime = 1.4f + upBias(rng) * 0.9f;
+        puff.size = 0.65f + upBias(rng) * 0.45f;
+        puff.seed = upBias(rng) * 61.7f + unit(rng) * 17.3f;
+        puff.density = 0.85f;
+        puff.soot = true;
+        WeaponEffects::addBounded(blastSmoke_, puff, WeaponEffects::kMaxSmoke);
+    }
 
     for (int i = 0; i < kChunkCount; ++i) {
         std::uniform_real_distribution<float> speedDist(2.0f, 5.0f);
@@ -3412,6 +3473,7 @@ void Application::drawFrame() {
         Pipeline::PushConstants effectPc{};
         effectPc.model = effect.worldMatrix();
         effectPc.unlit = 1.0f;
+        effectPc.opacity = effect.opacity();
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(effectPc), &effectPc);
@@ -3444,7 +3506,7 @@ void Application::drawFrame() {
         pc.model=puff->matrix(eye);
         pc.materialType=9;
         pc.opacity=puff->opacity();
-        pc.tankSurface=glm::vec4(puff->age(),puff->seed,0,0);
+        pc.tankSurface=glm::vec4(puff->age(),puff->seed,0,puff->soot?1.f:0.f);
         vkCmdPushConstants(frame.commandBuffer,pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(pc),&pc);
         trackMarkMesh_->bindAndDraw(frame.commandBuffer);

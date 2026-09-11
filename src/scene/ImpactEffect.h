@@ -18,9 +18,20 @@ struct ImpactEffect {
 
     glm::mat4 worldMatrix() const {
         float t = glm::clamp(lifetimeRemaining / initialLifetime, 0.0f, 1.0f);
-        // Bigger than the box it replaces and shrinking fast, so it reads as
-        // a distinct burst rather than "the box shrinking in place."
-        float scale = 2.6f * t;
+        float age = 1.0f - t;
+        // A burst grows: snap out to full size in the first ~20% of life,
+        // keep swelling slowly while it fades, then collapse over the last
+        // stretch so it doesn't pop out of existence at full size. (The old
+        // linear 2.6*t shrink read as a balloon deflating in place.)
+        float scale = 2.1f * glm::smoothstep(0.0f, 0.2f, age) * (0.75f + 0.35f * age) *
+                      glm::smoothstep(0.0f, 0.3f, t);
         return glm::scale(glm::translate(glm::mat4(1.0f), position), glm::vec3(scale));
+    }
+
+    // Drawn alpha-blended so the fireball dissolves rather than vanishing --
+    // the HDR-bright flash color stays vivid even as alpha drops.
+    float opacity() const {
+        float t = glm::clamp(lifetimeRemaining / initialLifetime, 0.0f, 1.0f);
+        return glm::smoothstep(0.0f, 0.45f, t);
     }
 };

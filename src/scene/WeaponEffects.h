@@ -8,7 +8,9 @@
 // Pure presentation state: no input, recoil, camera or projectile physics.
 namespace WeaponEffects {
 constexpr size_t kMaxScorches = 16;
-constexpr size_t kMaxFlashes = 4;
+// Room for a muzzle flash plus the radial flame tongues an explosion now
+// spawns (see Application::spawnExplosion) without evicting each other.
+constexpr size_t kMaxFlashes = 12;
 constexpr size_t kMaxSmoke = 48;
 
 template<class T> void addBounded(std::vector<T>& items, T item, size_t limit) {
@@ -34,18 +36,25 @@ inline glm::mat4 card(glm::vec3 centre, glm::vec3 along, glm::vec3 across,
 }
 struct Flash {
     glm::vec3 position{0}, direction{0,0,1};
-    float remaining = .085f;
+    // Muzzle flashes keep the default snap; explosion flame tongues pass a
+    // longer lifetime (and their own scale) when spawned.
+    float remaining = .085f, lifetime = .085f, scale = 1.0f;
     void update(float dt) { remaining -= dt; }
-    float opacity() const { return glm::clamp(remaining / .085f, 0.0f, 1.0f); }
+    float opacity() const { return glm::clamp(remaining / lifetime, 0.0f, 1.0f); }
     glm::mat4 matrix(glm::vec3 camera) const {
-        float length = 1.45f * (.65f + .35f * opacity());
+        float length = scale * 1.45f * (.65f + .35f * opacity());
         return card(position + direction * length * .5f, direction,
-                    glm::cross(direction, camera-position), .72f, length);
+                    glm::cross(direction, camera-position), scale * .72f, length);
     }
 };
 struct Smoke {
     glm::vec3 position{0}, velocity{0};
     float remaining = .9f, lifetime = .9f, size = .22f, seed = 0;
+    // Peak opacity; explosion soot columns are denser than muzzle smoke.
+    float density = .42f;
+    // Selects the darker, fire-lit explosion-soot shading in basic.frag's
+    // smoke-card branch (passed through PushConstants::tankSurface.w).
+    bool soot = false;
     void update(float dt) {
         // Analytic drag integration keeps the short initial jet independent
         // of render rate, slowing it into a rising cloud.
@@ -58,7 +67,7 @@ struct Smoke {
     float age() const { return 1-glm::clamp(remaining/lifetime,0.0f,1.0f); }
     float opacity() const {
         float t=age();
-        return .42f * glm::smoothstep(0.0f,.08f,t) * (1-t)*(1-t);
+        return density * glm::smoothstep(0.0f,.08f,t) * (1-t)*(1-t);
     }
     glm::mat4 matrix(glm::vec3 camera) const {
         glm::vec3 normal = camera-position;

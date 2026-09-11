@@ -160,8 +160,15 @@ void subdivideIcosphere(std::vector<glm::vec3>& vertices,
 // leaf clusters and shrubs. The default once-subdivided form has 80 faces;
 // far tree LODs request the base 20-face form. Fractal displacement keeps
 // either version organic instead of merely making a smoother sphere.
+//
+// clusterTop > 0 enables a vertical albedo gradient across the whole
+// cluster the blob belongs to: vertex color scales from shadeLow at y=0
+// (ground) up to shadeHigh at y=clusterTop. A cheap baked stand-in for the
+// self-shadowing/inner-canopy darkening a real bush has -- without it a
+// multi-blob shrub reads as uniformly-lit green balls.
 void appendLeafBlob(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices, glm::vec3 center,
-                     float radius, glm::vec3 color, std::mt19937& rng, int subdivisions = 1) {
+                     float radius, glm::vec3 color, std::mt19937& rng, int subdivisions = 1,
+                     float clusterTop = 0.0f, float shadeLow = 0.6f, float shadeHigh = 1.15f) {
     const float t = (1.0f + std::sqrt(5.0f)) / 2.0f;
     std::vector<glm::vec3> base = {
         glm::normalize(glm::vec3(-1, t, 0)), glm::normalize(glm::vec3(1, t, 0)),
@@ -233,10 +240,16 @@ void appendLeafBlob(std::vector<Vertex>& vertices, std::vector<uint32_t>& indice
             return glm::vec2(u, v) * 2.0f;
         };
 
+        auto shaded = [&](const glm::vec3& position) {
+            if (clusterTop <= 0.0f) return color;
+            float t = glm::clamp(position.y / clusterTop, 0.0f, 1.0f);
+            return color * glm::mix(shadeLow, shadeHigh, t);
+        };
+
         uint32_t base_ = static_cast<uint32_t>(vertices.size());
-        vertices.push_back({p0, n0, color, sphericalUV(dir0)});
-        vertices.push_back({p1, n1, color, sphericalUV(dir1)});
-        vertices.push_back({p2, n2, color, sphericalUV(dir2)});
+        vertices.push_back({p0, n0, shaded(p0), sphericalUV(dir0)});
+        vertices.push_back({p1, n1, shaded(p1), sphericalUV(dir1)});
+        vertices.push_back({p2, n2, shaded(p2), sphericalUV(dir2)});
         indices.insert(indices.end(), {base_ + 0, base_ + 1, base_ + 2});
     }
 }
@@ -579,6 +592,10 @@ Mesh Mesh::rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColo
     glm::vec3 proportions(proportionDist(rng), proportionDist(rng), proportionDist(rng));
 
     std::vector<glm::vec3> deformed(verts.size());
+    // Broad displacement per vertex, kept for the crevice shading below:
+    // low-displacement vertices are the recesses between lobes, exactly
+    // where dirt/shadow accumulates on a real boulder.
+    std::vector<float> relief(verts.size());
     for (size_t i = 0; i < verts.size(); ++i) {
         float broad = fractalNoise3D(verts[i] * 1.35f + seedOffset, 5);
         float detail = fractalNoise3D(verts[i] * 4.5f + seedOffset * 1.73f, 4);
@@ -593,6 +610,7 @@ Mesh Mesh::rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColo
                                 std::sin(verts[i].z * 2.9f + seedOffset.z) * 0.055f;
         float radius = 0.62f + broad * 0.48f + ridge * broad * 0.18f + directionalLobe -
                        chippedDepression;
+        relief[i] = glm::clamp(broad, 0.0f, 1.0f);
         deformed[i] = verts[i] * radius * proportions * radiusScale;
         deformed[i].y *= 0.78f;
     }
@@ -621,6 +639,27 @@ Mesh Mesh::rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColo
     }
     for (glm::vec3& normal : smoothNormals) normal = glm::normalize(normal);
 
+    // Per-vertex albedo: crevice darkening from the broad displacement
+    // (recesses read as dirt/shadow), plus seed-varied moss/lichen patches
+    // on upward faces -- some rocks stay bare, others get a distinctly
+    // weathered top. Vertex color multiplies the gravel texture, so these
+    // are tone shifts over its detail rather than flat paint.
+    std::uniform_real_distribution<float> mossDist(-0.2f, 0.65f);
+    const float mossStrength = std::max(0.0f, mossDist(rng));
+    std::vector<glm::vec3> vertexColors(verts.size());
+    for (size_t i = 0; i < verts.size(); ++i) {
+        // Shading floor well above the texture's own dark bias -- the gravel
+        // texture is deliberately dark for terrain use (it multiplies by 0.6
+        // internally), and stacking a strong vertex darkening on top made
+        // standalone boulders read as charcoal lumps against sunlit grass.
+        glm::vec3 shaded = baseColor * (1.05f + relief[i] * 0.55f);
+        float patch = fractalNoise3D(verts[i] * 3.3f + seedOffset * 2.9f, 3);
+        float moss = glm::smoothstep(0.45f, 0.75f, patch) *
+                     glm::smoothstep(0.15f, 0.65f, smoothNormals[i].y) * mossStrength;
+        // Olive-green over the grey gravel texture reads as moss/lichen.
+        vertexColors[i] = glm::mix(shaded, glm::vec3(0.5f, 0.72f, 0.28f), moss);
+    }
+
     // Spherical UV, scaled to repeat the (already-tileable) rock texture a
     // few times across the rock's surface for close-up surface detail --
     // some pole pinching/seam is possible with this simple a mapping, but
@@ -647,19 +686,33 @@ Mesh Mesh::rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColo
         // project's CCW-outward convention, so derive it from the actual
         // (now-deformed) geometry instead of trusting the table: compute
         // the normal, and flip both it and the winding if it points inward.
+        glm::vec3 c0 = vertexColors[face[0]];
+        glm::vec3 c1 = vertexColors[face[1]];
+        glm::vec3 c2 = vertexColors[face[2]];
         glm::vec3 normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
         glm::vec3 centroid = (p0 + p1 + p2) / 3.0f;
         if (glm::dot(normal, centroid) < 0.0f) {
             std::swap(p1, p2);
             std::swap(dir1, dir2);
             std::swap(n1, n2);
+            std::swap(c1, c2);
             normal = -normal;
         }
 
+        // Chisel: pull the smooth per-vertex normals partway back toward the
+        // flat face normal. Fully smooth normals made every boulder read as
+        // a soft grey lump; a partial blend keeps lighting continuous across
+        // the big lobes while letting individual facets catch the light like
+        // fracture planes.
+        constexpr float kChisel = 0.4f;
+        n0 = glm::normalize(glm::mix(n0, normal, kChisel));
+        n1 = glm::normalize(glm::mix(n1, normal, kChisel));
+        n2 = glm::normalize(glm::mix(n2, normal, kChisel));
+
         uint32_t base_ = static_cast<uint32_t>(vertices.size());
-        vertices.push_back({p0, n0, baseColor, sphericalUV(dir0)});
-        vertices.push_back({p1, n1, baseColor, sphericalUV(dir1)});
-        vertices.push_back({p2, n2, baseColor, sphericalUV(dir2)});
+        vertices.push_back({p0, n0, c0, sphericalUV(dir0)});
+        vertices.push_back({p1, n1, c1, sphericalUV(dir1)});
+        vertices.push_back({p2, n2, c2, sphericalUV(dir2)});
         indices.insert(indices.end(), {base_ + 0, base_ + 1, base_ + 2});
     }
 
@@ -789,9 +842,37 @@ Mesh Mesh::shrub(VulkanContext& ctx, CommandContext& commands, glm::vec3 color, 
     // underside sits near y=0 (ground level) instead of the whole thing
     // floating centered on it -- same "sits on the ground" reasoning as
     // DebrisParticle/RockInstance's own embed-depth handling elsewhere.
-    appendLeafBlob(vertices, indices, glm::vec3(0.0f, 0.24f, 0.0f), 0.28f, color, rng);
-    appendLeafBlob(vertices, indices, glm::vec3(0.18f, 0.17f, 0.08f), 0.2f, color, rng);
-    appendLeafBlob(vertices, indices, glm::vec3(-0.15f, 0.15f, -0.1f), 0.18f, color, rng);
+    //
+    // Five lobes (was three near-symmetric ones), each with rng-jittered
+    // placement and its own slight green-tone shift, plus the vertical
+    // shading gradient appendLeafBlob now bakes -- together these break the
+    // old "three uniform green spheres" read into an irregular, darker-
+    // bellied bush whose top catches the light.
+    struct Lobe {
+        glm::vec3 center;
+        float radius;
+    };
+    const Lobe lobes[] = {
+        {{0.0f, 0.26f, 0.0f}, 0.30f},   {{0.20f, 0.18f, 0.09f}, 0.21f},
+        {{-0.17f, 0.16f, -0.11f}, 0.19f}, {{0.06f, 0.14f, -0.18f}, 0.16f},
+        {{-0.09f, 0.13f, 0.16f}, 0.15f},
+    };
+    std::uniform_real_distribution<float> jitter(-0.05f, 0.05f);
+    std::uniform_real_distribution<float> toneDist(0.84f, 1.1f);
+    std::uniform_real_distribution<float> hueDist(-0.07f, 0.07f);
+    const float clusterTop = 0.62f;
+    for (const Lobe& lobe : lobes) {
+        glm::vec3 center =
+            lobe.center + glm::vec3(jitter(rng), jitter(rng) * 0.5f, jitter(rng));
+        // Per-lobe tone: brightness plus a small warm/cool green shift, so
+        // adjacent lobes read as different foliage depth, not copies.
+        float hue = hueDist(rng);
+        glm::vec3 lobeColor =
+            glm::clamp(color * toneDist(rng) * glm::vec3(1.0f + hue, 1.0f, 1.0f - hue),
+                       glm::vec3(0.0f), glm::vec3(1.25f));
+        appendLeafBlob(vertices, indices, center, lobe.radius, lobeColor, rng,
+                       /*subdivisions=*/1, clusterTop, /*shadeLow=*/0.5f, /*shadeHigh=*/1.18f);
+    }
     return Mesh(ctx, commands, vertices, indices);
 }
 

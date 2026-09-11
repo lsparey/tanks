@@ -538,6 +538,17 @@ void main() {
             float radius = length(p) + (noise-.5)*.22;
             alpha = (1.0-smoothstep(.25,.95,radius)) * mix(.6,1.0,noise);
             color = mix(vec3(.25,.26,.25),vec3(.48,.49,.47),age);
+            if (pc.tankSurface.w > .5) {
+                // Explosion soot (Smoke::soot): a much darker column than
+                // muzzle smoke, with an HDR fire glow lighting its interior
+                // from below while the burst is young -- the glow follows
+                // the same noise that shapes the puff so it reads as flame
+                // showing through gaps, then dies out and leaves cooling
+                // black smoke that pales slightly as it disperses.
+                color = mix(vec3(.085,.08,.075), vec3(.30,.295,.29), age);
+                float glow = (1.0-smoothstep(.02,.35,age)) * smoothstep(.35,.9,noise);
+                color += vec3(2.6,.9,.18) * glow;
+            }
         }
         alpha *= pc.opacity;
         // No discard needed: this pipeline writes neither depth nor history.

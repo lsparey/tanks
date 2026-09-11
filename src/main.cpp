@@ -112,11 +112,12 @@ int main(int argc, char** argv) {
                     throw std::runtime_error("--model requires original or refined");
                 originalTankModel = std::strcmp(argv[i], "original") == 0;
             } else if (std::strcmp(argv[i], "--view") == 0) {
-                if (++i >= argc) throw std::runtime_error("--view requires tank, tank-side, tank-front, tank-rear, tank-top, landscape, terrain, trees, or water");
+                if (++i >= argc) throw std::runtime_error("--view requires tank, tank-side, tank-front, tank-rear, tank-top, landscape, terrain, trees, props, rocks, or water");
                 view = argv[i];
                 if (view != "tank" && view != "tank-side" && view != "tank-front" &&
                     view != "tank-rear" && view != "tank-top" &&
-                    view != "landscape" && view != "terrain" && view != "trees" && view != "water")
+                    view != "landscape" && view != "terrain" && view != "trees" &&
+                    view != "props" && view != "rocks" && view != "water")
                     throw std::runtime_error("unknown reference view");
             }
         }
