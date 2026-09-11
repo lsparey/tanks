@@ -634,15 +634,31 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
     // with restrained green/blue survives the tonemap as visible fire.
     flashMesh_ =
         std::make_unique<Mesh>(Mesh::blobCluster(*context_, *commands_, glm::vec3(2.4f, 0.95f, 0.18f)));
-    // Explosion debris: a darker, splintered-looking chunk of the box
-    // (normally lit, so it tumbles through the scene's light/shadow like
-    // real debris) and a small, bright unlit ember (a spark/fire glow that
-    // ignores lighting entirely; HDR like the flash above) -- see
-    // DebrisParticle and spawnExplosion.
-    debrisChunkMesh_ =
-        std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(0.32f, 0.22f, 0.12f)));
-    debrisEmberMesh_ =
-        std::make_unique<Mesh>(Mesh::cube(*context_, *commands_, glm::vec3(3.2f, 1.25f, 0.22f)));
+    // Explosion debris: irregular shard fragments (see Mesh::shard) --
+    // normally lit, so they tumble through the scene's light/shadow like
+    // real debris. Palettes are crate wood: painted/weathered exterior
+    // facets with paler raw-wood fracture facets, plus one charred variant.
+    // Elongated z-major proportions read as splinters rather than lumps.
+    struct ShardPalette {
+        glm::vec3 exterior, fracture, proportions;
+    };
+    const ShardPalette shardPalettes[] = {
+        {{0.30f, 0.21f, 0.12f}, {0.58f, 0.45f, 0.28f}, {0.45f, 0.35f, 1.0f}},
+        {{0.26f, 0.18f, 0.10f}, {0.52f, 0.40f, 0.24f}, {0.60f, 0.30f, 1.0f}},
+        {{0.07f, 0.06f, 0.05f}, {0.38f, 0.27f, 0.15f}, {0.50f, 0.45f, 1.0f}},  // charred
+        {{0.33f, 0.24f, 0.13f}, {0.60f, 0.48f, 0.30f}, {0.35f, 0.30f, 1.0f}},
+    };
+    for (size_t i = 0; i < sizeof(shardPalettes) / sizeof(shardPalettes[0]); ++i) {
+        debrisChunkMeshes_.push_back(std::make_unique<Mesh>(
+            Mesh::shard(*context_, *commands_, shardPalettes[i].exterior,
+                        shardPalettes[i].fracture, static_cast<uint32_t>(i) * 31u + 7u,
+                        shardPalettes[i].proportions)));
+    }
+    // Embers: a small, bright unlit spark (HDR like the flash above, so it
+    // glows through the tonemap) -- one thin elongated shard, tumbling fast.
+    debrisEmberMesh_ = std::make_unique<Mesh>(
+        Mesh::shard(*context_, *commands_, glm::vec3(3.2f, 1.25f, 0.22f),
+                    glm::vec3(3.9f, 2.2f, 0.5f), 191u, glm::vec3(0.35f, 0.3f, 1.0f)));
     // Neutral grey, drawn unlit and alpha-blended (see the smokePuffs_ draw
     // loop) -- muzzle blast and shell-trail wisps, see SmokePuff.h.
     smokePuffMesh_ =
@@ -1097,7 +1113,7 @@ void Application::cleanup() noexcept {
     grassClumpMeshes_.clear();
     trackMarkMesh_.reset();
     debrisEmberMesh_.reset();
-    debrisChunkMesh_.reset();
+    debrisChunkMeshes_.clear();
     dustPuffMesh_.reset();
     smokePuffMesh_.reset();
     flashMesh_.reset();
@@ -1932,10 +1948,11 @@ void Application::spawnExplosion(glm::vec3 position) {
     spawnDynamicLight(position, glm::vec3(1.0f, 0.45f, 0.12f), /*radius=*/12.0f, /*intensity=*/18.0f,
                        /*lifetime=*/0.4f);
 
-    constexpr int kChunkCount = 7;
+    constexpr int kChunkCount = 10;
     constexpr int kEmberCount = 8;
     constexpr int kFlameCount = 3;
     constexpr int kSootPuffCount = 8;
+    constexpr int kDustRingCount = 5;
 
     std::mt19937 rng(std::random_device{}());
     std::uniform_real_distribution<float> unit(-1.0f, 1.0f);
@@ -1975,11 +1992,16 @@ void Application::spawnExplosion(glm::vec3 position) {
         WeaponEffects::addBounded(blastSmoke_, puff, WeaponEffects::kMaxSmoke);
     }
 
+    // Lifetimes long enough for a bounce or two plus a moment of resting on
+    // the ground as scattered litter (see DebrisParticle::update) before the
+    // end-of-life shrink removes them.
+    std::uniform_int_distribution<int> variantDist(
+        0, static_cast<int>(debrisChunkMeshes_.size()) - 1);
     for (int i = 0; i < kChunkCount; ++i) {
-        std::uniform_real_distribution<float> speedDist(2.0f, 5.0f);
+        std::uniform_real_distribution<float> speedDist(2.0f, 5.5f);
         std::uniform_real_distribution<float> scaleDist(0.25f, 0.5f);
-        std::uniform_real_distribution<float> lifeDist(0.7f, 1.1f);
-        std::uniform_real_distribution<float> spinDist(-8.0f, 8.0f);
+        std::uniform_real_distribution<float> lifeDist(1.5f, 2.4f);
+        std::uniform_real_distribution<float> spinDist(-9.0f, 9.0f);
 
         DebrisParticle chunk;
         chunk.position = position;
@@ -1988,8 +2010,22 @@ void Application::spawnExplosion(glm::vec3 position) {
         chunk.rotationSpeed = spinDist(rng);
         chunk.baseScale = scaleDist(rng);
         chunk.initialLifetime = chunk.lifetimeRemaining = lifeDist(rng);
+        chunk.meshVariant = variantDist(rng);
         chunk.ember = false;
         debris_.push_back(chunk);
+    }
+
+    // Low radial dust ring: the ground-level pressure kick every real
+    // explosion has, reusing the existing earthy track-dust puffs pushed
+    // outward instead of drifting up.
+    for (int i = 0; i < kDustRingCount; ++i) {
+        float angle = (static_cast<float>(i) + upBias(rng)) * 6.2831853f /
+                      static_cast<float>(kDustRingCount);
+        glm::vec3 dir(std::cos(angle), 0.0f, std::sin(angle));
+        spawnSmokePuff(position + dir * 0.4f + glm::vec3(0.0f, 0.15f, 0.0f),
+                       dir * (3.5f + upBias(rng) * 2.0f) + glm::vec3(0.0f, 0.4f, 0.0f),
+                       /*initialScale=*/0.45f, /*finalScale=*/1.6f, /*lifetime=*/0.7f,
+                       /*dust=*/true);
     }
 
     for (int i = 0; i < kEmberCount; ++i) {
@@ -2451,7 +2487,8 @@ void Application::updateProjectilesAndCollisions(float deltaTime) {
                         [](const ImpactEffect& e) { return !e.alive; }),
         impactEffects_.end());
 
-    for (auto& particle : debris_) particle.update(deltaTime);
+    for (auto& particle : debris_)
+        particle.update(deltaTime, terrain_->heightAt(particle.position.x, particle.position.z));
     debris_.erase(std::remove_if(debris_.begin(), debris_.end(),
                                   [](const DebrisParticle& d) { return !d.alive; }),
                   debris_.end());
@@ -3487,7 +3524,8 @@ void Application::drawFrame() {
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(debrisPc), &debrisPc);
-        const Mesh& mesh = particle.ember ? *debrisEmberMesh_ : *debrisChunkMesh_;
+        const Mesh& mesh =
+            particle.ember ? *debrisEmberMesh_ : *debrisChunkMeshes_[particle.meshVariant];
         mesh.bindAndDraw(frame.commandBuffer);
     }
     // Weapon cards are drawn back-to-front after opaque effects. They keep

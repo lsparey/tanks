@@ -834,6 +834,61 @@ Mesh Mesh::blobCluster(VulkanContext& ctx, CommandContext& commands, glm::vec3 c
     return Mesh(ctx, commands, vertices, indices);
 }
 
+Mesh Mesh::shard(VulkanContext& ctx, CommandContext& commands, glm::vec3 exteriorColor,
+                 glm::vec3 fractureColor, uint32_t seed, glm::vec3 proportions) {
+    const float t = (1.0f + std::sqrt(5.0f)) / 2.0f;
+    const std::array<glm::vec3, 12> baseVerts = {
+        glm::normalize(glm::vec3(-1, t, 0)), glm::normalize(glm::vec3(1, t, 0)),
+        glm::normalize(glm::vec3(-1, -t, 0)), glm::normalize(glm::vec3(1, -t, 0)),
+        glm::normalize(glm::vec3(0, -1, t)), glm::normalize(glm::vec3(0, 1, t)),
+        glm::normalize(glm::vec3(0, -1, -t)), glm::normalize(glm::vec3(0, 1, -t)),
+        glm::normalize(glm::vec3(t, 0, -1)), glm::normalize(glm::vec3(t, 0, 1)),
+        glm::normalize(glm::vec3(-t, 0, -1)), glm::normalize(glm::vec3(-t, 0, 1)),
+    };
+    const std::array<std::array<int, 3>, 20> faces = {{
+        {0, 11, 5}, {0, 5, 1},  {0, 1, 7},  {0, 7, 10}, {0, 10, 11}, {1, 5, 9},  {5, 11, 4},
+        {11, 10, 2}, {10, 7, 6}, {7, 1, 8},  {3, 9, 4},  {3, 4, 2},  {3, 2, 6},  {3, 6, 8},
+        {3, 8, 9},  {4, 9, 5},  {2, 4, 11}, {6, 2, 10}, {8, 6, 7},  {9, 8, 1},
+    }};
+
+    std::mt19937 rng(seed);
+    // Wide radial jitter (down to half radius) is what breaks the recognizable
+    // icosahedron silhouette into an irregular broken fragment.
+    std::uniform_real_distribution<float> radiusDist(0.5f, 1.0f);
+    std::uniform_real_distribution<float> roll(0.0f, 1.0f);
+    std::array<glm::vec3, 12> deformed;
+    for (size_t i = 0; i < baseVerts.size(); ++i) {
+        deformed[i] = baseVerts[i] * radiusDist(rng) * proportions * 0.5f;
+    }
+
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    vertices.reserve(faces.size() * 3);
+    indices.reserve(faces.size() * 3);
+    for (const auto& face : faces) {
+        glm::vec3 p0 = deformed[face[0]];
+        glm::vec3 p1 = deformed[face[1]];
+        glm::vec3 p2 = deformed[face[2]];
+        // Same derive-winding-from-geometry approach as Mesh::rock: flip if
+        // the flat normal points inward.
+        glm::vec3 normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
+        if (glm::dot(normal, (p0 + p1 + p2) / 3.0f) < 0.0f) {
+            std::swap(p1, p2);
+            normal = -normal;
+        }
+        // Roughly half the facets read as fresh break; brightness jitter per
+        // facet keeps even same-palette neighbors from merging visually.
+        glm::vec3 faceColor = (roll(rng) < 0.45f ? fractureColor : exteriorColor) *
+                              (0.85f + roll(rng) * 0.3f);
+        uint32_t base = static_cast<uint32_t>(vertices.size());
+        vertices.push_back({p0, normal, faceColor, glm::vec2(0.0f)});
+        vertices.push_back({p1, normal, faceColor, glm::vec2(0.0f)});
+        vertices.push_back({p2, normal, faceColor, glm::vec2(0.0f)});
+        indices.insert(indices.end(), {base, base + 1, base + 2});
+    }
+    return Mesh(ctx, commands, vertices, indices);
+}
+
 Mesh Mesh::shrub(VulkanContext& ctx, CommandContext& commands, glm::vec3 color, uint32_t seed) {
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;

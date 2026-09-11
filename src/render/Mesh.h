@@ -132,6 +132,20 @@ public:
     // scale/position/opacity, not shape.
     static Mesh blobCluster(VulkanContext& ctx, CommandContext& commands, glm::vec3 color);
 
+    // An irregular convex fragment for explosion debris: an icosahedron with
+    // per-vertex radial jitter and anisotropic proportions, flat-shaded so
+    // each facet catches light like a fracture plane. Each face randomly
+    // carries either the exterior color (the object's old painted/weathered
+    // surface) or the fracture color (the freshly broken interior), which is
+    // what makes a tumbling fragment read as a splinter of *something*
+    // rather than a solid-colored lump. Fits within radius ~0.5 like cube();
+    // per-instance size comes from DebrisParticle::baseScale. `seed` varies
+    // the jitter/face palette per variant, `proportions` elongates (e.g.
+    // z-major for wood splinters).
+    static Mesh shard(VulkanContext& ctx, CommandContext& commands, glm::vec3 exteriorColor,
+                      glm::vec3 fractureColor, uint32_t seed,
+                      glm::vec3 proportions = glm::vec3(1.0f));
+
     // A small low bush: three overlapping gently-jittered blobs like
     // blobCluster, but low to the ground and opaque/lit (not alpha-blended)
     // -- same appendLeafBlob shape foliage clusters use, just without the

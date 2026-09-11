@@ -235,7 +235,10 @@ private:
     std::unique_ptr<Mesh> boxMesh_;
     std::unique_ptr<Mesh> shellMesh_;
     std::unique_ptr<Mesh> flashMesh_;
-    std::unique_ptr<Mesh> debrisChunkMesh_;
+    // Small pool of distinct shard shapes (see Mesh::shard) so a debris
+    // burst reads as varied fragments rather than copies of one chunk;
+    // DebrisParticle::meshVariant indexes into this.
+    std::vector<std::unique_ptr<Mesh>> debrisChunkMeshes_;
     std::unique_ptr<Mesh> debrisEmberMesh_;
     std::unique_ptr<Mesh> smokePuffMesh_;
     std::unique_ptr<Mesh> dustPuffMesh_;
