@@ -246,30 +246,36 @@ vec3 skyColor(vec3 dir) {
     return mix(color, cloudLight, cloudAlpha);
 }
 
-// Cloud shadows: project the shaded point along the sun direction onto the
-// same virtual cloud layer the sky dome samples, and reuse skyColor's exact
-// camera-anchored planar mapping (uv = dir.xz/dir.y * atmosphere.z for a
-// direction from the camera) so each visible cloud's shadow falls where
-// that cloud actually sits between the sun and the ground. One textureLod
-// of the already-bound cloud texture per fragment -- no rays, no extra
-// bindings. Sampled at a coarse mip so shadow edges stay soft/diffuse the
-// way real cloud shadows are (the cloud layer is far away and the sun is
-// not a point source); the coverage threshold matches skyColor's so ground
-// shade appears only under clouds that are actually drawn.
-// Above the camera, like the dome's projection. Deliberately lower than the
-// dome reads visually: one cloud mass spans ~0.2 UV of the texture, so the
-// plane height sets the shadow feature size on the ground (~0.2*H/0.25
-// world units). At 90 a single shade patch covered ~70 units -- reading as
-// a vignette on the whole map rather than passing cloud shade; 55 gives a
-// few distinct ~45-unit patches across the play area.
+// Cloud shadows: project the shaded point along the sun direction onto a
+// virtual cloud layer and sample the same cloud texture/coverage threshold
+// the sky dome draws with. One textureLod of the already-bound cloud
+// texture per fragment -- no rays, no extra bindings.
+//
+// WORLD-anchored, deliberately unlike skyColor's camera-anchored direction
+// mapping: an earlier version subtracted frame.cameraPos.xz here to match
+// the dome's projection exactly, and since the chase camera follows the
+// tank, driving dragged the entire shade pattern across the ground with
+// the vehicle -- shade read as attached to the tank, not the sky. Ground
+// shadows must stay fixed in the world and move only with the wind drift;
+// the resulting slow sky-to-shadow misregistration as the camera travels
+// is imperceptible (the dome's clouds are effectively at infinity and no
+// specific cloud/shadow pair can be visually matched anyway).
+// Fixed world height of the virtual shadow-casting layer. Deliberately
+// lower than the dome reads visually: one cloud mass spans ~0.2 UV of the
+// texture, so the plane height sets the shadow feature size on the ground
+// (~0.2*H/0.25 world units). At 90 a single shade patch covered ~70 units
+// -- reading as a vignette on the whole map rather than passing cloud
+// shade; 55 gives a few distinct ~45-unit patches across the play area.
 const float kCloudPlaneHeight = 55.0;
 const float kCloudShadowStrength = 0.6;
 float cloudShadow(vec3 worldPos) {
     vec3 toSun = normalize(-frame.lightDir.xyz);
-    float planeY = frame.cameraPos.y + kCloudPlaneHeight;
-    float t = (planeY - worldPos.y) / max(toSun.y, 0.15);
+    // Fixed world height for the plane too (not camera-relative): terrain
+    // relief is a few units against a 55-unit layer, so this stays a simple
+    // constant without the camera's height dragging the projection around.
+    float t = (kCloudPlaneHeight - worldPos.y) / max(toSun.y, 0.15);
     vec2 planePoint = worldPos.xz + toSun.xz * t;
-    vec2 uv = (planePoint - frame.cameraPos.xz) / kCloudPlaneHeight * frame.atmosphere.z -
+    vec2 uv = planePoint / kCloudPlaneHeight * frame.atmosphere.z -
               frame.windTime.x * kCloudDrift;
     // Same mip as skyColor's visible clouds -- a coarser mip averaged the
     // density field toward its mean BEFORE the coverage threshold, which
