@@ -1,4 +1,5 @@
 #include "Application.h"
+#include "CombatHud.h"
 
 #include <algorithm>
 #include <atomic>
@@ -132,26 +133,6 @@ constexpr float kBoundaryInsetFraction = 0.1f;
 // review; the ground line itself is the boundary's anchor.
 constexpr float kBoundaryWallHeight = 2.5f;
 
-// Digits are drawn as seven-segment glyphs made of HudRenderer quads --
-// there's no font/text rendering in the HUD, and a segmented display is the
-// simplest thing that composes out of the axis-aligned rectangles it already
-// draws (crosshair, box ticks).
-constexpr float kDigitSegmentThickness = 0.006f;
-
-const bool kSevenSegmentTable[10][7] = {
-    // a(top), b(top-right), c(bottom-right), d(bottom), e(bottom-left), f(top-left), g(middle)
-    {true, true, true, true, true, true, false},    // 0
-    {false, true, true, false, false, false, false},  // 1
-    {true, true, false, true, true, false, true},    // 2
-    {true, true, true, true, false, false, true},    // 3
-    {false, true, true, false, false, true, true},   // 4
-    {true, false, true, true, false, true, true},    // 5
-    {true, false, true, true, true, true, true},     // 6
-    {true, true, true, false, false, false, false},  // 7
-    {true, true, true, true, true, true, true},      // 8
-    {true, true, true, true, false, true, true},     // 9
-};
-
 // CPU counterpart to basic.frag's terrain value noise. Keeping this in
 // lockstep with the shader lets decorative pebbles use the same wandering
 // gravel boundary that is actually visible on the ground.
@@ -232,41 +213,6 @@ float terrainGravelAmount(const Terrain& terrain, float x, float z) {
     float steepness = 1.0f - terrainNormal.y;
     float slopeRockiness = glm::smoothstep(0.32f, 0.62f, steepness);
     return std::max(heightRockiness, slopeRockiness);
-}
-
-void addDigit(HudRenderer& hud, glm::vec2 centerNDC, float halfHeight, float aspect, int digit,
-              glm::vec3 color) {
-    if (digit < 0 || digit > 9) return;
-    const bool* seg = kSevenSegmentTable[digit];
-
-    float halfWidth = halfHeight * 0.5f / aspect;
-    float thicknessX = kDigitSegmentThickness / aspect;
-    float thicknessY = kDigitSegmentThickness;
-    float armHalfHeight = halfHeight * 0.5f - thicknessY;
-
-    if (seg[0]) hud.addQuad(centerNDC + glm::vec2(0.0f, halfHeight), {halfWidth, thicknessY}, color);
-    if (seg[1]) hud.addQuad(centerNDC + glm::vec2(halfWidth, halfHeight * 0.5f), {thicknessX, armHalfHeight}, color);
-    if (seg[2]) hud.addQuad(centerNDC + glm::vec2(halfWidth, -halfHeight * 0.5f), {thicknessX, armHalfHeight}, color);
-    if (seg[3]) hud.addQuad(centerNDC + glm::vec2(0.0f, -halfHeight), {halfWidth, thicknessY}, color);
-    if (seg[4]) hud.addQuad(centerNDC + glm::vec2(-halfWidth, -halfHeight * 0.5f), {thicknessX, armHalfHeight}, color);
-    if (seg[5]) hud.addQuad(centerNDC + glm::vec2(-halfWidth, halfHeight * 0.5f), {thicknessX, armHalfHeight}, color);
-    if (seg[6]) hud.addQuad(centerNDC, {halfWidth, thicknessY}, color);
-}
-
-// Lays digits out right-to-left from rightEdgeNDC, so the counter's right
-// edge stays fixed and it grows leftward as the value gains digits (e.g.
-// "9" -> "10"), which is what you want anchored to a screen corner.
-void addNumber(HudRenderer& hud, int value, glm::vec2 rightEdgeNDC, float halfHeight, float aspect,
-               glm::vec3 color) {
-    std::string digits = std::to_string(std::max(0, value));
-    float halfWidth = halfHeight * 0.5f / aspect;
-    float advance = halfWidth * 2.4f;
-
-    float x = rightEdgeNDC.x - halfWidth;
-    for (auto it = digits.rbegin(); it != digits.rend(); ++it) {
-        addDigit(hud, {x, rightEdgeNDC.y}, halfHeight, aspect, *it - '0', color);
-        x -= advance;
-    }
 }
 
 VkImageMemoryBarrier2 imageBarrier(VkImage image, VkImageAspectFlags aspect,
@@ -962,7 +908,7 @@ void Application::presentLoadingProgress(float fraction, const std::function<voi
 
     // Same Y-flip as the main scene viewport (see drawFrame), so the bar's
     // NDC coordinates follow the same up/down convention as the rest of the
-    // HUD (ammo ticks, FPS counter).
+    // HUD and menu overlays.
     VkViewport viewport{};
     viewport.x = 0.0f;
     viewport.y = static_cast<float>(extent.height);
@@ -1227,6 +1173,9 @@ void Application::mainLoop() {
         input_->update();
 
         if (!treeLodBenchmark_) {
+            bool helpKeyDown = glfwGetKey(window_, GLFW_KEY_H) == GLFW_PRESS;
+            if (helpKeyDown && !prevHudHelpKeyDown_) showHudHelp_ = !showHudHelp_;
+            prevHudHelpKeyDown_ = helpKeyDown;
             bool performanceKeyDown = glfwGetKey(window_, GLFW_KEY_F3) == GLFW_PRESS;
             if (performanceKeyDown && !prevPerformanceKeyDown_) {
                 performanceReporting_ = !performanceReporting_;
@@ -3571,53 +3520,29 @@ void Application::drawFrame() {
     vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                          gpuTimestampPool_, timestampBase + 5);
 
-    uint32_t aliveBoxCount = 0;
-    for (const auto& box : boxes_) {
-        if (box.alive) ++aliveBoxCount;
-    }
-
     hud_->begin();
-
-    // Project the tank's actual aim point (along its firing direction) into
-    // screen space, rather than a fixed screen-center crosshair -- with a
-    // third-person chase camera that looks at the tank rather than down the
-    // barrel, screen center doesn't correspond to where a shot will go.
-    glm::vec3 aimWorldPoint =
-        tank_->muzzleWorldPosition() + tank_->aimDirection() * kAimProjectionDistance;
-    // Unjittered projection: the crosshair must stay pixel-stable, not
-    // wobble with TAA's per-frame sub-pixel jitter (see where ubo.proj is
-    // built above).
-    glm::vec4 aimClip = unjitteredProj * ubo.view * glm::vec4(aimWorldPoint, 1.0f);
-    if (aimClip.w > 0.01f) {
-        glm::vec2 aimNDC = glm::vec2(aimClip.x, aimClip.y) / aimClip.w;
-        constexpr float kCrosshairArm = 0.025f;
-        constexpr float kCrosshairThickness = 0.004f;
-        glm::vec3 white(1.0f);
-        hud_->addQuad(aimNDC, {kCrosshairArm / aspect, kCrosshairThickness}, white);
-        hud_->addQuad(aimNDC, {kCrosshairThickness / aspect, kCrosshairArm}, white);
-    }
-
-    constexpr float kTickHalf = 0.018f;
-    constexpr float kTickSpacing = 0.05f;
-    constexpr float kTicksStartX = -0.9f;
-    constexpr float kTicksY = 0.85f;
-    glm::vec3 tickColor(0.2f, 0.9f, 0.3f);
-    for (uint32_t i = 0; i < aliveBoxCount; ++i) {
-        float x = kTicksStartX + kTickSpacing * static_cast<float>(i);
-        hud_->addQuad({x, kTicksY}, {kTickHalf / aspect, kTickHalf}, tickColor);
-    }
-
-    constexpr glm::vec2 kFpsRightEdge(0.95f, 0.85f);
-    constexpr float kFpsDigitHalfHeight = 0.035f;
-    glm::vec3 fpsColor(1.0f, 1.0f, 1.0f);
-    addNumber(*hud_, static_cast<int>(displayedFps_ + 0.5f), kFpsRightEdge, kFpsDigitHalfHeight, aspect,
-              fpsColor);
-
-    hud_->addText(treeLodMode_ == TreeLodMode::Full ? "F8 TREE LOD: OFF - FULL DETAIL"
-                                                 : "F8 TREE LOD: ON",
-                  {-0.93f,-0.87f}, {.0045f/aspect,.0045f}, glm::vec3(1.f));
-    hud_->addText(reflectionRaysEnabled_ ? "F9 REFLECTION RAYS: ON" : "F9 REFLECTION RAYS: OFF",
-                  {-0.93f,-0.92f}, {.0045f/aspect,.0045f}, glm::vec3(1.f));
+    CombatHud::State hudState;
+    hudState.position = tank_->position();
+    hudState.forward = tank_->forward();
+    hudState.aimDirection = tank_->aimDirection();
+    // Keep the established gun-ray projection and its unjittered camera.
+    const glm::vec3 aimWorldPoint = tank_->muzzleWorldPosition() +
+                                   hudState.aimDirection * kAimProjectionDistance;
+    hudState.aimClip = unjitteredProj * ubo.view * glm::vec4(aimWorldPoint, 1.0f);
+    hudState.speed = tank_->signedSpeed();
+    hudState.turretYaw = tank_->turretYaw();
+    hudState.gunElevation = tank_->gunElevation();
+    hudState.boundaryHalfExtent = boundaryHalfExtent_;
+    hudState.targets = boxes_;
+    hudState.camera = !referenceView_.empty() ? "INSPECTION" :
+        (cameraMode_ == CameraMode::HullFollow ? "HULL FOLLOW" :
+         cameraMode_ == CameraMode::TurretAim ? "GUN AIM" : "FREE CAMERA");
+    hudState.help = showHudHelp_;
+    hudState.diagnostics = performanceReporting_;
+    hudState.fps = displayedFps_;
+    hudState.treeLod = treeLodMode_ != TreeLodMode::Full;
+    hudState.reflectionRays = reflectionRaysEnabled_;
+    CombatHud::draw(*hud_, {extent.width, extent.height}, hudState);
 
     vkCmdEndRendering(frame.commandBuffer);
     vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -3779,7 +3704,7 @@ void Application::drawFrame() {
         colorImage, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
         VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+        VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
     VkDependencyInfo tonemapToHudDepInfo{};
     tonemapToHudDepInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     tonemapToHudDepInfo.imageMemoryBarrierCount = 1;

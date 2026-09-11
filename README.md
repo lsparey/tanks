@@ -63,7 +63,7 @@ improvement from this quality policy alone is not assumed.
 
 Press `F8` to toggle tree LOD off/on. Off forces full-detail visible bark and
 foliage and restores the original near reflection proxies. On restores the
-selected LOD mode. The HUD shows the state. Use `--tree-lod full` to start
+selected LOD mode. The F3 diagnostics HUD shows the state. Use `--tree-lod full` to start
 with tree LOD disabled.
 
 Reflection trees now use the same footprint policy, conservatively measured
@@ -285,10 +285,11 @@ the swapchain and dependent render targets are recreated automatically.
 | `R` / `F` | Raise / lower the main gun (+20° / −10° limits) |
 | Left mouse button or `Space` | Fire |
 | `C` | Cycle hull-follow, turret-aiming, and free-camera modes |
+| `H` | Show/hide the in-game controls panel |
 | Mouse | Look around in free-camera mode |
 | Arrow keys | Move horizontally in free-camera mode |
 | `Space` / Left `Ctrl` | Move up / down in free-camera mode |
-| `F3` | Toggle performance summary in the window title and detailed terminal reports |
+| `F3` | Toggle HUD diagnostics, performance summary in the window title, and detailed terminal reports |
 | `F4` | Reset performance samples for a new measurement |
 | `F5` | Toggle shadows and ambient occlusion together |
 | `F6` | Cycle tree shadows: filtered maps → soft maps → legacy rays |
@@ -301,9 +302,41 @@ the swapchain and dependent render targets are recreated automatically.
 The mouse cursor is captured while the application is running. In free-camera
 mode, `Space` both raises the camera and fires because firing remains active.
 
+## Combat HUD
+
+The battle overlay uses translucent panels with live vehicle speed, travel
+direction, gun elevation, and a hull-relative turret diagram. Speed uses the
+simulation's world units per second. The split reticle follows the existing
+unjittered gun-ray projection; it indicates direction, not a predicted hit or
+penetration chance. An out-of-view notice appears when that point leaves the
+screen. The camera label follows C and identifies fixed inspection views.
+
+The top counter tracks destroyed crates, including crates crushed by driving.
+The tactical map shows the full playable boundary, remaining crate objectives,
+the player's hull heading, and the gun direction. North is world +Z and east
+is +X. It is an objective map, without terrain, enemy spotting or line-of-sight
+simulation. Crate markers disappear when those crates are destroyed.
+
+The gun panel describes the existing single-shot controls. Health, ammunition
+inventory, reload timers and shell selection are not implemented and have no
+HUD indicators. H opens controls; F3 reveals FPS and F8/F9 rendering states.
+The layout scales with the window, keeping the center clear for aiming.
+
+For a GPU-independent layout preview using the same geometry as the game:
+
+```bash
+cmake --build build --target hud_preview combat_hud_test
+./build/hud_preview /tmp/combat-hud.svg
+./build/hud_preview /tmp/combat-hud-help.svg 1280 720 help
+ctest --test-dir build -R '^combat_hud$' --output-on-failure
+```
+
+These SVG previews use illustrative state on a plain background. In-game PNG
+capture remains the check for the actual scene and Vulkan alpha blending.
+
 ## Performance measurements
 
-The HUD FPS counter counts completed frames over half-second wall-clock windows.
+The F3 HUD FPS counter counts completed frames over half-second wall-clock windows.
 F8 starts a fresh window. It is separate from the longer F3 report window.
 GPU timestamp readbacks run only while F3/`--profile` reporting is enabled,
 and continue during its CPU-sample warmup so changing LOD does not temporarily

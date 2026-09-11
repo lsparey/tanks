@@ -76,6 +76,9 @@ public:
 
     glm::vec3 position() const { return position_; }
     glm::vec3 forward() const { return forward_; }
+    float signedSpeed() const { return glm::dot(velocity_, glm::vec2(forward_.x, forward_.z)); }
+    float turretYaw() const { return turretYaw_; }
+    float gunElevation() const { return gunElevation_; }
     // Hull's local-space X extent (outer edge to outer edge) -- see load().
     float hullWidth() const { return hullWidth_; }
     float hullLength() const { return hullLength_; }

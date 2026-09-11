@@ -9,6 +9,12 @@ option(TANKS_BUILD_GAME "Build the Vulkan game and its renderer/gameplay tests" 
 find_package(glm CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 
+add_library(combat_hud STATIC src/core/CombatHud.cpp src/render/HudGeometry.cpp)
+target_include_directories(combat_hud PUBLIC src)
+target_link_libraries(combat_hud PUBLIC glm::glm)
+add_executable(hud_preview tools/HudPreview.cpp)
+target_link_libraries(hud_preview PRIVATE combat_hud)
+
 add_library(terrain_generation STATIC
     src/scene/HeightmapGenerator.cpp
     src/scene/MacroTerrain.cpp
@@ -39,6 +45,9 @@ target_link_libraries(terrain_selection_probe PRIVATE terrain_generation)
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(combat_hud_test tests/CombatHudTest.cpp)
+    target_link_libraries(combat_hud_test PRIVATE combat_hud)
+    add_test(NAME combat_hud COMMAND combat_hud_test)
     add_executable(terrain_refinement_test tests/TerrainRefinementTest.cpp)
     target_link_libraries(terrain_refinement_test PRIVATE terrain_generation)
     add_test(NAME terrain_refinement COMMAND terrain_refinement_test)
@@ -152,6 +161,7 @@ target_link_libraries(tanks PRIVATE
     assimp::assimp
     Threads::Threads
     terrain_generation
+    combat_hud
 )
 
 include(cmake/CompileShaders.cmake)

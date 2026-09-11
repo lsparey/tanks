@@ -142,6 +142,8 @@ private:
     CameraMode cameraMode_ = CameraMode::HullFollow;
     bool prevCameraToggleKeyDown_ = false;
     bool prevFireDown_ = false;
+    bool showHudHelp_ = false;
+    bool prevHudHelpKeyDown_ = false;
     bool prevScreenshotKeyDown_ = false;
     // F5 toggles sun shadows/AO off entirely (see basic.frag's
     // rawShadow/rawAO) -- lets a perf/quality comparison run without
