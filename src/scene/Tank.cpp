@@ -1,4 +1,5 @@
 #include "Tank.h"
+#include <limits>
 
 #include <algorithm>
 #include <cctype>
@@ -148,6 +149,12 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
         vertices.insert(vertices.end(), part.vertices.begin(), part.vertices.end());
         for (uint32_t idx : part.indices) indices.push_back(base + idx);
     }
+    float modelMinY = std::numeric_limits<float>::infinity(), modelMaxY = -modelMinY;
+    for (const auto& part : result.parts) for (const auto& vertex : part.vertices) {
+        modelMinY = std::min(modelMinY, vertex.position.y);
+        modelMaxY = std::max(modelMaxY, vertex.position.y);
+    }
+    height_ = modelMaxY - modelMinY;
     auto* turretPart = turretGroup.indices.empty() ? nullptr : &turretGroup;
     auto* barrelPart = barrelGroup.indices.empty() ? nullptr : &barrelGroup;
     auto* trackPart = trackGroup.indices.empty() ? nullptr : &trackGroup;

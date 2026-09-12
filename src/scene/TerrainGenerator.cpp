@@ -1,5 +1,7 @@
 #include "TerrainGenerator.h"
+#include "TerrainShallows.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <stdexcept>
@@ -58,6 +60,14 @@ BuildResult build(const Settings& settings) {
     }
     if (settings.combinedWater && !settings.streams)
         throw std::invalid_argument("combined water requires stream profiles");
+    if (settings.maximumWaterDepth &&
+        (!settings.combinedWater || !std::isfinite(*settings.maximumWaterDepth) ||
+         *settings.maximumWaterDepth <= std::max(settings.streams->maximumDepth, settings.streams->spillHead)))
+        throw std::invalid_argument("maximum water depth must leave room above the standing bed for stream depth");
+    if (!std::isfinite(settings.minimumLakeArea) || settings.minimumLakeArea < 0 ||
+        !std::isfinite(settings.minimumLakeRadius) || settings.minimumLakeRadius < 0 ||
+        ((settings.minimumLakeArea > 0 || settings.minimumLakeRadius > 0) && !settings.lakes))
+        throw std::invalid_argument("small lake removal requires lake water and nonnegative size limits");
     if (settings.materials) {
         if (!settings.combinedWater) throw std::invalid_argument("ground materials require final combined water");
         TerrainMaterials::validate(*settings.materials);
@@ -100,6 +110,7 @@ BuildResult build(const Settings& settings) {
     std::optional<TerrainWater::Result> combinedWater;
     std::optional<TerrainMaterials::Fields> materials;
     double channelPreparationMs = 0;
+    TerrainShallows::Result shallowBeds;
     std::optional<TerrainRefinement::Result> refinement;
     HeightmapGenerator::Heightmap hm;
     if (settings.preset != Preset::Legacy) {
@@ -111,8 +122,7 @@ BuildResult build(const Settings& settings) {
         if (settings.preset == Preset::DrainedValley) {
             HydraulicErosion::settle(*fields, *erosion);
             if (settings.refinementPasses) refinement = TerrainRefinement::apply(*fields, settings.refinementPasses);
-            // Outcrops are the LAST height-changing pass before hydrology and
-            // every contact/render consumer; drainage below sees final ground.
+            // Geology precedes channel carving and shallow basin bed shaping.
             if (settings.outcrops) outcrops = RockOutcrops::apply(*fields, settings.seed, *settings.outcrops);
             drainage = TerrainDrainage::analyze(*fields, {settings.erosion.rainfall, settings.erosion.infiltration});
             if (settings.lakes) water = LakeWater::build(*fields, *drainage, *settings.lakes);
@@ -127,6 +137,36 @@ BuildResult build(const Settings& settings) {
                 drainage = TerrainDrainage::analyze(*fields, {settings.erosion.rainfall, settings.erosion.infiltration});
                 water = LakeWater::build(*fields, *drainage, *settings.lakes);
                 streams = StreamNetwork::build(*fields, *drainage, *water, *settings.streams);
+            }
+            if (settings.maximumWaterDepth) {
+                // Profiles are bounded above by spill elevation + maximum
+                // stream head, including backwater and bank reconstruction.
+                // Cap depression depth with that headroom reserved. Raising
+                // beds below their spill preserves each escape elevation;
+                // dry slopes and lake rims retain their original heights.
+                float headroom = std::max(settings.streams->maximumDepth, settings.streams->spillHead);
+                shallowBeds = TerrainShallows::apply(*fields, *drainage, *settings.maximumWaterDepth - headroom);
+                if (shallowBeds.addedSoil > 0) {
+                    drainage = TerrainDrainage::analyze(*fields, {settings.erosion.rainfall, settings.erosion.infiltration});
+                    water = LakeWater::build(*fields, *drainage, *settings.lakes);
+                    streams = StreamNetwork::build(*fields, *drainage, *water, *settings.streams);
+                }
+            }
+            if (settings.minimumLakeArea > 0 || settings.minimumLakeRadius > 0) {
+                // Removing upstream ponds can change a partial lake's supply.
+                // Re-evaluate after each fill so the final lake set also meets
+                // the size limits, with every physical consumer rebuilt.
+                for (unsigned pass = 0; ; ++pass) {
+                    auto removed = TerrainShallows::removeSmallLakes(*fields, *drainage, *water,
+                        settings.minimumLakeArea, settings.minimumLakeRadius);
+                    shallowBeds.addedSoil += removed.addedSoil;
+                    shallowBeds.elapsedMs += removed.elapsedMs;
+                    if (!removed.removedLakes) break;
+                    if (pass >= 15) throw std::runtime_error("small lake removal did not converge");
+                    drainage = TerrainDrainage::analyze(*fields, {settings.erosion.rainfall, settings.erosion.infiltration});
+                    water = LakeWater::build(*fields, *drainage, *settings.lakes);
+                    if (settings.streams) streams = StreamNetwork::build(*fields, *drainage, *water, *settings.streams);
+                }
             }
             if (settings.streamSections) streamSections = StreamSections::build(*fields, *streams, *settings.streamSections);
             if (settings.combinedWater) combinedWater = TerrainWater::build(*fields, *drainage, *water, *streams);
@@ -148,6 +188,8 @@ BuildResult build(const Settings& settings) {
     auto analysisDone = Clock::now();
     auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
     Statistics stats;
+    stats.shallowBedMs = shallowBeds.elapsedMs;
+    stats.shallowBedFill = shallowBeds.addedSoil;
     stats.heightfieldMs = ms(start, heightsDone);
     if (erosion) {
         stats.erosionMs = erosion->elapsedMs;

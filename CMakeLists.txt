@@ -21,6 +21,7 @@ add_library(terrain_generation STATIC
     src/scene/TerrainRefinement.cpp
     src/scene/HydraulicErosion.cpp
     src/scene/TerrainDrainage.cpp
+    src/scene/TerrainShallows.cpp
     src/scene/LakeWater.cpp
     src/scene/ShorelineIndex.cpp
     src/scene/StreamNetwork.cpp
@@ -65,6 +66,9 @@ if(BUILD_TESTING)
     add_executable(terrain_drainage_test tests/TerrainDrainageTest.cpp)
     target_link_libraries(terrain_drainage_test PRIVATE terrain_generation)
     add_test(NAME terrain_drainage COMMAND terrain_drainage_test)
+    add_executable(terrain_shallows_test tests/TerrainShallowsTest.cpp)
+    target_link_libraries(terrain_shallows_test PRIVATE terrain_generation)
+    add_test(NAME terrain_shallows COMMAND terrain_shallows_test)
     add_executable(lake_water_test tests/LakeWaterTest.cpp)
     target_link_libraries(lake_water_test PRIVATE terrain_generation)
     add_test(NAME lake_water COMMAND lake_water_test)

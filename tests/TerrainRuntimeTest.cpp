@@ -14,7 +14,7 @@ template<class F> void rejects(F fn) {
     try { fn(); } catch (const std::exception&) { rejected = true; }
     require(rejected, "invalid runtime input accepted");
 }
-auto smallRecipe(uint32_t seed = 2654443100u) {
+auto smallRecipe(uint32_t seed = 7331u) {
     auto s = TerrainRuntime::recipe(seed, 2.222f, 4.48f, MacroTerrain::Landform::Valley);
     s.resolution = 33; s.erosion.duration = .25; s.erosion.rainDuration = .15; s.erosion.talusPasses = 1;
     return s;
@@ -23,6 +23,18 @@ TerrainRuntime::State retained(TerrainGenerator::Settings s) {
     auto selected = TerrainSelection::select(s);
     require(selected.accepted.has_value(), "runtime fixture not accepted");
     auto& build = *selected.accepted;
+    require(build.settings.maximumWaterDepth.has_value(), "runtime omitted water depth limit");
+    require(!build.channelCarving && build.streams->nodes.empty() && build.combinedWater->streamTriangles == 0,
+            "runtime retained narrow streams or their channel cuts");
+    for (const auto& lake : build.water->lakes)
+        require(!lake.present || lake.area >= build.settings.minimumLakeArea, "runtime retained a small pond");
+    for (const auto& node : build.streams->nodes) {
+        if (node.incoming || node.kind == StreamNetwork::Kind::LakeOutlet) continue;
+        require(std::max(std::abs(node.position.x), std::abs(node.position.y)) >= build.settings.worldSize * .5f - 1e-4f,
+                "runtime stream starts without a lake or map boundary source");
+    }
+    for (const auto& vertex : build.combinedWater->surface.mesh().vertices)
+        require(vertex.depth <= *build.settings.maximumWaterDepth + 1e-4f, "runtime water exceeds tank depth limit");
     auto heights = build.surface.heightmap().heights;
     auto route = build.playability->route;
     auto waterIndices = build.combinedWater->surface.mesh().indices;
@@ -83,7 +95,7 @@ size_t stress(const TerrainRuntime::State& state, uint32_t seed) {
 
 int main(int argc, char**) {
     auto s = smallRecipe();
-    require(s.preset == TerrainGenerator::Preset::DrainedValley && s.combinedWater && s.channelCarving &&
+    require(s.preset == TerrainGenerator::Preset::DrainedValley && s.combinedWater && !s.channelCarving &&
             s.lakes && s.streams && s.playability && !s.streamSections,
             "runtime recipe omits a required stage or retains optional surveys");
     require(TerrainRuntime::recipe(7331, 3, 7).resolution == 257, "comparison changed default resolution");
@@ -95,12 +107,18 @@ int main(int argc, char**) {
             fineRecipe.erosion.workers == 4, "resolution comparison changed erosion settings");
     rejects([] { TerrainRuntime::recipe(7331, 3, 7, MacroTerrain::Landform::Mixed, 512); });
     auto otherHull = TerrainRuntime::recipe(0, 3, 7);
+    auto shortTank = TerrainRuntime::recipe(0, 3, 7, MacroTerrain::Landform::Mixed, 257, 0, .8f);
+    require(*shortTank.maximumWaterDepth == .4f && shortTank.streams->maximumDepth <= .2f,
+            "runtime water depth ignores tank height");
+    rejects([] { TerrainRuntime::recipe(0, 3, 7, MacroTerrain::Landform::Mixed, 257, 0, 0); });
     require(otherHull.macro.landform == MacroTerrain::Landform::Mixed, "runtime still forces a valley");
     require(otherHull.playability->hullWidth == 3 && otherHull.playability->hullLength == 7,
             "runtime ignored loaded hull dimensions");
     rejects([] { TerrainRuntime::recipe(0, 0, 4); });
     auto state = retained(s);
     require(stress(state, s.seed) > 0, "wet fixture lost its water coverage");
+    auto dry = retained(smallRecipe(2654443100u));
+    require(stress(dry, 2654443100u) == 0, "small-feature-only map retained water");
     auto trees = TerrainRuntime::placeTrees(state, s.seed, 6, 4);
     require(trees.size() == 100, "runtime did not preserve tree count");
     rejects([&] { TerrainRuntime::placeTrees(state, s.seed, 6, 180); });
@@ -112,7 +130,9 @@ int main(int argc, char**) {
     auto legacy = TerrainRuntime::retain(legacyBuild);
     require(!legacy.water && !legacy.navigation && !legacy.reservation && legacy.allowsScenery({0, 0}, 1),
             "legacy runtime unexpectedly enabled valley policy");
-    auto failed = TerrainGenerator::build(smallRecipe(7331));
+    auto impossible = smallRecipe(7331);
+    impossible.playability->minimumConnectedArea = double(impossible.worldSize) * impossible.worldSize * 2;
+    auto failed = TerrainGenerator::build(impossible);
     auto failedHeights = failed.surface.heightmap().heights;
     rejects([&] { TerrainRuntime::retain(failed); });
     require(failed.surface.heightmap().heights == failedHeights, "failed retention consumed ground");
@@ -122,9 +142,12 @@ int main(int argc, char**) {
 
     // Optional production-resolution regression, kept out of fast unit tests.
     if (argc > 1) for (uint32_t seed : TerrainGenerator::kRegressionSeeds) {
-        auto full = retained(TerrainRuntime::recipe(seed, 2.222f, 4.48f));
+        auto full = retained(TerrainRuntime::recipe(seed, 2.222f, 4.48f, MacroTerrain::Landform::Mixed, 257, 1));
         stress(full, seed);
+        float deepest = 0;
+        for (const auto& vertex : full.water->mesh().vertices) deepest = std::max(deepest, vertex.depth);
         std::cout << "seed " << seed << ": route " << full.navigation->routeLength
-                  << " m, reserved area " << full.reservation->protectedArea() << " m2; passed\n" << std::flush;
+                  << " m, reserved area " << full.reservation->protectedArea()
+                  << " m2, maximum water depth " << deepest << " m; passed\n" << std::flush;
     }
 }

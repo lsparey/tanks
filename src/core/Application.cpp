@@ -200,6 +200,7 @@ float terrainGravelAmount(const Terrain& terrain, float x, float z) {
     float terrainSlope = glm::length(glm::vec2(terrainNormal.x, terrainNormal.z)) /
                          std::max(std::abs(terrainNormal.y), 0.15f);
     float blendCoverage;
+    float bankMud = 0;
     if (const auto& materials = terrain.state().materials) {
         // Mirror basic.frag's field-driven exposure: generated rock plus
         // bank-side deposition bars and the bare mud margin at the waterline,
@@ -207,7 +208,7 @@ float terrainGravelAmount(const Terrain& terrain, float x, float z) {
         float moisture = materials->moistureAt(x, z);
         float sedimentBar = std::max(materials->sedimentAt(x, z) - 0.5f, 0.0f) * 2.0f *
                             glm::smoothstep(0.55f, 0.85f, moisture);
-        float bankMud = glm::smoothstep(0.82f, 0.97f, moisture);
+        bankMud = glm::smoothstep(0.82f, 0.97f, moisture);
         blendCoverage = glm::clamp(materials->rockAt(x, z) + sedimentBar + bankMud * 0.85f +
                                        boundaryBreakup * 0.5f,
                                    0.0f, 1.0f);
@@ -226,7 +227,7 @@ float terrainGravelAmount(const Terrain& terrain, float x, float z) {
         glm::smoothstep(materialPattern - 0.025f, materialPattern + 0.025f, blendCoverage);
     float steepness = 1.0f - terrainNormal.y;
     float slopeRockiness = glm::smoothstep(0.32f, 0.62f, steepness);
-    return std::max(heightRockiness, slopeRockiness);
+    return std::max({heightRockiness, slopeRockiness, bankMud});
 }
 
 VkImageMemoryBarrier2 imageBarrier(VkImage image, VkImageAspectFlags aspect,
@@ -374,7 +375,7 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
                                         ? "/assets/models/tank.x" : "/assets/models/challenger2.obj"), animateTracks);
     TerrainGenerator::Settings terrainSettings;
     terrainSettings.seed = worldSeed_;
-    if (valleyTerrain) terrainSettings = TerrainRuntime::recipe(worldSeed_, tank_->hullWidth(), tank_->hullLength(), landform, terrainResolution, refinementPasses);
+    if (valleyTerrain) terrainSettings = TerrainRuntime::recipe(worldSeed_, tank_->hullWidth(), tank_->hullLength(), landform, terrainResolution, refinementPasses, tank_->height());
     std::cout << "Terrain playable resolution: " << (1 + (terrainSettings.resolution - 1) * (1 << refinementPasses)) << '\n';
     std::cout << "Terrain erosion resolution: " << terrainSettings.resolution
               << "; refinement: " << (refinementPasses == 2 ? "4x" : refinementPasses == 1 ? "2x" : "off") << '\n';
@@ -453,53 +454,11 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
         /*repeat=*/false));
     // Generated rock/moisture/sediment classification for the upgraded
     // terrain. Legacy terrain binds one neutral zero texel: alpha 0 keeps
-    // basic.frag's analytic height/slope rules in charge there. For upgraded
-    // terrain the alpha channel is 0.5 plus half the worn-track strength, so
-    // one texture carries both the enable flag and the road wear.
+    // basic.frag's analytic height/slope rules in charge there. Alpha 1 enables
+    // the generated natural material fields for upgraded terrain.
     std::vector<uint8_t> terrainFieldPixels(4, 0);
     uint32_t terrainFieldRes = 1;
     if (terrainBuild.materials) {
-        // Stamp the selected route as a wobbling worn dirt track. Purely a
-        // material effect: no ground, hydrology or contact change, and the
-        // route reservation already keeps obstacles off it.
-        trackResolution_ = kTerrainTextureRes;
-        trackStrength_.assign(size_t(trackResolution_) * trackResolution_, 0.0f);
-        if (terrainBuild.playability && terrainBuild.playability->route.size() >= 2) {
-            const auto& route = terrainBuild.playability->route;
-            int q = terrainBuild.playability->resolution;
-            float worldSize = terrainBuild.materials->worldSize;
-            auto centre = [&](uint32_t cell) {
-                return glm::vec2(((cell % q + 0.5f) / q - 0.5f) * worldSize,
-                                 ((cell / q + 0.5f) / q - 0.5f) * worldSize);
-            };
-            constexpr float kTrackHalfWidth = 1.15f;
-            float texel = worldSize / (trackResolution_ - 1);
-            for (size_t leg = 0; leg + 1 < route.size(); ++leg) {
-                glm::vec2 from = centre(route[leg]), to = centre(route[leg + 1]);
-                float length = glm::length(to - from);
-                int steps = std::max(1, static_cast<int>(std::ceil(length / (texel * 0.5f))));
-                for (int step = 0; step <= steps; ++step) {
-                    glm::vec2 p = glm::mix(from, to, static_cast<float>(step) / steps);
-                    // Low-frequency wobble so the track wanders like a worn
-                    // path rather than tracing the axis-aligned route cells.
-                    p += glm::vec2(terrainValueNoise(p * 0.09f + glm::vec2(3.1f, 47.9f)) - 0.5f,
-                                   terrainValueNoise(p * 0.09f + glm::vec2(59.3f, 17.2f)) - 0.5f) * 1.6f;
-                    int cx = static_cast<int>(std::lround((p.x / worldSize + 0.5f) * (trackResolution_ - 1)));
-                    int cz = static_cast<int>(std::lround((p.y / worldSize + 0.5f) * (trackResolution_ - 1)));
-                    int reach = static_cast<int>(std::ceil(kTrackHalfWidth / texel));
-                    for (int dz = -reach; dz <= reach; ++dz) {
-                        for (int dx = -reach; dx <= reach; ++dx) {
-                            int tx = cx + dx, tz = cz + dz;
-                            if (tx < 0 || tx >= trackResolution_ || tz < 0 || tz >= trackResolution_) continue;
-                            float distance = glm::length(glm::vec2(dx, dz)) * texel;
-                            float strength = 1.0f - glm::smoothstep(kTrackHalfWidth * 0.45f, kTrackHalfWidth, distance);
-                            auto& value = trackStrength_[static_cast<size_t>(tz) * trackResolution_ + tx];
-                            value = std::max(value, strength);
-                        }
-                    }
-                }
-            }
-        }
         const auto& fields = *terrainBuild.materials;
         terrainFieldRes = kTerrainTextureRes;
         terrainFieldPixels.assign(size_t(terrainFieldRes) * terrainFieldRes * 4, 0);
@@ -514,8 +473,7 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
                 terrainFieldPixels[offset] = encodeField(fields.rockAt(worldX, worldZ));
                 terrainFieldPixels[offset + 1] = encodeField(fields.moistureAt(worldX, worldZ));
                 terrainFieldPixels[offset + 2] = encodeField(fields.sedimentAt(worldX, worldZ));
-                terrainFieldPixels[offset + 3] =
-                    encodeField(0.5f + 0.5f * trackStrength_[static_cast<size_t>(y) * terrainFieldRes + x]);
+                terrainFieldPixels[offset + 3] = 255;
             }
         }
     }
@@ -1610,20 +1568,6 @@ bool Application::allowsScenery(glm::vec2 center, float radius) const {
     return terrain_->state().allowsScenery(center, radius);
 }
 
-float Application::trackAmountAt(float x, float z) const {
-    if (trackResolution_ < 2) return 0.0f;
-    float worldSize = terrain_->worldSize();
-    float u = glm::clamp((x / worldSize + 0.5f) * (trackResolution_ - 1), 0.0f, float(trackResolution_ - 1));
-    float v = glm::clamp((z / worldSize + 0.5f) * (trackResolution_ - 1), 0.0f, float(trackResolution_ - 1));
-    int cx = std::min(static_cast<int>(u), trackResolution_ - 2);
-    int cz = std::min(static_cast<int>(v), trackResolution_ - 2);
-    float fx = u - cx, fz = v - cz;
-    size_t i = static_cast<size_t>(cz) * trackResolution_ + cx;
-    float low = glm::mix(trackStrength_[i], trackStrength_[i + 1], fx);
-    float high = glm::mix(trackStrength_[i + trackResolution_], trackStrength_[i + trackResolution_ + 1], fx);
-    return glm::mix(low, high, fz);
-}
-
 void Application::spawnBoxes() {
     constexpr int kBoxCount = 8;
     constexpr float kEdgeMargin = 6.0f;  // keep boxes off the play-area boundary's wall of light
@@ -1864,7 +1808,6 @@ void Application::spawnShrubs() {
             });
             bool underwater = isUnderwater(candidate.x, candidate.y);
             if (tooCloseToSpawn || tooCloseToOther || underwater || !allowsScenery(candidate, shrubRadius)) continue;
-            if (trackAmountAt(candidate.x, candidate.y) > 0.3f) continue; // keep the track passable-looking
             // Generated terrain: shrubs root in soil, not exposed rock, and
             // favour damp ground. Late attempts accept any legal spot.
             if (const auto& materials = terrain_->state().materials; materials && attempt < kMaxAttemptsPerShrub - 5) {
@@ -1987,7 +1930,6 @@ void Application::spawnGrassClumps() {
         for (float gz = -half; gz <= half; gz += kGridStep) {
             if (glm::length(glm::vec2(gx, gz) - spawnXZ_) < kMinDistanceFromSpawn) continue;
             if (terrainGravelAmount(*terrain_, gx, gz) > kMaxGravelForGrass) continue;
-            if (trackAmountAt(gx, gz) > 0.35f) continue; // grass is worn off the track
             // Generated moisture drives tuft density and palette: damp
             // ground grows denser, lusher (darker) tufts, dry uplands grow
             // sparser yellow-green ones. The tuft palette is ordered lush
@@ -3425,7 +3367,9 @@ void Application::drawFrame() {
         waterPc.specularStrength = 0.5f;
         waterPc.reflectivity = 0.4f;
         waterPc.opacity = 0.65f;
-        waterPc.waveStrength = 0.02f;
+        // Calm inland water: larger normal perturbations fold the reflected
+        // clouds into bright rings that look like bumps across a flat lake.
+        waterPc.waveStrength = 0.008f;
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                             sizeof(waterPc), &waterPc);

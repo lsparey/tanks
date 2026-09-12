@@ -38,9 +38,11 @@ void check(const MacroTerrain::Fields& f, const TerrainDrainage::Result& d, cons
     for (uint32_t i = 0; i < r.nodes.size(); ++i) {
         const auto& node = r.nodes[i];
         require(node.cell < f.heightmap.heights.size(), "invalid stream grid vertex");
+        // Headwaters taper to a 15%-size trickle at the selection threshold.
         require(std::isfinite(node.waterLevel) && node.waterLevel >= node.ground &&
-                std::isfinite(node.width) && node.width >= s.widthAtThreshold && node.width <= s.maximumWidth &&
-                node.requestedDepth >= s.depthAtThreshold && node.requestedDepth <= s.maximumDepth,
+                std::isfinite(node.width) && node.width >= s.widthAtThreshold * .15f - 1e-6f &&
+                node.width <= s.maximumWidth &&
+                node.requestedDepth >= s.depthAtThreshold * .15f - 1e-6f && node.requestedDepth <= s.maximumDepth,
                 "invalid stream width/depth/profile");
         close(node.availableDepth, double(node.waterLevel) - node.ground, 1e-6, "incorrect longitudinal clearance");
         bool lake = node.kind == Kind::LakeInlet || node.kind == Kind::LakeOutlet;
@@ -53,7 +55,9 @@ void check(const MacroTerrain::Fields& f, const TerrainDrainage::Result& d, cons
             close(node.depthDeficit, std::max(0.0f, node.requestedDepth - node.availableDepth), 1e-6, "unreported channel depth deficit");
             // Lake caps carry a positive spill head, so no capped node pinches
             // to zero depth at a saddle whose ground equals the lake level.
-            require(node.availableDepth + 1e-5f >= std::min(s.spillHead, s.depthAtThreshold),
+            // The floor is the tapered trickle depth: a just-selected outlet
+            // caps its saddle with its own (small) sheet.
+            require(node.availableDepth + 1e-5f >= std::min(s.spillHead, s.depthAtThreshold * .15f),
                     "capped stream node lost its positive spill sheet");
         }
         if (node.kind == Kind::DrySink)
@@ -129,6 +133,8 @@ int main() {
     auto d = TerrainDrainage::analyze(flat);
     auto w = LakeWater::build(flat, d);
     auto r = StreamNetwork::build(flat, d, w, s);
+    auto disabled = s; disabled.enabled = false;
+    require(StreamNetwork::build(flat, d, w, disabled).nodes.empty(), "disabled streams produced channels");
     check(flat, d, w, r, s);
     require(r.confluences > 0 && r.reaches.size() > 1, "flat branching fixture has no confluences");
     // With no lake caps, the largest downstream requested depth backs up over
@@ -234,6 +240,40 @@ int main() {
         if (bad == 8) water.lakes[0].outflow += 1;
         rejects([&] { StreamNetwork::build(f, drainage, water, settings); });
     }
+    // Source policy is directional: discard hillside tributaries all the way
+    // to their junction, retaining lake outlets and incoming crop-edge water.
+    auto sourcedSettings = s;
+    sourcedSettings.minimumDischarge = .1;
+    sourcedSettings.requireVisibleSource = true;
+    auto sourced = StreamNetwork::build(crop, pd, pw, sourcedSettings);
+    check(crop, pd, pw, sourced, sourcedSettings);
+    require(std::any_of(sourced.nodes.begin(), sourced.nodes.end(), [](const auto& node) {
+        return node.kind == Kind::LakeOutlet;
+    }), "source policy removed supplied lake outlets");
+    for (const auto& node : sourced.nodes) {
+        if (node.incoming || node.kind == Kind::LakeOutlet) continue;
+        require(std::abs(node.position.x) >= crop.playableWorldSize * .5f ||
+                std::abs(node.position.y) >= crop.playableWorldSize * .5f,
+                "stream starts inside the rendered map without a lake");
+    }
+    auto sourcedDry = StreamNetwork::build(crop, pd, sink, sourcedSettings);
+    require(std::none_of(sourcedDry.nodes.begin(), sourcedDry.nodes.end(), [](const auto& node) {
+        return node.kind == Kind::LakeOutlet;
+    }), "source policy resurrected an unsupplied outlet");
+    auto hill = fixture(9);
+    for (int z = 0; z < 9; ++z) for (int x = 0; x < 9; ++x) {
+        hill.heightmap.heights[z * 9 + x] = 8 - std::hypot(float(x - 4), float(z - 4));
+        hill.openFaces[z * 9 + x] = (x == 0 ? 1 : 0) | (x == 8 ? 2 : 0) |
+                                     (z == 0 ? 4 : 0) | (z == 8 ? 8 : 0);
+    }
+    auto hd = TerrainDrainage::analyze(hill);
+    auto hw = LakeWater::build(hill, hd);
+    auto hillSettings = sourcedSettings; hillSettings.minimumDischarge = .02;
+    require(StreamNetwork::build(hill, hd, hw, hillSettings).nodes.empty(),
+            "unsupported hillside streams were retained");
+    hillSettings.requireVisibleSource = false;
+    require(!StreamNetwork::build(hill, hd, hw, hillSettings).nodes.empty(),
+            "hillside fixture did not exercise interior stream starts");
     TerrainGenerator::Settings settings;
     settings.streams.emplace();
     rejects([&] { TerrainGenerator::build(settings); });

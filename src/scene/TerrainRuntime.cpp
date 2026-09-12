@@ -16,7 +16,9 @@ auto range(const std::vector<double>& coordinates, double low, double high) {
 }
 }
 
-TerrainGenerator::Settings recipe(uint32_t seed, float hullWidth, float hullLength, MacroTerrain::Landform landform, int resolution, int refinementPasses) {
+TerrainGenerator::Settings recipe(uint32_t seed, float hullWidth, float hullLength, MacroTerrain::Landform landform, int resolution, int refinementPasses, float tankHeight) {
+    if (!std::isfinite(tankHeight) || tankHeight < .1f || tankHeight > 100)
+        throw std::invalid_argument("invalid runtime tank height");
     if (resolution != 257 && resolution != 513)
         throw std::invalid_argument("runtime terrain resolution must be 257 or 513");
     if (refinementPasses < 0 || refinementPasses > 2)
@@ -27,17 +29,25 @@ TerrainGenerator::Settings recipe(uint32_t seed, float hullWidth, float hullLeng
     s.preset = TerrainGenerator::Preset::DrainedValley;
     s.refinementPasses = refinementPasses;
     s.seed = seed; s.resolution = resolution; s.erosion.workers = 4;
-    // Game recipe uses a 18-second storm instead of the solver's 24-second
-    // default: the 16-seed sweep stays fully clean (zero dry sections/spill
-    // controls, all playable), height/water previews are near-identical --
-    // channel readability comes mostly from the duration-independent carving
-    // pass -- and median generation drops from 3.3 s to 2.3 s. The probe and
-    // fixtures keep the 24-second default for recorded-baseline continuity.
+    // Retain the game's 18-second storm; water feature filtering happens after
+    // settlement. The standalone erosion prototype keeps its 24-second default.
     s.erosion.duration = 18; s.erosion.rainDuration = 13.5;
     s.outcrops.emplace(); // strata ledges and crests on steep thin-soil faces
     MacroTerrain::landformName(landform); // fail invalid input before generation
     s.macro.landform = landform;
-    s.lakes.emplace(); s.streams.emplace(); s.channelCarving.emplace();
+    s.macro.drainageBend = 10;
+    s.lakes.emplace(); s.streams.emplace();
+    // The stream prototype creates narrow channels. Keep substantial standing
+    // water in the game, and skip incision entirely so no hidden trenches remain.
+    s.streams->enabled = false;
+    s.minimumLakeArea = 100;
+    s.minimumLakeRadius = 3;
+    s.streams->minimumDischarge = 7;
+    s.streams->requireVisibleSource = true;
+    s.maximumWaterDepth = tankHeight * .5f;
+    s.streams->maximumDepth = std::min(s.streams->maximumDepth, *s.maximumWaterDepth * .5f);
+    s.streams->depthAtThreshold = std::min(s.streams->depthAtThreshold, s.streams->maximumDepth);
+    s.streams->spillHead = std::min(s.streams->spillHead, s.streams->maximumDepth);
     s.combinedWater = true; s.materials.emplace(); s.playability.emplace();
     s.playability->hullWidth = hullWidth; s.playability->hullLength = hullLength;
     TerrainPlayability::validate(*s.playability);

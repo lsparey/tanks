@@ -83,6 +83,7 @@ Fields generate(int playableResolution, float worldSize, uint32_t seed, const Se
         !inRange(settings.featureScale, 1, 1000000) || !inRange(settings.soilDepth, 0, 100) ||
         !inRange(settings.apronWidth, 0.001f, worldSize * .5f) ||
         !inRange(settings.warpStrength, 0, 1000000) ||
+        !inRange(settings.drainageBend, 0, settings.featureScale * .2f) ||
         (settings.landform != Landform::Valley && settings.warpStrength > settings.featureScale * 2))
         throw std::invalid_argument("invalid macro terrain settings");
     Fields fields;
@@ -120,6 +121,9 @@ Fields generate(int playableResolution, float worldSize, uint32_t seed, const Se
             glm::vec2 p((x - fields.apronCells - (playableResolution - 1) * .5f) * fields.spacing,
                         (z - fields.apronCells - (playableResolution - 1) * .5f) * fields.spacing);
             float u = glm::dot(p, along), v = glm::dot(p, across);
+            // Bend the catchment before erosion/routing, so both the channel
+            // bed and its water follow the same curves at every resolution.
+            v += settings.drainageBend * (2 * noise(u / (scale * .45f), .73f, seed ^ 0x329af021u) - 1);
             float height, soilShelter;
             if (form == Landform::Valley) {
                 float bend = (noise(u / (scale * 1.8f), .37f, seed ^ 0x68e31da4u) - .5f) * scale * .6f;

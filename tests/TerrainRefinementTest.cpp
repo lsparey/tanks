@@ -102,6 +102,9 @@ int main() {
     // Erosion is identical; downstream consumers must instead use the new grid.
     for (uint32_t seed : TerrainGenerator::kRegressionSeeds) {
         auto s = TerrainRuntime::recipe(seed, 2.222f, 4.48f);
+        // Exercise the optional carving prototype even though runtime now
+        // keeps only substantial lakes and skips stream incision.
+        s.channelCarving.emplace(); s.streams->enabled = true;
         s.resolution = 33; s.erosion.duration = .25; s.erosion.rainDuration = .15;
         auto coarse = TerrainGenerator::build(s);
         for (int passes : {1, 2}) {
@@ -123,9 +126,11 @@ int main() {
                  "reconstruction volume is missing between erosion and carving budgets");
             for (size_t i = 0; i < fine.mesh.vertices.size(); ++i)
                 require(fine.mesh.vertices[i].position.y == fine.surface.heightmap().heights[i], "render ground differs from contact");
-            for (const auto& vertex : fine.combinedWater->surface.mesh().vertices)
+            for (const auto& vertex : fine.combinedWater->surface.mesh().vertices) {
+                require(vertex.depth <= *s.maximumWaterDepth + 5e-5f, "refinement exceeded maximum water depth");
                 near(vertex.depth, vertex.position.y - fine.surface.heightAt(vertex.position.x, vertex.position.z),
                      5e-5, "water depth still uses coarse ground");
+            }
             auto replay = TerrainGenerator::build(s);
             require(fine.surface.heightmap().heights == replay.surface.heightmap().heights &&
                     fine.combinedWater->surface.mesh().indices == replay.combinedWater->surface.mesh().indices,

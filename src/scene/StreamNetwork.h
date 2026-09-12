@@ -4,8 +4,9 @@
 
 namespace StreamNetwork {
 
-inline constexpr uint32_t kVersion = 2;
+inline constexpr uint32_t kVersion = 3;
 struct Settings {
+    bool enabled = true;
     double minimumDischarge = 4; // same artistic volume/time units as LakeWater
     float widthAtThreshold = .8f, maximumWidth = 4;
     float depthAtThreshold = .08f, maximumDepth = .4f;
@@ -13,6 +14,14 @@ struct Settings {
     // outlet's discharge depth), so the escaping sheet keeps positive depth
     // across the saddle instead of pinching dry at the crest.
     float spillHead = .05f;
+    // Headwaters fade in: channels reach their nominal size only once
+    // discharge is this multiple of the selection threshold. At the threshold
+    // itself they are a 15%-size trickle, so streams no longer appear
+    // mid-hillside at full width. 1 disables the taper.
+    float headwaterRatio = 3;
+    // Select only routes supplied by a present lake or the unrendered apron.
+    // Interior runoff still contributes discharge, but cannot start a stream.
+    bool requireVisibleSource = false;
 };
 enum class Kind { Channel, Boundary, LakeInlet, LakeOutlet, DrySink };
 const char* kindName(Kind kind);

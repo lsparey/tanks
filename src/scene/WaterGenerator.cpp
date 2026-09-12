@@ -15,6 +15,10 @@ namespace {
 // Ignore single-cell/tiny noise dips -- only real basins become ponds.
 constexpr int kMinRegionCells = 6;
 
+// Shared by every upload path. basic.frag decodes depth from this exact ramp.
+const glm::vec3 kWaterShallowColor(0.085f, 0.125f, 0.075f);
+const glm::vec3 kWaterDeepColor(0.012f, 0.022f, 0.018f);
+
 // A polygon vertex mid-clip: xz position plus the *terrain* height there
 // (not the water level -- the clip test and edge interpolation both need
 // the real terrain height; the final mesh vertex's Y is always the flat
@@ -138,8 +142,6 @@ std::unique_ptr<Mesh> WaterGenerator::buildMesh(VulkanContext& ctx, CommandConte
     // Peaty green-brown, not teal-blue: inland English pond water gets its
     // colour from dissolved organics and a muddy bed, so the blue channel
     // stays lowest at both ends of the depth ramp.
-    const glm::vec3 shallowColor(0.085f, 0.125f, 0.075f);
-    const glm::vec3 deepColor(0.012f, 0.022f, 0.018f);
 
     auto worldXZ = [&](int i, int j) {
         float x = (static_cast<float>(i) / (n - 1) - 0.5f) * hm.worldSize;
@@ -163,7 +165,7 @@ std::unique_ptr<Mesh> WaterGenerator::buildMesh(VulkanContext& ctx, CommandConte
     auto emit = [&](const ClipVertex& v, float level) {
         float depth = level - v.terrainHeight;
         float depthT = glm::clamp(depth / field.maxDepth, 0.0f, 1.0f);
-        glm::vec3 color = glm::mix(shallowColor, deepColor, depthT);
+        glm::vec3 color = glm::mix(kWaterShallowColor, kWaterDeepColor, depthT);
         // Water UVs carry the flow direction for basic.frag's ripple
         // advection; the legacy flooded basins are still water.
         vertices.push_back({glm::vec3(v.xz.x, level, v.xz.y), glm::vec3(0.0f, 1.0f, 0.0f), color,
@@ -222,7 +224,7 @@ std::unique_ptr<Mesh> WaterGenerator::buildMesh(VulkanContext& ctx, CommandConte
     std::vector<Vertex> vertices;
     vertices.reserve(data.vertices.size());
     for (const auto& v : data.vertices) {
-        glm::vec3 color = glm::mix(glm::vec3(.09f, .16f, .14f), glm::vec3(.01f, .025f, .045f),
+        glm::vec3 color = glm::mix(kWaterShallowColor, kWaterDeepColor,
                                    glm::clamp(v.depth, 0.0f, 1.0f));
         // Water binds the plain white texture, so the UV channel is free to
         // carry the per-vertex flow direction instead: basic.frag advects the
@@ -240,7 +242,7 @@ std::unique_ptr<Mesh> WaterGenerator::buildMesh(VulkanContext& ctx, CommandConte
     std::vector<Vertex> vertices;
     vertices.reserve(data.vertices.size());
     for (const auto& v : data.vertices) {
-        glm::vec3 color = glm::mix(glm::vec3(.09f, .16f, .14f), glm::vec3(.01f, .025f, .045f),
+        glm::vec3 color = glm::mix(kWaterShallowColor, kWaterDeepColor,
                                    glm::clamp(v.depth, 0.0f, 1.0f));
         // UV carries flow for water surfaces (see the combined overload);
         // standing lakes are still, so zero.

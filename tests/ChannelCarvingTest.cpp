@@ -34,6 +34,7 @@ StreamNetwork::Settings streamSettings() {
     StreamNetwork::Settings s;
     s.minimumDischarge = .4; s.widthAtThreshold = s.maximumWidth = 2;
     s.depthAtThreshold = s.maximumDepth = .25;
+    s.headwaterRatio = 1; // exact analytic depths need the untapered profile
     return s;
 }
 void check(const MacroTerrain::Fields& before, const MacroTerrain::Fields& after,

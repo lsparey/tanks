@@ -152,9 +152,9 @@ tree geometry, density, progressive LOD, wind and soft shadows are preserved;
 tree placement will adapt to the new ground.
 
 The advanced generator is now the game default: seeded British landforms,
-hydraulic erosion, final drainage with lakes and streams (including
-positive-depth spill connections and equilibrium partial lakes), channel
-carving, a refined 513-sample final surface, generated rock/moisture/sediment
+hydraulic erosion, final drainage with substantial lakes (including
+equilibrium partial lakes), a refined 513-sample final surface, generated
+rock/moisture/sediment
 material fields shared by shading and placement, and footprint-aware
 spawn/route selection. The original quick heightmap remains available as
 `--terrain legacy`. Remaining work: wider startup/driving measurements, a
@@ -427,6 +427,12 @@ Within the advanced generator, `--landform mixed` (the default) chooses hills,
 ridges, plains, basins or a valley from the seed. Add `--landform hills` (or
 `ridges`, `plain`, `basin`, `valley`) to choose a family. Landform, resolution
 and refinement options require the advanced generator.
+Advanced maps retain substantial lakes: at least 100 square metres of water,
+with room for a 6-metre-wide circle. Narrow streams and channel carving are
+disabled, and smaller pond depressions are filled before rebuilding hydrology
+so they leave no hidden holes in the driving surface. Deep lake beds are also
+raised to keep water within half the loaded tank's height. Rendering and
+gameplay queries use the same final ground and water.
 The new path uses the loaded tank's dimensions to select a dry spawn and route,
 then preserves that route during scenery placement. `--terrain-attempts 1..8`
 explicitly bounds seed selection (default 1); logs record both requested and

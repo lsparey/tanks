@@ -42,6 +42,9 @@ struct Settings {
     std::optional<StreamSections::Settings> streamSections; // exact bank/spill survey; requires streams
     std::optional<ChannelCarving::Settings> channelCarving; // opt-in terrain edits, followed by fresh hydrology
     bool combinedWater = false; // terrain-clipped stream/lake surface; requires stream profiles
+    std::optional<float> maximumWaterDepth; // raise deep basin beds before final hydrology
+    double minimumLakeArea = 0; // world square units; zero keeps the prototype's small lakes
+    float minimumLakeRadius = 0; // retained lake must contain this much open water around a point
     std::optional<TerrainMaterials::Settings> materials; // final rock/moisture/sediment classification; requires combined water
     std::optional<TerrainPlayability::Settings> playability; // read-only final-ground spawn/route analysis
 };
@@ -69,6 +72,7 @@ struct Statistics {
     double streamSectionsMs = 0;
     double channelPreparationMs = 0, channelCarvingMs = 0;
     double combinedWaterMs = 0;
+    double shallowBedMs = 0, shallowBedFill = 0; // artistic imported soil, separate from erosion budgets
     double materialsMs = 0;
     double playabilityMs = 0;
     // Owned vector payload only; excludes allocator overhead, generator

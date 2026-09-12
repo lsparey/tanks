@@ -25,7 +25,8 @@ void validate(const Settings& s) {
         !std::isfinite(s.maximumWidth) || s.maximumWidth < s.widthAtThreshold || s.maximumWidth > 100 ||
         !std::isfinite(s.depthAtThreshold) || s.depthAtThreshold < .001f ||
         !std::isfinite(s.maximumDepth) || s.maximumDepth < s.depthAtThreshold || s.maximumDepth > 10 ||
-        !std::isfinite(s.spillHead) || s.spillHead < 0 || s.spillHead > 1)
+        !std::isfinite(s.spillHead) || s.spillHead < 0 || s.spillHead > 1 ||
+        !std::isfinite(s.headwaterRatio) || s.headwaterRatio < 1 || s.headwaterRatio > 100)
         throw std::invalid_argument("invalid stream selection/profile settings");
 }
 size_t Result::payloadBytes() const {
@@ -88,6 +89,7 @@ Result build(const MacroTerrain::Fields& f, const TerrainDrainage::Result& d,
     }
 
     Result r;
+    if (!s.enabled) return r;
     // A lake inlet and outlet may occupy the same grid vertex but are separate
     // nodes. Connecting them would falsely depict the flood tree as a river
     // through a reservoir and confuse its inflow with its post-loss outflow.
@@ -113,9 +115,23 @@ Result build(const MacroTerrain::Fields& f, const TerrainDrainage::Result& d,
         r.nodes.push_back(node);
         return id;
     };
+    std::vector<uint8_t> sourced(count, !s.requireVisibleSource);
+    if (s.requireVisibleSource) {
+        // Walk upstream to downstream so an unsupported tributary never
+        // becomes visible merely because it joins a supported river later.
+        for (auto it = d.order.rbegin(); it != d.order.rend(); ++it) {
+            uint32_t i = *it;
+            int x = int(i % n), z = int(i / n), b = d.basin[i];
+            bool exterior = x <= apron || z <= apron || x >= apron + m - 1 || z >= apron + m - 1;
+            bool outlet = b >= 0 && w.lakes[b].present && i == uint32_t(w.lakes[b].spillFrom);
+            sourced[i] |= exterior || outlet;
+            if (sourced[i] && w.discharge[i] >= s.minimumDischarge && d.downstream[i] >= 0)
+                sourced[d.downstream[i]] = 1;
+        }
+    }
     for (uint32_t i = 0; i < count; ++i) {
         int32_t b = d.basin[i], j = d.downstream[i];
-        if (j < 0 || w.discharge[i] < s.minimumDischarge) continue;
+        if (j < 0 || w.discharge[i] < s.minimumDischarge || !sourced[i]) continue;
         if (b >= 0 && (!w.lakes[b].present || i != uint32_t(w.lakes[b].spillFrom))) continue;
         uint32_t from = nodeAt(i, false), to = nodeAt(uint32_t(j), d.basin[j] >= 0);
         r.nodes[from].downstream = int32_t(to);
@@ -139,8 +155,13 @@ Result build(const MacroTerrain::Fields& f, const TerrainDrainage::Result& d,
     for (uint32_t i = 0; i < r.nodes.size(); ++i) {
         auto& node = r.nodes[i];
         double ratio = node.discharge / s.minimumDischarge;
-        node.width = float(std::min(double(s.maximumWidth), s.widthAtThreshold * std::sqrt(ratio)));
-        node.requestedDepth = float(std::min(double(s.maximumDepth), s.depthAtThreshold * std::cbrt(ratio)));
+        // Headwater taper: a just-selected reach is a 15%-size trickle that
+        // grows to nominal size by headwaterRatio times the threshold, so
+        // streams gather gradually instead of starting at full width.
+        double t = s.headwaterRatio > 1 ? std::clamp((ratio - 1) / (double(s.headwaterRatio) - 1), 0.0, 1.0) : 1.0;
+        double taper = .15 + .85 * (t * t * (3 - 2 * t));
+        node.width = float(std::min(double(s.maximumWidth), s.widthAtThreshold * std::sqrt(ratio)) * taper);
+        node.requestedDepth = float(std::min(double(s.maximumDepth), s.depthAtThreshold * std::cbrt(ratio)) * taper);
         if (node.kind == Kind::LakeInlet || node.kind == Kind::LakeOutlet) cap[i] = lakeSurface(node);
         if (node.downstream >= 0) {
             auto delta = glm::dvec2(r.nodes[node.downstream].position) - glm::dvec2(node.position);

@@ -82,6 +82,7 @@ public:
     // Hull's local-space X extent (outer edge to outer edge) -- see load().
     float hullWidth() const { return hullWidth_; }
     float hullLength() const { return hullLength_; }
+    float height() const { return height_; }
     // Initial placement uses the accepted ground and first route heading.
     void placeAt(glm::vec3 position, glm::vec2 forward, const Terrain& terrain);
     glm::vec4 surfaceBounds() const { return surfaceBounds_; }
@@ -165,6 +166,7 @@ private:
     glm::vec3 barrelPivotLocal_{0.0f};
     float hullWidth_ = 0.0f;
     float hullLength_ = 0.0f;
+    float height_ = 0.0f;
     // Hull bottom/inverse height and muzzle Z/inverse barrel length, in the
     // authored model space used by the procedural dust and soot masks.
     glm::vec4 surfaceBounds_{0.0f};

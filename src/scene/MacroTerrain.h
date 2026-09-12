@@ -23,6 +23,7 @@ struct Settings {
     float apronWidth = 12.0f; // rounded UP to a whole number of sample intervals
     Landform landform = Landform::Valley;
     float warpStrength = 18.0f; // world units; new families only, zero disables
+    float drainageBend = 0; // world units; shorter bends in the terrain guiding waterways
 };
 
 enum OpenFace : uint8_t { NegativeX = 1, PositiveX = 2, NegativeZ = 4, PositiveZ = 8 };

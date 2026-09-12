@@ -279,12 +279,6 @@ private:
     std::vector<std::unique_ptr<Mesh>> shrubMeshes_;  // small pool of distinct bush shapes
     std::vector<std::unique_ptr<Mesh>> grassClumpMeshes_;  // grass tufts, then waterside reed clumps
     int grassTuftVariants_ = 0;  // pool indices below this are tufts, at/after it reeds
-    // Worn dirt-track strength along the selected route, stamped once during
-    // loading and shared verbatim with the terrain field texture's wear
-    // channel, so ground shading and placement agree about the road.
-    std::vector<float> trackStrength_;
-    int trackResolution_ = 0;
-    float trackAmountAt(float x, float z) const;
     std::unique_ptr<Mesh> cloudDomeMesh_;
     std::vector<Box> boxes_;
     std::vector<Projectile> projectiles_;

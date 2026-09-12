@@ -40,10 +40,8 @@ layout(set = 1, binding = 3) uniform sampler2D materialTexLowB;
 // this binding.
 layout(set = 1, binding = 4) uniform sampler2D terrainControlTex;
 // Generated ground classification for the upgraded terrain: R exposed rock,
-// G persistent moisture, B recent sediment/deposition. A encodes two things:
-// 0 means legacy terrain (neutral zero texel, analytic height rules stay in
-// charge) and 0.5..1 means fields drive the rules with (A*2-1) the worn
-// dirt-track strength along the selected route.
+// G persistent moisture, B recent sediment/deposition. A is the enable flag:
+// 0 keeps legacy analytic height rules; 1 enables generated material fields.
 layout(set = 1, binding = 5) uniform sampler2D terrainFieldTex;
 layout(set = 2, binding = 0) uniform accelerationStructureEXT sceneTLAS;
 layout(set = 3, binding = 0) uniform sampler2D historyShadow;
@@ -651,7 +649,7 @@ void main() {
     }
     vec4 terrainControl = vec4(0.0);
     vec4 terrainFields = vec4(0.0);
-    float fieldsOn = 0.0, trackWear = 0.0;
+    float fieldsOn = 0.0;
     if (heightBlend > 0.5) {
         // The control map covers the whole 180-unit terrain. Half-texel
         // inset maps its world-space edges to texel centres, preserving the
@@ -663,7 +661,6 @@ void main() {
         terrainControl = texture(terrainControlTex, controlUV);
         terrainFields = texture(terrainFieldTex, controlUV);
         fieldsOn = step(0.25, terrainFields.a);
-        trackWear = max(terrainFields.a * 2.0 - 1.0, 0.0);
         sampleUV += (terrainControl.rg - 0.5) * 0.6;
     }
 
@@ -696,6 +693,9 @@ void main() {
             mix(texColor, texture(materialTexHighB, sampleUV).rgb, smoothstep(0.4, 0.6, grassPatch));
         vec3 gravelColor = mix(texture(materialTexLowA, sampleUV).rgb, texture(materialTexLowB, sampleUV).rgb,
                                 smoothstep(0.4, 0.6, gravelPatch));
+        // Height gradients must compare raw texture samples. Sediment and mud
+        // colour tints below must not introduce a false normal tilt.
+        vec3 gravelHeightColor = gravelColor;
         // Fresh deposits read as warmer, sandier silt than the parent gravel.
         gravelColor = mix(gravelColor, gravelColor * vec3(1.08, 1.0, 0.82),
                           terrainFields.b * fieldsOn);
@@ -703,9 +703,6 @@ void main() {
         // waterline) is trodden wet earth, not gravel: tint it dark mud.
         float bankMud = smoothstep(0.82, 0.97, terrainFields.g) * fieldsOn;
         gravelColor = mix(gravelColor, gravelColor * vec3(0.92, 0.74, 0.52), bankMud);
-        // The worn route track is dry packed dust, brighter and warmer than
-        // both mud and the parent gravel.
-        gravelColor = mix(gravelColor, gravelColor * vec3(1.18, 1.05, 0.8), trackWear);
 
         // Fade to the low-point (gravel) blend in valleys. Center threshold
         // tuned against the heightmap's actual range (roughly -2.2..-4 on
@@ -740,13 +737,17 @@ void main() {
         // Bare mud margins hug every stream and lake: grass gives way to wet
         // earth right at the waterline instead of running into the water.
         float fieldCoverage = clamp(terrainFields.r + sedimentBar + bankMud * 0.85 +
-                                    trackWear * 0.9 + boundaryBreakup * 0.5, 0.0, 1.0);
+                                    boundaryBreakup * 0.5, 0.0, 1.0);
         blendCoverage = mix(blendCoverage, fieldCoverage, fieldsOn);
         float materialPattern =
             0.1 + valueNoise2D(fragWorldPos.xz * 0.9 + vec2(37.1, 214.6)) * 0.8;
         float patternEdgeWidth = max(fwidth(materialPattern) * 1.5, 0.025);
         float rockiness = smoothstep(materialPattern - patternEdgeWidth,
                                      materialPattern + patternEdgeWidth, blendCoverage);
+        // Saturated lake beds and the inner bank are continuously bare mud.
+        // Do this after the noise threshold so it cannot punch grass patches
+        // through the submerged material, even on flat, soil-filled floors.
+        rockiness = max(rockiness, bankMud);
 
         // Steep ground reads as rocky regardless of height -- the plateau's
         // raised edges and the river/valley's banks (see HeightmapGenerator)
@@ -830,13 +831,15 @@ void main() {
                                  texture(materialTexLowB,
                                          sampleUV + vec2(0.0, kTerrainBumpTexelStep)).rgb,
                                  patchBlend);
-                float heightCenter = dot(gravelColor, luminanceWeights);
+                float heightCenter = dot(gravelHeightColor, luminanceWeights);
                 gravelBump = vec2(dot(bumpU, luminanceWeights) - heightCenter,
                                   dot(bumpV, luminanceWeights) - heightCenter) * 5.0;
             }
 
             float bumpBlend = smoothstep(kBumpBlendStart, kBumpBlendEnd, rockiness);
             terrainBump = mix(grassBump, gravelBump, bumpBlend);
+            // Saturated sediment softens the gravel's sharp micro-relief.
+            terrainBump *= mix(1.0, 0.2, bankMud);
         }
     }
     bool tankMaterial = materialType > 4.5 && materialType < 7.5;
