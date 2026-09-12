@@ -555,7 +555,8 @@ Mesh Mesh::quad(VulkanContext& ctx, CommandContext& commands, glm::vec3 color) {
 }
 
 Mesh Mesh::rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColor, uint32_t seed,
-                int subdivisions, float radiusScale) {
+                int subdivisions, float radiusScale, float angularity) {
+    angularity = glm::clamp(angularity, 0.0f, 1.0f);
     const float t = (1.0f + std::sqrt(5.0f)) / 2.0f;
     std::vector<glm::vec3> verts = {
         glm::normalize(glm::vec3(-1, t, 0)), glm::normalize(glm::vec3(1, t, 0)),
@@ -590,6 +591,10 @@ Mesh Mesh::rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColo
     glm::vec3 seedOffset(offsetDist(rng), offsetDist(rng), offsetDist(rng));
     std::uniform_real_distribution<float> proportionDist(0.84f, 1.16f);
     glm::vec3 proportions(proportionDist(rng), proportionDist(rng), proportionDist(rng));
+    // Angular scree is a flatter slab: squash the vertical proportion and
+    // stretch one horizontal axis so it reads as a broken plate, not an egg.
+    proportions.x *= 1.0f + 0.18f * angularity;
+    proportions.y *= 1.0f - 0.42f * angularity;
 
     std::vector<glm::vec3> deformed(verts.size());
     // Broad displacement per vertex, kept for the crevice shading below:
@@ -598,16 +603,21 @@ Mesh Mesh::rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColo
     std::vector<float> relief(verts.size());
     for (size_t i = 0; i < verts.size(); ++i) {
         float broad = fractalNoise3D(verts[i] * 1.35f + seedOffset, 5);
+        // Angular rocks fold the broad field into a ridged (creased) version:
+        // the crossings become sharp fracture lines in the silhouette.
+        broad = std::lerp(broad, 1.0f - std::abs(broad * 2.0f - 1.0f), angularity * 0.7f);
         float detail = fractalNoise3D(verts[i] * 4.5f + seedOffset * 1.73f, 4);
         float chips = fractalNoise3D(verts[i] * 11.0f + seedOffset * 2.41f, 3);
         float ridge = 1.0f - std::abs(detail * 2.0f - 1.0f);
         // A thresholded high-frequency field cuts localized shallow chips
         // into the surface. The ridge term adds raised fracture lines, and
         // a broad directional lobe stops the underlying form reading as a
-        // uniformly noisy sphere.
-        float chippedDepression = glm::smoothstep(0.68f, 0.82f, chips) * 0.13f;
+        // uniformly noisy sphere. Fresh scree chips more and lobes harder.
+        float chippedDepression = glm::smoothstep(0.68f - 0.1f * angularity, 0.82f, chips) *
+                                  (0.13f + 0.05f * angularity);
         float directionalLobe = std::sin(verts[i].x * 3.7f + seedOffset.x) *
-                                std::sin(verts[i].z * 2.9f + seedOffset.z) * 0.055f;
+                                std::sin(verts[i].z * 2.9f + seedOffset.z) *
+                                (0.055f * (1.0f + angularity));
         float radius = 0.62f + broad * 0.48f + ridge * broad * 0.18f + directionalLobe -
                        chippedDepression;
         relief[i] = glm::clamp(broad, 0.0f, 1.0f);

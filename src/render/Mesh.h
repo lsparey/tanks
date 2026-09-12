@@ -95,8 +95,12 @@ public:
     // tiny scree can request a cheaper LOD with the same overall shape.
     // radiusScale is normally 1; ray-only proxies use a modest inset so
     // their coarse triangles remain inside the rendered surface.
+    // angularity in [0,1] shifts the form from a rounded water-worn boulder
+    // (0, the default) toward flatter, ridged, fracture-lined scree (1) for
+    // freshly exposed rock on eroded scars.
     static Mesh rock(VulkanContext& ctx, CommandContext& commands, glm::vec3 baseColor,
-                      uint32_t seed, int subdivisions = 3, float radiusScale = 1.0f);
+                      uint32_t seed, int subdivisions = 3, float radiusScale = 1.0f,
+                      float angularity = 0.0f);
 
     // A unit-radius sky sphere, meant to be scaled up and
     // recentered on the camera each frame as a sky backdrop for clouds

@@ -12,12 +12,6 @@
 
 namespace {
 
-// Matches Terrain's own grass tiling scale -- kept sensible for when water
-// gets its own tiled texture later, though it's not visually load-bearing
-// yet (water currently just uses the shared plain white texture, tinted by
-// vertex color).
-constexpr float kTextureRepeatsPerUnit = 1.0f / 3.0f;
-
 // Ignore single-cell/tiny noise dips -- only real basins become ponds.
 constexpr int kMinRegionCells = 6;
 
@@ -170,8 +164,10 @@ std::unique_ptr<Mesh> WaterGenerator::buildMesh(VulkanContext& ctx, CommandConte
         float depth = level - v.terrainHeight;
         float depthT = glm::clamp(depth / field.maxDepth, 0.0f, 1.0f);
         glm::vec3 color = glm::mix(shallowColor, deepColor, depthT);
-        glm::vec2 uv = v.xz * kTextureRepeatsPerUnit;
-        vertices.push_back({glm::vec3(v.xz.x, level, v.xz.y), glm::vec3(0.0f, 1.0f, 0.0f), color, uv});
+        // Water UVs carry the flow direction for basic.frag's ripple
+        // advection; the legacy flooded basins are still water.
+        vertices.push_back({glm::vec3(v.xz.x, level, v.xz.y), glm::vec3(0.0f, 1.0f, 0.0f), color,
+                            glm::vec2(0.0f)});
     };
 
     // Clip one triangle (CCW-wound) against `level` and fan-triangulate
@@ -228,8 +224,11 @@ std::unique_ptr<Mesh> WaterGenerator::buildMesh(VulkanContext& ctx, CommandConte
     for (const auto& v : data.vertices) {
         glm::vec3 color = glm::mix(glm::vec3(.09f, .16f, .14f), glm::vec3(.01f, .025f, .045f),
                                    glm::clamp(v.depth, 0.0f, 1.0f));
-        vertices.push_back({v.position, v.normal, color,
-                           glm::vec2(v.position.x, v.position.z) * kTextureRepeatsPerUnit});
+        // Water binds the plain white texture, so the UV channel is free to
+        // carry the per-vertex flow direction instead: basic.frag advects the
+        // ripple pattern along it. Flat lake faces keep zero flow and shimmer
+        // in place.
+        vertices.push_back({v.position, v.normal, color, v.flow});
     }
     return std::make_unique<Mesh>(ctx, commands, vertices, data.indices);
 }
@@ -243,8 +242,9 @@ std::unique_ptr<Mesh> WaterGenerator::buildMesh(VulkanContext& ctx, CommandConte
     for (const auto& v : data.vertices) {
         glm::vec3 color = glm::mix(glm::vec3(.09f, .16f, .14f), glm::vec3(.01f, .025f, .045f),
                                    glm::clamp(v.depth, 0.0f, 1.0f));
-        vertices.push_back({v.position, glm::vec3(0, 1, 0), color,
-                           glm::vec2(v.position.x, v.position.z) * kTextureRepeatsPerUnit});
+        // UV carries flow for water surfaces (see the combined overload);
+        // standing lakes are still, so zero.
+        vertices.push_back({v.position, glm::vec3(0, 1, 0), color, glm::vec2(0)});
     }
     return std::make_unique<Mesh>(ctx, commands, vertices, data.indices);
 }

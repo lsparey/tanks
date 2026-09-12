@@ -665,20 +665,31 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
         {1.0f, 0.98f, 0.95f}, {0.85f, 0.83f, 0.80f}, {1.05f, 1.0f, 0.92f},
         {0.90f, 0.90f, 0.90f}, {1.05f, 0.95f, 0.82f},
     };
-    for (size_t i = 0; i < sizeof(rockShades) / sizeof(rockShades[0]); ++i) {
+    // The pool's second half holds angular scree twins of the rounded
+    // boulders: same palette cycle, flatter ridged fracture forms (see
+    // Mesh::rock's angularity). spawnRocks picks the half per cluster from
+    // the generated material fields -- water-worn cobbles near deposition,
+    // fresh scree on eroded scars. Legacy terrain only uses the rounded half.
+    constexpr size_t kRockShadeCount = sizeof(rockShades) / sizeof(rockShades[0]);
+    for (size_t i = 0; i < 2 * kRockShadeCount; ++i) {
+        const glm::vec3& shade = rockShades[i % kRockShadeCount];
+        float angularity = i < kRockShadeCount ? 0.0f : 0.85f;
+        uint32_t seed = static_cast<uint32_t>(i) + 1;
         rockMeshes_.push_back(std::make_unique<Mesh>(
-            Mesh::rock(*context_, *commands_, rockShades[i], static_cast<uint32_t>(i) + 1)));
+            Mesh::rock(*context_, *commands_, shade, seed, /*subdivisions=*/3,
+                       /*radiusScale=*/1.0f, angularity)));
         mediumRockMeshes_.push_back(std::make_unique<Mesh>(Mesh::rock(
-            *context_, *commands_, rockShades[i], static_cast<uint32_t>(i) + 1,
-            /*subdivisions=*/2)));
+            *context_, *commands_, shade, seed, /*subdivisions=*/2,
+            /*radiusScale=*/1.0f, angularity)));
         smallRockMeshes_.push_back(std::make_unique<Mesh>(Mesh::rock(
-            *context_, *commands_, rockShades[i], static_cast<uint32_t>(i) + 1,
-            /*subdivisions=*/1)));
+            *context_, *commands_, shade, seed, /*subdivisions=*/1,
+            /*radiusScale=*/1.0f, angularity)));
         rockProxyMeshes_.push_back(std::make_unique<Mesh>(Mesh::rock(
-            *context_, *commands_, rockShades[i], static_cast<uint32_t>(i) + 1,
-            /*subdivisions=*/1, /*radiusScale=*/0.78f)));
+            *context_, *commands_, shade, seed,
+            /*subdivisions=*/1, /*radiusScale=*/0.78f, angularity)));
 
-        std::vector<uint8_t> rockPixels = RockTextureGenerator::generate(128, static_cast<uint32_t>(i));
+        std::vector<uint8_t> rockPixels =
+            RockTextureGenerator::generate(128, static_cast<uint32_t>(i % kRockShadeCount));
         rockStandaloneTextures_.push_back(std::make_unique<Texture>(
             Texture::fromPixels(*context_, *commands_, 128, 128, rockPixels, /*repeat=*/true)));
         rockMaterialSets_.push_back(pipeline_->allocateMaterialDescriptorSet(
@@ -1680,7 +1691,10 @@ void Application::spawnRocks() {
     std::uniform_real_distribution<float> scaleDist(0.5f, 1.3f);
     std::uniform_real_distribution<float> offsetDist(-kClusterRadius, kClusterRadius);
     std::uniform_int_distribution<int> countDist(kMinRocksPerCluster, kMaxRocksPerCluster);
-    std::uniform_int_distribution<int> variantDist(0, static_cast<int>(rockMeshes_.size()) - 1);
+    // The pool is rounded cobbles then angular scree twins (see initialize);
+    // each cluster picks one form so it reads as a single local geology.
+    const int rockForms = static_cast<int>(rockMeshes_.size()) / 2;
+    std::uniform_int_distribution<int> variantDist(0, rockForms - 1);
 
     std::vector<glm::vec2> clusterCenters;
     for (int c = 0; c < kClusterCount; ++c) {
@@ -1713,6 +1727,15 @@ void Application::spawnRocks() {
         if (!found && terrain_->state().reservation) continue;
         clusterCenters.push_back(center);
 
+        // Fresh scree on exposed/eroded ground; rounded water-worn cobbles
+        // near deposition and everywhere on legacy terrain.
+        int formBase = 0;
+        if (const auto& materials = terrain_->state().materials) {
+            float rock = materials->rockAt(center.x, center.y);
+            if (rock > 0.3f && rock >= materials->sedimentAt(center.x, center.y))
+                formBase = rockForms;
+        }
+
         int rockCount = countDist(rng);
         for (int r = 0; r < rockCount; ++r) {
             glm::vec2 pos = center + glm::vec2(offsetDist(rng), offsetDist(rng));
@@ -1726,7 +1749,7 @@ void Application::spawnRocks() {
                 glm::vec3(pos.x, terrain_->heightAt(pos.x, pos.y) - kEmbedDepth, pos.y);
             rock.yaw = yawDist(rng);
             rock.scale = scaleDist(rng);
-            rock.meshVariant = variantDist(rng);
+            rock.meshVariant = formBase + variantDist(rng);
             float radius = rockMeshes_.at(rock.meshVariant)->horizontalBoundingRadius() * rock.scale;
             if (!allowsScenery(pos, radius) || (terrain_->state().reservation &&
                 glm::length(pos - spawnXZ_) < kMinDistanceFromSpawn + radius)) continue;

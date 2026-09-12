@@ -1396,9 +1396,29 @@ void main() {
     bool isWater = waveStrength > 0.001;
     if (isWater) {
         float t = frame.cameraPos.w;
-        float wave1 = sin(fragWorldPos.x * 1.3 + t * 0.035) * cos(fragWorldPos.z * 1.7 - t * 0.025);
-        float wave2 = sin(fragWorldPos.x * 3.1 - t * 0.065 + 1.7) * cos(fragWorldPos.z * 2.3 + t * 0.045);
-        vec2 bump = vec2(wave1, wave2) * waveStrength;
+        // Water UVs carry the generated per-vertex flow direction (water
+        // binds the plain white texture, so they are otherwise unused).
+        // Still water (zero flow: lakes, the legacy flooded basins) keeps
+        // the original time-phased criss-cross shimmer; moving water
+        // advects that same pattern downstream instead. The drift uses two
+        // half-offset sawtooth phases cross-faded flow-map style, so it
+        // stays continuous across cameraPos.w's 1024-frame wrap.
+        vec2 flow = fragUV;
+        float moving = clamp(length(flow), 0.0, 1.0);
+        float still = 1.0 - moving;
+        float cycle = t * (8.0 / 1024.0);
+        float phase0 = fract(cycle), phase1 = fract(cycle + 0.5);
+        float blend = abs(phase0 * 2.0 - 1.0);
+        vec2 p0 = fragWorldPos.xz - flow * (phase0 * 1.5);
+        vec2 p1 = fragWorldPos.xz - flow * (phase1 * 1.5);
+        float s1 = t * 0.035 * still, s2 = t * 0.025 * still;
+        float s3 = t * 0.065 * still, s4 = t * 0.045 * still;
+        float wave1 = mix(sin(p0.x * 1.3 + s1) * cos(p0.y * 1.7 - s2),
+                          sin(p1.x * 1.3 + s1) * cos(p1.y * 1.7 - s2), blend);
+        float wave2 = mix(sin(p0.x * 3.1 - s3 + 1.7) * cos(p0.y * 2.3 + s4),
+                          sin(p1.x * 3.1 - s3 + 1.7) * cos(p1.y * 2.3 + s4), blend);
+        // Moving water is choppier than a still pond.
+        vec2 bump = vec2(wave1, wave2) * waveStrength * (1.0 + moving * 0.6);
         shadingNormal = normalize(normal + vec3(bump.x, 0.0, bump.y));
         // A real sun-glint on water is a small, tight, bright highlight, not
         // a broad sheen -- low roughness gives GGX the same tight-highlight

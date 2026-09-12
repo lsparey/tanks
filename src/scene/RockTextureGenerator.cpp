@@ -92,10 +92,12 @@ std::vector<uint8_t> RockTextureGenerator::generate(uint32_t size, uint32_t vari
             midGrey = glm::vec3(0.20f, 0.13f, 0.07f);
             lightGrey = glm::vec3(0.32f, 0.21f, 0.11f);
             break;
-        case 2:  // reddish-brown clay -- more saturated than variant 1
-            darkGrey = glm::vec3(0.11f, 0.05f, 0.03f);
-            midGrey = glm::vec3(0.22f, 0.10f, 0.06f);
-            lightGrey = glm::vec3(0.34f, 0.17f, 0.10f);
+        case 2:  // warm loam brown -- was a saturated red clay, which read as
+                 // harsh crimson patches against summer grass once the
+                 // generated material fields started exposing bars and scars
+            darkGrey = glm::vec3(0.09f, 0.06f, 0.045f);
+            midGrey = glm::vec3(0.18f, 0.125f, 0.09f);
+            lightGrey = glm::vec3(0.27f, 0.20f, 0.14f);
             break;
         case 3:  // pale, dusty warm-neutral grey -- lighter than variant 0
             darkGrey = glm::vec3(0.10f, 0.10f, 0.09f);

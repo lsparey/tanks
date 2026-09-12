@@ -165,9 +165,10 @@ void Pipeline::createHistorySetLayout() {
 }
 
 void Pipeline::createDescriptorPoolAndSet() {
-    // Nine shared materials, five rock variants and twelve bark/foliage
-    // sets for the six tree forms; retain some room for further materials.
-    constexpr uint32_t kMaxMaterialSets = 32;
+    // Nine shared materials, ten rock variants (rounded plus angular scree
+    // twins) and twelve bark/foliage sets for the six tree forms; retain some
+    // room for further materials.
+    constexpr uint32_t kMaxMaterialSets = 40;
     constexpr uint32_t kTLASSets = CommandContext::kFramesInFlight;
     constexpr uint32_t kHistorySets = CommandContext::kFramesInFlight;
 
@@ -176,9 +177,9 @@ void Pipeline::createDescriptorPoolAndSet() {
     poolSizes[0].descriptorCount = 1;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     // Each material set has four albedo bindings plus the terrain-control
-    // lookup (see createMaterialSetLayout). Each history set now carries two
-    // bindings (shadow/AO buffer, foliage-transmission buffer).
-    poolSizes[1].descriptorCount = kMaxMaterialSets * 5 + kHistorySets * 2 + 2;
+    // and terrain-field lookups (see createMaterialSetLayout). Each history
+    // set carries two bindings (shadow/AO buffer, foliage-transmission).
+    poolSizes[1].descriptorCount = kMaxMaterialSets * 6 + kHistorySets * 2 + 2;
     poolSizes[2].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     poolSizes[2].descriptorCount = kTLASSets;
     poolSizes[3].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
