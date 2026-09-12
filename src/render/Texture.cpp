@@ -10,7 +10,8 @@
 #include "VulkanUtils.h"
 
 Texture Texture::fromPixels(VulkanContext& ctx, CommandContext& commands, uint32_t width,
-                             uint32_t height, const std::vector<uint8_t>& rgba8, bool repeat) {
+                             uint32_t height, const std::vector<uint8_t>& rgba8, bool repeat,
+                             std::optional<bool> repeatV) {
     VkDeviceSize imageSize = static_cast<VkDeviceSize>(width) * height * 4;
 
     Buffer staging(ctx, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -134,16 +135,18 @@ Texture Texture::fromPixels(VulkanContext& ctx, CommandContext& commands, uint32
     viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, 1};
     VK_CHECK(vkCreateImageView(ctx.device(), &viewInfo, nullptr, &tex.view_));
 
-    VkSamplerAddressMode addressMode =
+    VkSamplerAddressMode addressModeU =
         repeat ? VK_SAMPLER_ADDRESS_MODE_REPEAT : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    VkSamplerAddressMode addressModeV = repeatV.value_or(repeat) ? VK_SAMPLER_ADDRESS_MODE_REPEAT
+                                                                  : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     samplerInfo.magFilter = VK_FILTER_LINEAR;
     samplerInfo.minFilter = VK_FILTER_LINEAR;
-    samplerInfo.addressModeU = addressMode;
-    samplerInfo.addressModeV = addressMode;
-    samplerInfo.addressModeW = addressMode;
+    samplerInfo.addressModeU = addressModeU;
+    samplerInfo.addressModeV = addressModeV;
+    samplerInfo.addressModeW = addressModeU;
     // Grazing-angle views of tiled ground textures (a low chase camera over
     // flat-ish terrain is exactly this case) minify far more along one axis
     // than the other -- plain trilinear still has to pick a single, more

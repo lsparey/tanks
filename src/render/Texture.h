@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include "CommandContext.h"
@@ -12,8 +13,13 @@
 // instead of a buffer.
 class Texture {
 public:
+    // repeatV defaults to matching `repeat` -- pass it explicitly only when a
+    // texture needs to tile along U but clamp along V (or vice versa), e.g.
+    // a gradient that must not wrap-bleed its opposite edge into view (see
+    // the boundary wall texture in Application.cpp).
     static Texture fromPixels(VulkanContext& ctx, CommandContext& commands, uint32_t width,
-                               uint32_t height, const std::vector<uint8_t>& rgba8, bool repeat);
+                               uint32_t height, const std::vector<uint8_t>& rgba8, bool repeat,
+                               std::optional<bool> repeatV = std::nullopt);
 
     ~Texture();
     Texture(const Texture&) = delete;

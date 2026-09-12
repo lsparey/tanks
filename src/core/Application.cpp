@@ -519,8 +519,13 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
     boundaryLineTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 128, 128, boundaryLinePixels, /*repeat=*/true));
     std::vector<uint8_t> boundaryWallPixels = BoundaryTextureGenerator::generateWall(128);
-    boundaryWallTexture_ = std::make_unique<Texture>(
-        Texture::fromPixels(*context_, *commands_, 128, 128, boundaryWallPixels, /*repeat=*/true));
+    // repeatV=false: unlike the ground line, this texture's v axis is a
+    // single opaque-to-transparent gradient (base to top), not a tiling
+    // pattern. REPEAT on v let bilinear/mip sampling near the top edge wrap
+    // around and blend in the bright, opaque base-of-wall texels, showing up
+    // as a thin bright line along the top of the wall.
+    boundaryWallTexture_ = std::make_unique<Texture>(Texture::fromPixels(
+        *context_, *commands_, 128, 128, boundaryWallPixels, /*repeat=*/true, /*repeatV=*/false));
     // Terrain patch-blends grass A/B and gravel A/B, then blends that by
     // height (see heightBlend in PushConstants/basic.frag), using the fifth
     // control texture for its pre-baked UV warp and patch masks. Everything
