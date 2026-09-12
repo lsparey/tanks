@@ -1,5 +1,6 @@
 // Shared std140 layout; matches Pipeline::FrameUBO.
 #define MAX_DYNAMIC_LIGHTS 4
+#define MAX_WATER_WAVES 16
 layout(set = 0, binding = 0) uniform FrameUBO {
     mat4 view;
     mat4 proj;
@@ -37,4 +38,10 @@ layout(set = 0, binding = 0) uniform FrameUBO {
     // the jitter delta leaks into every velocity and TAA resamples history
     // off texel-center every frame. See Pipeline::FrameUBO.
     mat4 viewProjUnjittered;
+    // Expanding wave sources on standing water (shell splashes, the tank's
+    // wading wake). xy: centre XZ, z: current wavefront radius, w: wave-
+    // slope amplitude, already decayed on the CPU (see WaterRipple::
+    // waveSlope); 0 = inactive slot. Summed into the water shading normal
+    // in basic.frag.
+    vec4 waterWaves[MAX_WATER_WAVES];
 } frame;

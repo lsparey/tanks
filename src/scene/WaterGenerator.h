@@ -47,6 +47,11 @@ public:
     // Application::spawnTrees) without needing bilinear interpolation.
     static bool isUnderwater(const FloodField& field, float worldX, float worldZ);
 
+    // Same nearest-cell lookup, returning the basin's surface height where
+    // submerged and empty where dry -- the legacy counterpart of
+    // TerrainWater::Surface::sampleAt for splash/wading physics.
+    static std::optional<float> waterLevelAt(const FloodField& field, float worldX, float worldZ);
+
     // Upload the CPU lake surface verbatim; selection/clipping/query geometry
     // belongs to LakeWater. The game switches consumers during integration.
     static std::unique_ptr<Mesh> buildMesh(VulkanContext& ctx, CommandContext& commands,

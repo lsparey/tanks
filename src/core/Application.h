@@ -36,6 +36,7 @@
 #include "../scene/GrassClumpInstance.h"
 #include "../scene/ShrubInstance.h"
 #include "../scene/SmokePuff.h"
+#include "../scene/WaterRipple.h"
 #include "../scene/WeaponEffects.h"
 #include "../scene/Tank.h"
 #include "../scene/Terrain.h"
@@ -290,6 +291,7 @@ private:
     // fixed-size FrameUBO array every frame.
     std::vector<DynamicLight> dynamicLights_;
     std::vector<SmokePuff> smokePuffs_;
+    std::vector<WaterRipple> waterRipples_;
     std::vector<WeaponEffects::Flash> muzzleFlashes_;
     std::vector<WeaponEffects::Smoke> blastSmoke_;
     std::vector<WeaponEffects::Scorch> scorches_;
@@ -372,6 +374,11 @@ private:
     uint32_t taaHistoryPrimedFrames_ = 0;
 
     bool isUnderwater(float x, float z) const;
+    // Standing-water surface height wherever (x, z) is wet, empty where dry
+    // -- one query over whichever water system this run generated (the
+    // TerrainWater surface or the legacy flood field). Drives shell
+    // splashes, tank wading drag, and track wash/wake placement.
+    std::optional<float> waterLevelAt(float x, float z) const;
     bool allowsScenery(glm::vec2 center, float radius) const;
     void spawnBoxes();
     void spawnTrees();
@@ -385,6 +392,9 @@ private:
                             float lifetime);
     void spawnSmokePuff(glm::vec3 position, glm::vec3 velocity, float initialScale, float finalScale,
                         float lifetime, bool dust = false);
+    void spawnWaterSplash(glm::vec3 point);
+    void spawnWaterRipple(glm::vec3 position, float initialRadius, float growthRate, float lifetime,
+                          float waveAmplitude);
     void destroyBox(Box& box);
     void updateTrackMarks(float deltaTime);
     void fireProjectile();

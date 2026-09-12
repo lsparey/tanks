@@ -588,20 +588,35 @@ void main() {
         } else {
             float age = pc.tankSurface.x;
             float seed = pc.tankSurface.y;
-            float noise = valueNoise2D(p*3.2 + vec2(seed, age*.7));
-            float radius = length(p) + (noise-.5)*.22;
-            alpha = (1.0-smoothstep(.25,.95,radius)) * mix(.6,1.0,noise);
-            color = mix(vec3(.25,.26,.25),vec3(.48,.49,.47),age);
-            if (pc.tankSurface.w > .5) {
-                // Explosion soot (Smoke::soot): a much darker column than
-                // muzzle smoke, with an HDR fire glow lighting its interior
-                // from below while the burst is young -- the glow follows
-                // the same noise that shapes the puff so it reads as flame
-                // showing through gaps, then dies out and leaves cooling
-                // black smoke that pales slightly as it disperses.
-                color = mix(vec3(.085,.08,.075), vec3(.30,.295,.29), age);
-                float glow = (1.0-smoothstep(.02,.35,age)) * smoothstep(.35,.9,noise);
-                color += vec3(2.6,.9,.18) * glow;
+            if (pc.tankSurface.w > 1.5) {
+                // Water spray (Smoke::spray, shell splashes): thrown
+                // droplets, not combustion smoke -- brighter and cooler
+                // than any smoke, with a far more ragged edge (droplet
+                // clumps breaking off the sheet) and no fire interior.
+                // The noise scrolls DOWN the card as it ages so the
+                // fringe reads as water falling back, even while the
+                // card itself still drifts up.
+                float spr = valueNoise2D(p*4.6 + vec2(seed, -age*2.4));
+                float radius = length(p) + (spr-.5)*.42;
+                alpha = (1.0-smoothstep(.12,.8,radius)) * mix(.45,1.0,spr);
+                color = mix(vec3(.5,.56,.6), vec3(.86,.91,.96), spr);
+            } else {
+                float noise = valueNoise2D(p*3.2 + vec2(seed, age*.7));
+                float radius = length(p) + (noise-.5)*.22;
+                alpha = (1.0-smoothstep(.25,.95,radius)) * mix(.6,1.0,noise);
+                color = mix(vec3(.25,.26,.25),vec3(.48,.49,.47),age);
+                if (pc.tankSurface.w > .5) {
+                    // Explosion soot (Smoke::soot): a much darker column
+                    // than muzzle smoke, with an HDR fire glow lighting its
+                    // interior from below while the burst is young -- the
+                    // glow follows the same noise that shapes the puff so it
+                    // reads as flame showing through gaps, then dies out and
+                    // leaves cooling black smoke that pales slightly as it
+                    // disperses.
+                    color = mix(vec3(.085,.08,.075), vec3(.30,.295,.29), age);
+                    float glow = (1.0-smoothstep(.02,.35,age)) * smoothstep(.35,.9,noise);
+                    color += vec3(2.6,.9,.18) * glow;
+                }
             }
         }
         alpha *= pc.opacity;
@@ -1415,6 +1430,9 @@ void main() {
     // per-frame counter already reused for shadow/AO jitter, just repurposed
     // here as an animation phase.
     vec3 shadingNormal = normal;
+    // Wave-crest foam coverage, accumulated from the interactive wave
+    // sources below and applied to the final surface colour/alpha.
+    float waterFoam = 0.0;
     bool isWater = waveStrength > 0.001;
     if (isWater) {
         float t = frame.cameraPos.w;
@@ -1446,6 +1464,43 @@ void main() {
         // large lake); fade toward calm water with distance instead. The
         // small floor keeps a hint of sparkle without the full pattern.
         bump *= mix(1.0, 0.1, smoothstep(18.0, 50.0, currentViewDist));
+        // Interactive waves (shell splashes, the tank's wading wake) -- see
+        // frame.waterWaves. Each live source is an expanding ring wave
+        // packet: a few sinusoidal crests inside an envelope riding the
+        // advancing front, sharp ahead of it and trailing a longer damped
+        // tail behind, exactly how a real disturbance on a calm pond decays.
+        // Summed as radial slopes into the same shading normal as the
+        // ambient shimmer above, so reflections and the sun glint visibly
+        // bend around each crest as it propagates.
+        vec2 waveBump = vec2(0.0);
+        for (int i = 0; i < MAX_WATER_WAVES; ++i) {
+            float slopeAmp = frame.waterWaves[i].w;
+            if (slopeAmp <= 0.0) continue;
+            vec2 toFrag = fragWorldPos.xz - frame.waterWaves[i].xy;
+            float d = length(toFrag);
+            // Signed distance from the wavefront; outside the packet the
+            // envelope is ~0, skip before the transcendentals.
+            float u = d - frame.waterWaves[i].z;
+            if (u > 2.0 || u < -4.5 || d < 1e-4) continue;
+            float envelope = exp(-u * u * (u > 0.0 ? 1.4 : 0.35));
+            // Wavelength ~1 unit -- large enough to survive TAA at
+            // mid-distance, small enough to read as water, not swell.
+            waveBump += (toFrag / d) * (slopeAmp * 1.4 * envelope * cos(u * 6.4));
+            // Foam scales with slope SQUARED: only steep young crests churn
+            // white, while an aging swell keeps bending reflections long
+            // after its foam has dissolved -- exactly how a real splash
+            // fades. The much tighter envelope keeps the trace a narrow band
+            // hugging the front, not a filled disc.
+            waterFoam += slopeAmp * slopeAmp * exp(-u * u * (u > 0.0 ? 6.0 : 2.0));
+        }
+        // Same aliasing guard as the ambient shimmer, but the ~1-unit
+        // wavelength holds up much farther before dropping below a pixel.
+        bump += waveBump * mix(1.0, 0.15, smoothstep(30.0, 80.0, currentViewDist));
+        // Broken, patchy foam: modulate hard by the criss-cross shimmer
+        // already computed above so crests read as churned bubbles rather
+        // than the solid painted rings the old billboard meshes drew.
+        waterFoam = clamp(waterFoam * 5.0, 0.0, 0.6) *
+                    (0.35 + 0.65 * clamp(0.5 + wave1 * wave2 * 2.5, 0.0, 1.0));
         shadingNormal = normalize(normal + vec3(bump.x, 0.0, bump.y));
         // A real sun-glint on water is a small, tight, bright highlight, not
         // a broad sheen -- low roughness gives GGX the same tight-highlight
@@ -1635,6 +1690,14 @@ void main() {
     // difference for the tank's own tiny reflectivity (0.06).
     vec3 result = mix(baseContribution, envColor, effectiveReflectivity) +
                   specular * frame.sunColor.rgb * frame.sunColor.w + fresnelRim * vec3(0.6);
+
+    // Wave-crest foam sits on top of the reflection/absorption blend:
+    // aerated water scatters diffusely white and hides the surface beneath,
+    // so it also pulls alpha up toward opaque where it is dense.
+    if (waterFoam > 0.001) {
+        result = mix(result, vec3(0.72, 0.78, 0.8), waterFoam);
+        finalAlpha = mix(finalAlpha, 0.92, waterFoam);
+    }
 
     // Fogged toward the sky color along the actual camera->fragment
     // direction (not the reflection vector envColor uses above) so it reads

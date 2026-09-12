@@ -1364,6 +1364,16 @@ void Application::mainLoop() {
         if (drivePreview_ && frameCounter_ == 90) input_->holdKey(GLFW_KEY_W);
         if (drivePreview_ && frameCounter_ == 300) input_->releaseKey(GLFW_KEY_W);
         if (weaponPreview_ && frameCounter_ == 90) fireProjectile();
+        // Weapon preview aimed at the water reference view: stage a shell
+        // splash at the deepest-water target the camera is already looking
+        // at, so splash spray/foam/wave tuning is screenshot-iterable
+        // without driving to a lake and firing by hand. Staggered like the
+        // fire/explosion pair above; frame choices catch young (~1s) waves
+        // from the second splash and developed (~2.5s) rings from the first
+        // in one --screenshot-frame 240 capture.
+        if (weaponPreview_ && referenceView_ == "water") {
+            if (frameCounter_ == 90 || frameCounter_ == 180) spawnWaterSplash(waterReferenceTarget_);
+        }
         if (weaponPreview_ && frameCounter_ == 180) {
             glm::vec3 point = tank_->position() + tank_->forward()*3.8f;
             point.y = terrain_->heightAt(point.x,point.z);
@@ -1373,7 +1383,18 @@ void Application::mainLoop() {
             effect.position=point;
             impactEffects_.push_back(effect);
         }
-        if (!treeLodBenchmark_) tank_->update(*input_, deltaTime, *terrain_, obstacles_, boundaryHalfExtent_);
+        if (!treeLodBenchmark_) {
+            // Standing-water depth at the hull centre -- wading drag inside
+            // Tank::update, wake placement in updateTrackMarks.
+            glm::vec3 hullPosition = tank_->position();
+            float wadeDepth = 0.0f;
+            if (auto level = waterLevelAt(hullPosition.x, hullPosition.z)) {
+                wadeDepth = std::max(
+                    0.0f, *level - terrain_->heightAt(hullPosition.x, hullPosition.z));
+            }
+            tank_->update(*input_, deltaTime, *terrain_, obstacles_, boundaryHalfExtent_,
+                          wadeDepth);
+        }
         updateTrackMarks(deltaTime);
 
         bool fireDown = !treeLodBenchmark_ && (glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS ||
@@ -1562,6 +1583,15 @@ void Application::applyReferenceCamera() {
 bool Application::isUnderwater(float x, float z) const {
     if (const auto& water = terrain_->state().water) return water->sampleAt(x, z).has_value();
     return WaterGenerator::isUnderwater(legacyWaterField_, x, z);
+}
+
+std::optional<float> Application::waterLevelAt(float x, float z) const {
+    if (const auto& water = terrain_->state().water) {
+        auto sample = water->sampleAt(x, z);
+        if (!sample) return std::nullopt;
+        return sample->height;
+    }
+    return WaterGenerator::waterLevelAt(legacyWaterField_, x, z);
 }
 
 bool Application::allowsScenery(glm::vec2 center, float radius) const {
@@ -2057,6 +2087,77 @@ void Application::spawnSmokePuff(glm::vec3 position, glm::vec3 velocity, float i
     smokePuffs_.push_back(puff);
 }
 
+// A shell entering standing water: no fire, no scorch, no debris. The wave
+// and foam response lives in the water shader (see spawnWaterRipple below);
+// this adds only the airborne part -- a short column of white spray thrown
+// up by the entry, an outward crown, and a low mist that hangs a moment
+// where the column collapses. Spray uses the same soft procedural card
+// renderer as muzzle/explosion smoke (the spray branch in basic.frag's
+// smoke-card path) rather than solid SmokePuff blob meshes, which read as
+// hard white balls against the water.
+void Application::spawnWaterSplash(glm::vec3 point) {
+    std::mt19937 rng(std::random_device{}());
+    std::uniform_real_distribution<float> unit(-1.0f, 1.0f);
+    std::uniform_real_distribution<float> zeroOne(0.0f, 1.0f);
+
+    auto spawnSprayCard = [&](glm::vec3 position, glm::vec3 velocity, float size, float lifetime,
+                              float density) {
+        WeaponEffects::Smoke card;
+        card.position = position;
+        card.velocity = velocity;
+        card.remaining = card.lifetime = lifetime;
+        card.size = size;
+        card.seed = zeroOne(rng) * 61.7f + unit(rng) * 17.3f;
+        card.density = density;
+        card.spray = true;
+        WeaponEffects::addBounded(blastSmoke_, card, WeaponEffects::kMaxSmoke);
+    };
+
+    constexpr int kColumnCount = 3;
+    constexpr int kCrownCount = 5;
+    // Central column: narrow, fast, short-lived -- the water thrown straight
+    // up by the shell's entry. Smoke::update's drag bleeds the launch speed
+    // off quickly, so the sheet tosses up and hangs rather than climbing
+    // away like smoke.
+    for (int i = 0; i < kColumnCount; ++i) {
+        spawnSprayCard(
+            point + glm::vec3(unit(rng) * 0.1f, 0.1f + zeroOne(rng) * 0.15f, unit(rng) * 0.1f),
+            glm::vec3(unit(rng) * 0.6f, 3.4f + zeroOne(rng) * 1.8f, unit(rng) * 0.6f),
+            0.26f + zeroOne(rng) * 0.12f, 0.5f + zeroOne(rng) * 0.15f, 0.8f);
+    }
+    // Crown: a ring of slower spray thrown outward at roughly 50 degrees,
+    // jittered so it doesn't read as a perfect polygon.
+    for (int i = 0; i < kCrownCount; ++i) {
+        float angle = (static_cast<float>(i) + zeroOne(rng)) * 6.2831853f /
+                      static_cast<float>(kCrownCount);
+        glm::vec3 dir(std::cos(angle), 0.0f, std::sin(angle));
+        spawnSprayCard(point + dir * 0.25f + glm::vec3(0.0f, 0.08f, 0.0f),
+                       dir * (1.6f + zeroOne(rng) * 0.9f) +
+                           glm::vec3(0.0f, 2.0f + zeroOne(rng) * 0.9f, 0.0f),
+                       0.18f + zeroOne(rng) * 0.1f, 0.4f + zeroOne(rng) * 0.15f, 0.65f);
+    }
+    // Low hanging mist where the column collapses back onto the surface.
+    spawnSprayCard(point + glm::vec3(0.0f, 0.2f, 0.0f), glm::vec3(0.0f, 0.4f, 0.0f), 0.5f, 0.9f,
+                   0.5f);
+    // A sharp fast wave with a slower, longer-lived swell behind it -- the
+    // shader renders each as a propagating ring of bent reflections with
+    // foam riding the crest (see WaterRipple/basic.frag).
+    spawnWaterRipple(point, 0.28f, 2.6f, 2.4f, /*waveAmplitude=*/0.6f);
+    spawnWaterRipple(point, 0.16f, 1.4f, 1.6f, /*waveAmplitude=*/0.25f);
+}
+
+void Application::spawnWaterRipple(glm::vec3 position, float initialRadius, float growthRate,
+                                   float lifetime, float waveAmplitude) {
+    constexpr size_t kMaxWaterRipples = 48;
+    WaterRipple ripple;
+    ripple.position = position;
+    ripple.initialRadius = initialRadius;
+    ripple.growthRate = growthRate;
+    ripple.initialLifetime = ripple.lifetimeRemaining = lifetime;
+    ripple.waveAmplitude = waveAmplitude;
+    WeaponEffects::addBounded(waterRipples_, ripple, kMaxWaterRipples);
+}
+
 void Application::spawnExplosion(glm::vec3 position) {
     // Bright orange flash, unshadowed -- see DynamicLight.h. Radius/
     // lifetime roughly matched to the debris burst below so nearby geometry
@@ -2232,6 +2333,10 @@ void Application::updateTrackMarks(float deltaTime) {
         emitAtSpacing(trail.distanceSinceMark, kTrackMarkSpacing, [&](float t) {
             if (contactAmount < 0.2f) return;
             glm::vec3 point = glm::mix(trail.previousPosition, current, t);
+            // No pressed-mud marks on a submerged bed -- the wading wash in
+            // the dust emitter below is the wet tracks' trace instead.
+            if (auto level = waterLevelAt(point.x, point.z); level && *level - point.y > 0.05f)
+                return;
             glm::vec3 normal = terrain_->normalAt(point.x, point.z);
             glm::vec3 tangent = travelDirection - normal * glm::dot(travelDirection, normal);
             if (glm::length(tangent) < 1e-5f) tangent = tank_->forward();
@@ -2247,7 +2352,6 @@ void Application::updateTrackMarks(float deltaTime) {
         });
 
         emitAtSpacing(trail.distanceSinceDust, kDustSpacing, [&](float t) {
-            if (dustIntensity * contactAmount < 0.06f) return;
             glm::vec3 point = glm::mix(trail.previousPosition, current, t);
             glm::vec3 normal = terrain_->normalAt(point.x, point.z);
             glm::vec3 tangent = travelDirection - normal * glm::dot(travelDirection, normal);
@@ -2256,6 +2360,23 @@ void Application::updateTrackMarks(float deltaTime) {
             glm::vec3 sideways = glm::normalize(glm::cross(normal, tangent));
             float noise = terrainHash(glm::vec2(point.x, point.z) * 2.7f +
                                       glm::vec2(static_cast<float>(trackIndex) * 17.0f));
+            // Wading: the track runs on a submerged bed, so shed an
+            // expanding wake wave at the surface instead of dust -- the
+            // water shader renders its bent reflections and churned crest
+            // foam (see spawnWaterRipple), which is the whole visible
+            // trace. No airborne puffs here: rising billboards over a
+            // moving tank read as engine steam, not thrown water. Gated on
+            // speed alone -- water needs no wheelspin or slip to be
+            // disturbed, unlike the dry dust intensity below.
+            if (auto level = waterLevelAt(point.x, point.z); level && *level - point.y > 0.04f) {
+                float agitation = glm::smoothstep(0.3f, 3.5f, trackSpeed) * contactAmount;
+                if (agitation < 0.05f) return;
+                glm::vec3 surfacePoint(point.x, *level, point.z);
+                spawnWaterRipple(surfacePoint, 0.3f, 1.2f + trackSpeed * 0.15f, 1.4f,
+                                 /*waveAmplitude=*/0.14f + 0.24f * agitation);
+                return;
+            }
+            if (dustIntensity * contactAmount < 0.06f) return;
             glm::vec3 velocity = normal * glm::mix(0.35f, 0.75f, noise) - tangent * 0.25f +
                                  sideways * ((noise - 0.5f) * 0.45f);
             float intensity = glm::clamp(dustIntensity * contactAmount, 0.0f, 1.0f);
@@ -2546,6 +2667,30 @@ void Application::updateProjectilesAndCollisions(float deltaTime) {
                 }
             }
         }
+        // Standing water before terrain: a shell dropping into a lake or
+        // stream throws spray at the surface instead of flying through it
+        // and blasting a fireball out of the lakebed. Same swept-segment
+        // bisection as the terrain hit below, against the water surface.
+        if (shell.alive) {
+            auto level = waterLevelAt(shell.position.x, shell.position.z);
+            if (level && shell.position.y <= *level) {
+                float low = 0, high = 1;
+                for (int i = 0; i < 10; ++i) {
+                    float mid = (low + high) * .5f;
+                    glm::vec3 p = glm::mix(shell.previousPosition, shell.position, mid);
+                    auto l = waterLevelAt(p.x, p.z);
+                    if (!l || p.y > *l) low = mid; else high = mid;
+                }
+                glm::vec3 point = glm::mix(shell.previousPosition, shell.position, high);
+                if (auto l = waterLevelAt(point.x, point.z)) point.y = *l;
+                // A margin thinner than the shell itself can't swallow it --
+                // let that fall through and read as an ordinary ground hit.
+                if (point.y - terrain_->heightAt(point.x, point.z) > 0.15f) {
+                    shell.alive = false;
+                    spawnWaterSplash(point);
+                }
+            }
+        }
         // Terrain last -- a catch-all "the shell has embedded itself in the
         // ground" check, deliberately checked after every specific object
         // above so a shell that clips a tree/rock right at ground level
@@ -2620,6 +2765,11 @@ void Application::updateProjectilesAndCollisions(float deltaTime) {
     smokePuffs_.erase(std::remove_if(smokePuffs_.begin(), smokePuffs_.end(),
                                       [](const SmokePuff& p) { return !p.alive; }),
                        smokePuffs_.end());
+
+    for (auto& ripple : waterRipples_) ripple.update(deltaTime);
+    waterRipples_.erase(std::remove_if(waterRipples_.begin(), waterRipples_.end(),
+                                        [](const WaterRipple& r) { return !r.alive; }),
+                         waterRipples_.end());
 }
 
 void Application::drawFrame() {
@@ -2780,6 +2930,28 @@ void Application::drawFrame() {
         const DynamicLight& light = dynamicLights_[i];
         ubo.dynamicLightPosRadius[i] = glm::vec4(light.position, light.radius);
         ubo.dynamicLightColorIntensity[i] = glm::vec4(light.color, light.currentIntensity());
+    }
+    // Wave sources for the water shading normal (see frame.glsl's
+    // waterWaves). Unlike the capped lights above, waterRipples_ routinely
+    // exceeds the slot count while wading (each track drops one every 0.72
+    // units of travel), so rank by current wave slope and take the
+    // strongest -- dropping the faintest tail-end ripples, not the newest.
+    {
+        std::vector<glm::vec4> waves;
+        waves.reserve(waterRipples_.size());
+        for (const auto& ripple : waterRipples_) {
+            float slope = ripple.waveSlope();
+            // Below ~0.005 the deflection is under half a degree -- invisible.
+            if (slope < 0.005f) continue;
+            waves.push_back(
+                glm::vec4(ripple.position.x, ripple.position.z, ripple.radius(), slope));
+        }
+        size_t count = std::min(waves.size(), Pipeline::kMaxWaterWaves);
+        std::partial_sort(waves.begin(), waves.begin() + count, waves.end(),
+                          [](const glm::vec4& a, const glm::vec4& b) { return a.w > b.w; });
+        // Unfilled slots stay all-zero from ubo's default init, which the
+        // shader loop reads as "inactive" via w == 0, same as the lights.
+        for (size_t i = 0; i < count; ++i) ubo.waterWaves[i] = waves[i];
     }
     // Round-robin cascade refresh: cascade 0 (the 18-unit clipmap, where
     // wind sway and nearby detail actually read) re-renders every frame;
@@ -3667,7 +3839,7 @@ void Application::drawFrame() {
         pc.model=puff->matrix(eye);
         pc.materialType=9;
         pc.opacity=puff->opacity();
-        pc.tankSurface=glm::vec4(puff->age(),puff->seed,0,puff->soot?1.f:0.f);
+        pc.tankSurface=glm::vec4(puff->age(),puff->seed,0,puff->spray?2.f:puff->soot?1.f:0.f);
         vkCmdPushConstants(frame.commandBuffer,pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(pc),&pc);
         trackMarkMesh_->bindAndDraw(frame.commandBuffer);

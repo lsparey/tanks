@@ -55,6 +55,9 @@ struct Smoke {
     // Selects the darker, fire-lit explosion-soot shading in basic.frag's
     // smoke-card branch (passed through PushConstants::tankSurface.w).
     bool soot = false;
+    // Selects the bright, ragged water-spray shading instead (shell
+    // splashes -- see Application::spawnWaterSplash). Wins over soot.
+    bool spray = false;
     void update(float dt) {
         // Analytic drag integration keeps the short initial jet independent
         // of render rate, slowing it into a rising cloud.

@@ -53,6 +53,17 @@ constexpr float kMaximumBarrelRecoilDistance = 0.42f;
 constexpr float kBarrelRecoilFrequency = 3.2f;
 constexpr float kBarrelRecoilDampingRatio = 0.72f;
 constexpr float kHullRecoilImpulseSpeed = 0.24f;
+// Wading (see the wadeDepth parameter of update()): water resistance ramps
+// linearly with depth until the fording limit -- a fraction of hull height,
+// roughly the top of the tracks -- past which going deeper adds nothing (the
+// hull is already pushing its full frontal area of water). Drag is quadratic
+// in speed like kLongitudinalDrag but far stronger, and the engine loses
+// power churning flooded tracks; together they settle a full-wade top speed
+// around 2 units/s instead of 7.5, while still letting the tank crawl out.
+constexpr float kMaxFordingDepthScale = 0.45f;  // of hull height
+constexpr float kWaterDrag = 0.55f;
+constexpr float kWaterEnginePowerLoss = 0.6f;   // fraction lost at full wade
+constexpr float kWaterAngularDrag = 2.5f;       // extra yaw damping at full wade
 constexpr float kGunElevationSpeedRadians = 0.1745329f;  // 10 degrees/s
 constexpr float kMinimumGunElevation = -0.1745329f;      // -10 degrees
 constexpr float kMaximumGunElevation = 0.3490659f;       // +20 degrees
@@ -248,7 +259,7 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
 
 void Tank::update(const InputManager& input, float deltaTime, const Terrain& terrain,
                    const std::vector<CollisionSystem::CircleObstacle>& obstacles,
-                   float boundaryHalfExtent) {
+                   float boundaryHalfExtent, float wadeDepth) {
     // Capture last frame's final pose before anything below mutates it --
     // see prevHullWorldMatrix()'s comment for why this can't be recomputed
     // after the fact the way wind bending can.
@@ -277,9 +288,14 @@ void Tank::update(const InputManager& input, float deltaTime, const Terrain& ter
     // independent of render cadence. Discard excessive time after a stall or
     // debugger pause rather than trying to simulate a huge, unstable jump.
     movementAccumulator_ += glm::clamp(deltaTime, 0.0f, kMaxFrameDelta);
+    // Normalized wade factor, sampled once per render frame at the hull
+    // centre -- depth changes far slower than the fixed simulation step.
+    float wade = height_ > 0.0f
+                     ? glm::clamp(wadeDepth / (height_ * kMaxFordingDepthScale), 0.0f, 1.0f)
+                     : 0.0f;
     while (movementAccumulator_ >= kFixedMovementStep) {
         simulateMovement(throttle, turn, kFixedMovementStep, terrain, obstacles,
-                         boundaryHalfExtent);
+                         boundaryHalfExtent, wade);
         movementAccumulator_ -= kFixedMovementStep;
     }
 
@@ -330,7 +346,8 @@ void Tank::updateGunRecoil(float deltaTime) {
 
 void Tank::simulateMovement(
     float throttle, float turn, float deltaTime, const Terrain& terrain,
-    const std::vector<CollisionSystem::CircleObstacle>& obstacles, float boundaryHalfExtent) {
+    const std::vector<CollisionSystem::CircleObstacle>& obstacles, float boundaryHalfExtent,
+    float wade) {
     glm::vec2 velocityBeforeStep = velocity_;
     glm::vec2 flatForward(std::sin(yaw_), std::cos(yaw_));
     glm::vec2 flatRight(flatForward.y, -flatForward.x);
@@ -354,7 +371,10 @@ void Tank::simulateMovement(
             float topSpeed = driveDemand > 0.0f ? kForwardTopSpeed : kReverseTopSpeed;
             float speedAlongDemand = forwardSpeed * (driveDemand > 0.0f ? 1.0f : -1.0f);
             float motorFactor = glm::clamp(1.0f - speedAlongDemand / topSpeed, 0.0f, 1.0f);
-            acceleration = kEngineAcceleration * motorFactor;
+            // Flooded tracks churn water instead of gripping ground; braking
+            // keeps its full strength (the water only helps stopping).
+            acceleration = kEngineAcceleration * motorFactor *
+                           (1.0f - kWaterEnginePowerLoss * wade);
         }
         forwardSpeed += driveDemand * acceleration * deltaTime;
     } else {
@@ -364,6 +384,8 @@ void Tank::simulateMovement(
     // Air/drive-train drag grows with speed, while strong lateral track grip
     // quickly scrubs sideways motion without making it disappear instantly.
     forwardSpeed *= std::exp(-kLongitudinalDrag * std::abs(forwardSpeed) * deltaTime);
+    // Quadratic hull drag from pushing standing water aside while wading.
+    forwardSpeed *= std::exp(-kWaterDrag * wade * std::abs(forwardSpeed) * deltaTime);
     lateralSpeed *= std::exp(-kLateralGrip * deltaTime);
     velocity_ = flatForward * forwardSpeed + flatRight * lateralSpeed;
 
@@ -388,7 +410,7 @@ void Tank::simulateMovement(
     float yawLimit = glm::mix(kPivotYawRate, kMovingYawRate, speedRatio);
     float turnAuthority = glm::mix(1.0f, 0.65f, speedRatio);
     angularVelocity_ += turnDemand * kAngularAcceleration * turnAuthority * deltaTime;
-    angularVelocity_ *= std::exp(-kAngularDrag * deltaTime);
+    angularVelocity_ *= std::exp(-(kAngularDrag + kWaterAngularDrag * wade) * deltaTime);
     angularVelocity_ = glm::clamp(angularVelocity_, -yawLimit, yawLimit);
 
     yaw_ += angularVelocity_ * deltaTime;

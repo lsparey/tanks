@@ -40,6 +40,9 @@
 class Pipeline {
 public:
     static constexpr uint32_t kMaxRasterInstances = 16384;
+    // Shader/FrameUBO capacity for water wave sources -- matches
+    // MAX_WATER_WAVES in frame.glsl.
+    static constexpr size_t kMaxWaterWaves = 16;
 
     struct FrameUBO {
         glm::mat4 view;
@@ -112,6 +115,15 @@ public:
         // off texel-center every frame -- permanent bilinear blur plus a
         // visible sub-pixel wobble of the whole scene.
         glm::mat4 viewProjUnjittered{1.0f};
+        // Expanding wave sources on standing water (shell splashes, the
+        // tank's wading wake) -- xy: centre XZ, z: current wavefront radius,
+        // w: wave-slope amplitude, pre-decayed on the CPU (see
+        // WaterRipple::waveSlope); 0 = inactive slot. basic.frag's water
+        // branch sums these into its rippled shading normal so reflections
+        // and sun glints bend around each propagating crest. Filled
+        // strongest-first from waterRipples_, which can exceed the slot
+        // count while wading.
+        std::array<glm::vec4, kMaxWaterWaves> waterWaves{};
     };
 
     static_assert(offsetof(FrameUBO, windTime) == 240);
@@ -119,7 +131,8 @@ public:
     static_assert(offsetof(FrameUBO, treeShadowParams) == 1216);
     static_assert(offsetof(FrameUBO, prevTankHullModel) == 1232);
     static_assert(offsetof(FrameUBO, viewProjUnjittered) == 1424);
-    static_assert(sizeof(FrameUBO) == 1488);
+    static_assert(offsetof(FrameUBO, waterWaves) == 1488);
+    static_assert(sizeof(FrameUBO) == 1744);
 
     struct PushConstants {
         glm::mat4 model;

@@ -217,6 +217,18 @@ bool WaterGenerator::isUnderwater(const FloodField& field, float worldX, float w
     return field.submerged[static_cast<size_t>(j) * field.resolution + i];
 }
 
+std::optional<float> WaterGenerator::waterLevelAt(const FloodField& field, float worldX,
+                                                  float worldZ) {
+    if (field.resolution == 0) return std::nullopt;
+    float gx = (worldX / field.worldSize + 0.5f) * static_cast<float>(field.resolution - 1);
+    float gz = (worldZ / field.worldSize + 0.5f) * static_cast<float>(field.resolution - 1);
+    int i = std::clamp(static_cast<int>(std::lround(gx)), 0, field.resolution - 1);
+    int j = std::clamp(static_cast<int>(std::lround(gz)), 0, field.resolution - 1);
+    size_t index = static_cast<size_t>(j) * field.resolution + i;
+    if (!field.submerged[index]) return std::nullopt;
+    return field.waterLevel[index];
+}
+
 std::unique_ptr<Mesh> WaterGenerator::buildMesh(VulkanContext& ctx, CommandContext& commands,
                                                const TerrainWater::Surface& surface) {
     const auto& data = surface.mesh();

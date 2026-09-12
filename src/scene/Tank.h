@@ -66,9 +66,12 @@ public:
     // oriented capsule against the circular tree/rock proxies in `obstacles`
     // (see Application::obstacles_). `boundaryHalfExtent` likewise keeps the
     // complete oriented hull behind the play-area boundary's wall of light.
+    // `wadeDepth` is the standing-water depth at the hull (0 on dry ground,
+    // see Application::waterLevelAt): wading saps engine power and adds
+    // speed-dependent water drag, maxing out at a fraction of hull height.
     void update(const InputManager& input, float deltaTime, const Terrain& terrain,
                 const std::vector<CollisionSystem::CircleObstacle>& obstacles,
-                float boundaryHalfExtent);
+                float boundaryHalfExtent, float wadeDepth = 0.0f);
 
     // Rigid parts. Instanced running gear is exposed separately so raster
     // batches and ray instances can share the same computed transforms.
@@ -133,7 +136,7 @@ private:
     void load(VulkanContext& ctx, CommandContext& commands, const std::string& path, bool animateTracks);
     void simulateMovement(float throttle, float turn, float deltaTime, const Terrain& terrain,
                           const std::vector<CollisionSystem::CircleObstacle>& obstacles,
-                          float boundaryHalfExtent);
+                          float boundaryHalfExtent, float wade);
     void updateGroundPose(const Terrain& terrain);
     void updateSuspensionPose(const Terrain& terrain, float deltaTime,
                               float longitudinalAcceleration, float lateralAcceleration);
