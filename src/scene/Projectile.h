@@ -5,10 +5,14 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
-// A fired shell: constant-velocity straight-line motion with a lifetime
+// A fired shell: constant-gravity ballistic motion with a lifetime
 // timeout. previousPosition is kept each frame so collision can be tested
 // against the swept segment, not just the new point (see CollisionSystem).
 struct Projectile {
+    // Gameplay-scaled gravity: at 25 units/s a level shot drops 0.15 units
+    // after 25 units of forward travel, and 0.6 after 50.
+    static constexpr float kGravity = 0.3f;
+
     glm::vec3 position;
     glm::vec3 previousPosition;
     glm::vec3 velocity;
@@ -23,7 +27,11 @@ struct Projectile {
 
     void update(float deltaTime) {
         previousPosition = position;
-        position += velocity * deltaTime;
+        // Exact constant-acceleration step keeps drop independent of frame
+        // rate. Collision still sweeps between the old and new positions.
+        const glm::vec3 acceleration(0.0f, -kGravity, 0.0f);
+        position += velocity * deltaTime + acceleration * (0.5f * deltaTime * deltaTime);
+        velocity += acceleration * deltaTime;
         lifetimeRemaining -= deltaTime;
         if (lifetimeRemaining <= 0.0f) alive = false;
     }

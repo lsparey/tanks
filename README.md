@@ -308,6 +308,11 @@ unjittered gun-ray projection; it indicates direction, not a predicted hit or
 penetration chance. An out-of-view notice appears when that point leaves the
 screen. The camera label follows C and identifies fixed inspection views.
 
+Shells leave the barrel at 25 world units per second and follow a gentle
+ballistic arc: a level shot drops 0.15 units over 25 units of forward travel,
+and 0.6 units over 50. The reticle marks the barrel direction at 25 units;
+raise the gun to compensate for drop on longer shots.
+
 The top counter tracks destroyed crates, including crates crushed by driving.
 The tactical map shows the full playable boundary, remaining crate objectives,
 the player's hull heading, and the gun direction. North is world +Z and east
