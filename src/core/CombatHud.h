@@ -11,7 +11,7 @@ struct State {
     glm::vec3 position{0}, forward{0,0,1}, aimDirection{0,0,1};
     glm::vec4 aimClip{0,0,0,1};
     float speed = 0, turretYaw = 0, gunElevation = 0;
-    float boundaryHalfExtent = 1, fps = 0;
+    float boundaryHalfExtent = 1, fps = 0, gpuMs = 0;
     std::span<const Box> targets;
     std::string_view camera = "HULL FOLLOW";
     bool help = false, diagnostics = false, treeLod = true, reflectionRays = true;

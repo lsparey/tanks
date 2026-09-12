@@ -30,13 +30,13 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
         bool contains(float px, float py) const { return px >= x && px < x+w && py >= y && py < y+h; }
     };
     std::array<Rect, 11> controls{};
-    for (int i = 0; i < 5; ++i) controls[i] = {48, 122.f + i * 70, 928, 62};
-    controls[5] = {48, 500, 440, 48};
-    controls[6] = {520, 500, 278, 48};
-    controls[7] = {814, 500, 162, 48};
-    controls[8] = {48, 620, 600, 58};
-    controls[9] = {814, 620, 162, 58};
-    controls[10] = {662, 620, 138, 58};  // SHADOWS toggle, between start and quit
+    for (int i = 0; i < 5; ++i) controls[i] = {232, 118.f + i * 56, 560, 48};
+    controls[5] = {232, 428, 272, 40};
+    controls[6] = {512, 428, 168, 40};
+    controls[7] = {688, 428, 104, 40};
+    controls[8] = {232, 506, 272, 44};
+    controls[9] = {688, 506, 104, 44};
+    controls[10] = {512, 506, 168, 44};  // SHADOWS toggle, between start and quit
     int selected = 0, focus = 8, form = 0;
     std::string seed = std::to_string(worldSeed_);
     bool selectSeed = false, mouseWasDown = false;
@@ -129,31 +129,32 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
             auto text = [&](std::string_view label, float px, float py, float size, glm::vec3 color) {
                 hud_->addText(label, point(px, py), unit * size, color);
             };
-            const glm::vec3 white(.91f,.94f,.91f), muted(.55f,.62f,.59f), green(.42f,.84f,.53f);
-            text("CHOOSE YOUR TERRAIN", 48, 40, 3.4f, white);
-            text("ORIGINAL IS FASTEST. EXPERIMENTAL MODES MAY TAKE LONGER.", 48, 84, 1.6f, muted);
+            const glm::vec3 white(.95f,.96f,.97f), muted(.62f,.66f,.70f);
+            const glm::vec3 accent(.38f,.79f,.76f), warn(.96f,.56f,.36f);
+            text("SELECT TERRAIN", 232, 52, 2.2f, white);
+            text("ORIGINAL IS FASTEST. EXPERIMENTAL MODES MAY TAKE LONGER.", 232, 84, 1.2f, muted);
             for (int i = 0; i < 11; ++i) {
                 bool disabled = (i == 5 && selected == 0) || (i == 8 && !validSeed);
                 Rect r = controls[i];
-                glm::vec3 border = !disabled && focus == i ? green : glm::vec3(.20f,.27f,.24f);
+                glm::vec3 border = !disabled && focus == i ? accent : glm::vec3(.15f,.17f,.19f);
                 quad(r, border);
-                quad({r.x+2,r.y+2,r.w-4,r.h-4}, !disabled && hovered == i ? glm::vec3(.16f,.23f,.19f) : glm::vec3(.09f,.13f,.11f));
+                quad({r.x+1,r.y+1,r.w-2,r.h-2}, !disabled && hovered == i ? glm::vec3(.10f,.12f,.13f) : glm::vec3(.05f,.06f,.07f));
                 if (i < 5) {
-                    if (selected == i) quad({r.x+2,r.y+2,5,r.h-4},green);
-                    text(modes[i].title,r.x+22,r.y+11,2,selected == i ? green : white);
-                    text(modes[i].description,r.x+22,r.y+36,1.45f,muted);
+                    if (selected == i) quad({r.x+1,r.y+1,4,r.h-2},accent);
+                    text(modes[i].title,r.x+18,r.y+9,1.5f,selected == i ? accent : white);
+                    text(modes[i].description,r.x+18,r.y+27,1.1f,muted);
                 }
             }
-            text("LANDFORM",48,480,1.4f,muted);
-            text(selected == 0 ? "NOT USED FOR ORIGINAL TERRAIN" : std::string("LANDFORM: ")+formNames[form],64,518,1.65f,selected == 0 ? muted : white);
-            text("SEED",520,480,1.4f,muted);
-            if (focus == 6 && selectSeed) quad({532,511,250,26},{.18f,.32f,.24f});
-            text(seed.empty() ? "-" : seed,536,516,2,white);
-            text("RANDOM",839,518,2,white);
-            text(validSeed ? "TAB / ARROWS: FOCUS   ENTER: ACTIVATE   ESC: QUIT" : "ENTER A SEED FROM 0 TO 4294967295",48,570,1.65f,validSeed ? muted : glm::vec3(1,.65f,.35f));
-            text("START GAME",320,640,2.3f,validSeed ? green : muted);
-            text(shadowsEnabled_ ? "SHADOWS: ON" : "SHADOWS: OFF",672,646,1.4f,shadowsEnabled_ ? green : muted);
-            text("QUIT",860,640,2.3f,white);
+            text("LANDFORM",232,410,1.1f,muted);
+            text(selected == 0 ? "NOT USED" : formNames[form],246,441,1.4f,selected == 0 ? muted : white);
+            text("SEED",512,410,1.1f,muted);
+            if (focus == 6 && selectSeed) quad({516,434,152,28},{.14f,.28f,.27f});
+            text(seed.empty() ? "-" : seed,520,441,1.4f,white);
+            text("RANDOM",712,442,1.3f,white);
+            text(validSeed ? "TAB / ARROWS: FOCUS   ENTER: ACTIVATE   ESC: QUIT" : "ENTER A SEED FROM 0 TO 4294967295",232,478,1.2f,validSeed ? muted : warn);
+            text("START GAME",250,520,1.5f,validSeed ? accent : muted);
+            text(shadowsEnabled_ ? "SHADOWS: ON" : "SHADOWS: OFF",526,523,1.2f,shadowsEnabled_ ? accent : muted);
+            text("QUIT",723,520,1.5f,white);
         });
         glfwWaitEventsTimeout(1.0 / 30.0);
     }

@@ -26,6 +26,7 @@ int main(int argc,char** argv) {
     state.aimDirection={.39f,.07f,.92f};
     state.aimClip={0,.1f,0,1};
     state.fps=60;
+    state.gpuMs=7.3f;
     state.help=argc>4;
     state.diagnostics=state.help;
     HudGeometry hud;

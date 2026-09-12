@@ -9,7 +9,7 @@
 class HudGeometry {
 public:
     struct Vertex { glm::vec2 position; glm::vec4 color; };
-    static constexpr size_t kMaxVertices = 65536;
+    static constexpr size_t kMaxVertices = 131072;
     void begin();
     void addQuad(glm::vec2 center, glm::vec2 halfSize, glm::vec3 color, float opacity = 1);
     void addTriangle(glm::vec2 a, glm::vec2 b, glm::vec2 c, glm::vec3 color, float opacity = 1);

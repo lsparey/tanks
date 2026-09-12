@@ -926,7 +926,7 @@ void Application::presentLoadingProgress(float fraction, const std::function<voi
         constexpr float kBarHalfWidth = 0.4f;
         constexpr float kBarHalfHeight = 0.02f;
         const glm::vec3 kTrackColor(0.16f, 0.17f, 0.18f);
-        const glm::vec3 kFillColor(0.30f, 0.75f, 0.35f);
+        const glm::vec3 kFillColor(0.38f, 0.79f, 0.76f);
         hud_->addQuad({0.0f, 0.0f}, {kBarHalfWidth, kBarHalfHeight}, kTrackColor);
         float clamped = glm::clamp(fraction, 0.0f, 1.0f);
         if (clamped > 0.0f) {
@@ -3540,6 +3540,7 @@ void Application::drawFrame() {
     hudState.help = showHudHelp_;
     hudState.diagnostics = performanceReporting_;
     hudState.fps = displayedFps_;
+    hudState.gpuMs = gpuTimingInitialized_ ? gpuTotalMs_ : 0.0f;
     hudState.treeLod = treeLodMode_ != TreeLodMode::Full;
     hudState.reflectionRays = reflectionRaysEnabled_;
     CombatHud::draw(*hud_, {extent.width, extent.height}, hudState);
