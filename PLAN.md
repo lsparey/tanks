@@ -83,8 +83,14 @@ them; they are not prerequisites for this work.
   report zero dry sections and zero zero-depth spill controls; 2x refinement is
   now the advanced default. Global 1025 refinement remains experimental because
   of its measured rendering cost.
-- [ ] Compare shorter/coarser erosion against the current visual reference;
-  measure quality and startup cost before choosing further CPU/GPU work.
+- [x] Compare shorter erosion against the current visual reference: an
+  18-second storm keeps near-identical heights and an equivalent clean water
+  network on all 16 seeds (channel readability comes mostly from the
+  duration-independent carving pass) while median generation drops from 3.3 s
+  to 2.3 s. The game recipe now uses 18 s / 13.5 s rain; the solver and probe
+  keep the 24-second default for recorded-baseline continuity. Release loading
+  fell to 2.7-4.1 s across the three measured seeds. No GPU-compute port is
+  justified at this cost.
 - [ ] Deferred: add regional temperature/precipitation fields and blended
   Whittaker-style biome classification, shared by materials and vegetation
   ([design and rollout](docs/TERRAIN_EROSION_PLAN.md#climate-and-biome-distribution)).
@@ -103,9 +109,12 @@ them; they are not prerequisites for this work.
 - [x] Prototype hydraulic erosion, conservative sediment transport/deposition,
   limited soil relaxation and deterministic 1–4-worker CPU passes
   ([results and limitations](docs/TERRAIN_EROSION_PROTOTYPE.md)).
-- [ ] Finish Stage 2 quality/performance gates: broaden startup coverage and
-  complete grid-bias/convergence checks. Initial integrated Release runs fit the
-  startup target with the current four-worker CPU backend.
+- [x] Finish Stage 2 quality/performance gates: the erosion test suite covers
+  the required flat/slope/bowl-saddle/dividing-ridge/confluence fixtures with
+  drying, outlets, axis-swap grid-bias symmetry and timestep/spatial
+  convergence tolerances; startup coverage now spans repeated multi-seed
+  Release loads and the measured 18-second game recipe on the four-worker CPU
+  backend.
 - [x] Settle remaining sediment, account for temporary water removal, and
   analyse final drainage, basin outlets and potential runoff over the full apron
   ([CPU diagnostics and checks](docs/TERRAIN_DRAINAGE.md)).

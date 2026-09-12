@@ -27,6 +27,13 @@ TerrainGenerator::Settings recipe(uint32_t seed, float hullWidth, float hullLeng
     s.preset = TerrainGenerator::Preset::DrainedValley;
     s.refinementPasses = refinementPasses;
     s.seed = seed; s.resolution = resolution; s.erosion.workers = 4;
+    // Game recipe uses a 18-second storm instead of the solver's 24-second
+    // default: the 16-seed sweep stays fully clean (zero dry sections/spill
+    // controls, all playable), height/water previews are near-identical --
+    // channel readability comes mostly from the duration-independent carving
+    // pass -- and median generation drops from 3.3 s to 2.3 s. The probe and
+    // fixtures keep the 24-second default for recorded-baseline continuity.
+    s.erosion.duration = 18; s.erosion.rainDuration = 13.5;
     MacroTerrain::landformName(landform); // fail invalid input before generation
     s.macro.landform = landform;
     s.lakes.emplace(); s.streams.emplace(); s.channelCarving.emplace();

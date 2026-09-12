@@ -88,8 +88,10 @@ int main(int argc, char**) {
             "runtime recipe omits a required stage or retains optional surveys");
     require(TerrainRuntime::recipe(7331, 3, 7).resolution == 257, "comparison changed default resolution");
     auto fineRecipe = TerrainRuntime::recipe(7331, 3, 7, MacroTerrain::Landform::Mixed, 513);
-    require(fineRecipe.resolution == 513 && fineRecipe.erosion.duration == 24 &&
-            fineRecipe.erosion.rainDuration == 18 && fineRecipe.erosion.maxSteps == 4096 &&
+    // The game recipe's measured 18-second storm (see recipe()); the solver
+    // default stays 24 for the probe's recorded baselines.
+    require(fineRecipe.resolution == 513 && fineRecipe.erosion.duration == 18 &&
+            fineRecipe.erosion.rainDuration == 13.5 && fineRecipe.erosion.maxSteps == 4096 &&
             fineRecipe.erosion.workers == 4, "resolution comparison changed erosion settings");
     rejects([] { TerrainRuntime::recipe(7331, 3, 7, MacroTerrain::Landform::Mixed, 512); });
     auto otherHull = TerrainRuntime::recipe(0, 3, 7);
