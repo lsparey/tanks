@@ -108,6 +108,11 @@ share their paint pattern. Preserve the existing object names, 64 shoes per
 side, six road wheels and two end wheels per side when regenerating the asset.
 An incomplete named rig reports a load error rather than dropping geometry.
 
+Hull shoulders and fenders clear the full moving tread envelope; the front
+mud flaps hang beyond the idler turns. Wheel hubs are recessed behind the
+outer skirts. The running-gear regression sweeps a complete belt circuit on
+both sides to check these clearances, including intermediate animation phases.
+
 The same transforms drive rasterization and ray tracing. Colliders retain the
 original full hull bounds; shoe/wheel movement does not affect handling.
 `--static-tracks` disables extraction/animation for A/B checks. `tank.x` has no

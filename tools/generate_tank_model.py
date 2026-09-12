@@ -280,23 +280,33 @@ def track(model, side):
         # Rubber tire, recessed painted steel disc, and proud central hub.
         model.cylinder(f"{label}_road_wheel_{i+1}", "Tracks", (side*.925,y,z), .222,.29)
         model.cylinder(f"{label}_wheel_disc_{i+1}", "Base", (side*1.076,y,z), .181,.026)
-        model.cylinder(f"{label}_wheel_hub_{i+1}", "Base", (side*1.098,y,z), .070,.026, sides=16)
+        model.cylinder(f"{label}_wheel_hub_{i+1}", "Base", (side*1.078,y,z), .070,.026, sides=16)
     for kind,(y,z) in zip(("idler","sprocket"),end_centres):
         model.cylinder(f"{label}_{kind}", "Tracks", (side*.925,y,z), .187,.29)
         model.cylinder(f"{label}_{kind}_disc", "Base", (side*1.073,y,z), .145,.026)
-        model.cylinder(f"{label}_{kind}_hub", "Base", (side*1.095,y,z), .065,.026, sides=16)
+        model.cylinder(f"{label}_{kind}_hub", "Base", (side*1.075,y,z), .065,.026, sides=16)
 
 
 def build():
     m = Model()
     m.side_prism("lower_hull", "Base",
                  [(172,129),(532,119),(481,157),(206,157)],.72)
-    # Different front/rear deck heights and a long shallow glacis.
+    # Leave room for the complete moving shoe envelope under the shoulders.
+    # Keep the nose landmark, with an extra station above the front turn;
+    # behind it the underside clears the .694-high return run by .021.
+    # The central deck retains its profile wherever it already clears this.
+    hull_sections = []
+    for px,side_y,top_y in ((156,135,132),(162,125,122),(174,128,119),(241,124,104),
+                            (414,121,96),(554,117,94)):
+        side_height,z = profile(px,side_y)
+        top_height,_ = profile(px,top_y)
+        if px >= 174:
+            side_height = max(side_height,.715)
+            top_height = max(top_height,side_height+.025)
+        hull_sections.append([(-1.06,side_height,z),(1.06,side_height,z),
+                              (.77,top_height,z),(-.77,top_height,z)])
     m.loft("upper_hull", "Base",
-           [[(-1.06,*profile(px,side_y)),(1.06,*profile(px,side_y)),
-             (.77,*profile(px,top_y)),(-.77,*profile(px,top_y))]
-            for px,side_y,top_y in ((156,135,132),(174,128,119),(241,124,104),
-                                   (414,121,96),(554,117,94))])
+           hull_sections)
     for side in (-1,1):
         track(m, side)
         label = "right" if side > 0 else "left"
@@ -322,10 +332,12 @@ def build():
               (side*.47+.19,.57,-2.20))
         # Front/rear mud flaps and transverse fenders cover the track tops.
         for end,z in (("front",1.85),("rear",-2.18)):
-            m.box(f"{label}_{end}_fender", "Base",(side*.925-.18,.65,z-.18),
-                  (side*.925+.18,.69,z+.18))
-            m.box(f"{label}_{end}_mudflap", "Tracks",(side*.925-.18,.47,z-.02),
-                  (side*.925+.18,.65,z+.02))
+            # The front flap hangs beyond the idler turn, not through it.
+            flap_z = 2.08 if end == "front" else z
+            m.box(f"{label}_{end}_fender", "Base",(side*.925-.18,.715,z-.18),
+                  (side*.925+.18,.755,2.10 if end == "front" else z+.18))
+            m.box(f"{label}_{end}_mudflap", "Tracks",(side*.925-.18,.47,flap_z-.02),
+                  (side*.925+.18,.715,flap_z+.02))
         # The frontal reference has paired lamps and tow eyes on the glacis.
         x = side*.51
         m.box(f"{label}_headlight_mount", "Base",(x-.075,.63,1.84),(x+.075,.74,1.94))

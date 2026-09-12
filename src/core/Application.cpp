@@ -3381,17 +3381,17 @@ void Application::drawFrame() {
     // CamoTextureGenerator/MetalTextureGenerator and Tank::DrawPart::
     // surface. Tank vertices carry edge-distance masks in their otherwise
     // uniform colour channels; the tank shader decodes these for wear.
-    // No ray-traced reflectivity on
-    // either -- the tank's own per-pixel specular map (see basic.frag's
-    // isDynamicObject branch) carries the metal/paint highlight instead, so
-    // a real traced reflection on top just muddied it without adding much.
+    // The shader supplies grain-controlled GGX highlights and a broad
+    // analytic environment sheen. F0 already sets the paint/steel response,
+    // so use unit specular strength rather than attenuating it a second time
+    // with the old Blinn-Phong strength. No extra reflection rays are needed.
     for (const auto& part : tank_->drawParts()) {
         VkDescriptorSet materialSet = part.surface == Tank::Surface::Armour ? camoMaterialSet_ : metalMaterialSet_;
         vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(),
                                  1, 1, &materialSet, 0, nullptr);
         Pipeline::PushConstants tankPc{};
         tankPc.model = part.worldMatrix;
-        tankPc.specularStrength = part.surface == Tank::Surface::Armour ? 0.10f : 0.24f;
+        tankPc.specularStrength = 1.0f;
         tankPc.materialType = static_cast<float>(part.surface);
         tankPc.tankSurface = tank_->surfaceBounds();
         tankPc.reflectivity = 0.0f;
@@ -3420,7 +3420,7 @@ void Application::drawFrame() {
         pc.isInstanced = 1;
         pc.isDynamicObject = 1;
         pc.materialType = static_cast<float>(part.surface);
-        pc.specularStrength = part.surface == Tank::Surface::Armour ? .10f : .24f;
+        pc.specularStrength = 1.0f;
         pc.tankSurface = tank_->surfaceBounds();
         vkCmdPushConstants(frame.commandBuffer,pipeline_->layout(),
                             VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(pc),&pc);

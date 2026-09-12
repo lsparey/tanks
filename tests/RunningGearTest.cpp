@@ -1,6 +1,7 @@
 #include "scene/RunningGear.h"
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <stdexcept>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -12,9 +13,60 @@ bool close(glm::mat4 a,glm::mat4 b,float tolerance=1e-4f) {
         if (std::abs(a[i][j]-b[i][j])>tolerance) return false;
     return true;
 }
+void checkTrackClearance(const ModelLoader::Result& model,const RunningGear::Rig& rig) {
+    struct Bounds { glm::vec3 low{1000},high{-1000}; };
+    std::map<std::string,Bounds> bounds;
+    std::map<float,float> hullUnderside; // longitudinal station -> lowest hull vertex
+    for (const auto& part : model.parts) for (const auto& v : part.vertices) {
+        auto& b=bounds[part.meshName];
+        b.low=glm::min(b.low,v.position); b.high=glm::max(b.high,v.position);
+        if (part.meshName=="upper_hull") {
+            auto [it,added]=hullUnderside.emplace(v.position.z,v.position.y);
+            if (!added) it->second=std::min(it->second,v.position.y);
+        }
+    }
+    // Sweep a full belt circuit, including phases between authored shoes.
+    // Check imported geometry so regeneration cannot silently reintroduce
+    // intersections, and retain the same path used by animated raster/RT.
+    for (unsigned side=0;side<2;++side) {
+        std::string prefix=side ? "right_" : "left_";
+        const auto& path=rig.paths[side];
+        for (int step=0;step<2048;++step) {
+            auto frame=path.frame(step*path.perimeter/2048,rig.trackX[side]);
+            Bounds shoe;
+            for (const auto& v : rig.batches[0].mesh.vertices) {
+                auto p=glm::vec3(frame*glm::vec4(v.position,1));
+                shoe.low=glm::min(shoe.low,p); shoe.high=glm::max(shoe.high,p);
+                auto next=hullUnderside.upper_bound(p.z);
+                if (next!=hullUnderside.begin() && next!=hullUnderside.end()) {
+                    auto previous=std::prev(next);
+                    float t=(p.z-previous->first)/(next->first-previous->first);
+                    float underside=glm::mix(previous->second,next->second,t);
+                    require(p.y+.01f<underside,"Moving shoes clear upper hull shoulders");
+                }
+            }
+            for (const auto& end : {"front_","rear_"}) {
+                const auto& fender=bounds.at(prefix+end+"fender");
+                if (shoe.high.z>=fender.low.z && shoe.low.z<=fender.high.z)
+                    require(shoe.high.y+.01f<fender.low.y,"Moving shoes clear fender undersides");
+                const auto& flap=bounds.at(prefix+end+"mudflap");
+                require(shoe.high.z+.005f<flap.low.z || shoe.low.z-.005f>flap.high.z ||
+                        shoe.high.y+.005f<flap.low.y,"Mud flaps clear the full track turn");
+            }
+        }
+        float skirtOutside=std::max(std::abs(bounds.at(prefix+"skirt_3").low.x),
+                                    std::abs(bounds.at(prefix+"skirt_3").high.x));
+        for (const auto& [name,b] : bounds) {
+            if (name.starts_with(prefix) && name.find("hub")!=std::string::npos)
+                require(std::max(std::abs(b.low.x),std::abs(b.high.x))+.015f<skirtOutside,
+                        "Wheel hubs are recessed behind the outer skirt surface");
+        }
+    }
+}
 int main() {
     auto model=ModelLoader::load(std::string(ASSET_ROOT)+"/assets/models/challenger2.obj");
     auto rig=RunningGear::extract(model);
+    checkTrackClearance(model,rig);
     require(rig.batches.size()==5,"Five instanced gear draws");
     require(rig.movingNames.size()==176,"128 shoes plus 48 wheel components removed from static meshes");
     auto initial=rig.transforms(glm::mat4(1));

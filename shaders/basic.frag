@@ -896,10 +896,15 @@ void main() {
     float tankWear = 0.0;
     float tankDust = 0.0;
     float tankSoot = 0.0;
-    float tankRoughness = 0.78;
+    float tankGrain = 0.5;
     if (tankMaterial) {
         bool tracks = materialType > 5.5 && materialType < 6.5;
         bool barrel = materialType > 6.5;
+        // Filter the existing specular map once and share it between
+        // highlight strength and roughness. Unresolved grain becomes the
+        // average finish instead of sparkling at driving-camera distances.
+        float grainFade = 1.0 - smoothstep(0.015, 0.06, length(fwidth(fragUV)));
+        tankGrain = mix(0.5, tankSpecularGrain(fragUV), grainFade);
         // Object-space noise stays attached during hull, turret and gun motion.
         float patches = valueNoise2D(fragModelPos.xz * 5.0 + fragModelPos.y * vec2(1.7, 2.3));
         float edgeDistance = min(fragColor.x, min(fragColor.y, fragColor.z));
@@ -931,20 +936,15 @@ void main() {
         // dielectric coat over steel, tracks mix worn metal pins with
         // rubber pads, the barrel is bare/oiled gun steel. Wear exposes more
         // bare metal underneath (smoother, more metallic); dust/soot cake
-        // the surface in a dielectric layer (rougher, less metallic) -- the
-        // same wear/dust/soot signal that used to drive the old Blinn-Phong
-        // exponent directly now drives physically-named roughness/metalness.
-        tankRoughness = tracks ? 0.86 : (barrel ? 0.53 : 0.78);
+        // the surface in a dielectric layer (rougher, less metallic).
+        // Grain varies the highlight width as well as its brightness.
+        float tankRoughness = tracks ? 0.70 : (barrel ? 0.38 : 0.56);
+        tankRoughness += (tankGrain - 0.5) * 0.18 + (patches - 0.5) * 0.10;
         metalness = tracks ? 0.45 : (barrel ? 0.85 : 0.05);
         f0Dielectric = 0.045; // dielectric floor once dust/soot cake the metal below
-        // Iron's real F0 is close to (0.56,0.57,0.58), but combined with
-        // the flat ambient-specular fill above (an omnidirectional stand-in
-        // for a real environment reflection) that reads as too bright for
-        // a gun barrel under this scene's flat sky -- toned down from the
-        // literal physical value rather than the fill term, which other
-        // materials still rely on.
+        // Retain the darker worn/oiled steel tint under the broad sky fill.
         metalTint = tracks ? vec3(0.42, 0.40, 0.38) : vec3(0.32, 0.33, 0.34); // worn/oiled steel
-        tankRoughness = mix(tankRoughness, tracks ? 0.48 : 0.56, tankWear);
+        tankRoughness = mix(tankRoughness, tracks ? 0.42 : 0.30, tankWear);
         metalness = mix(metalness, max(metalness, 0.6), tankWear);
         tankRoughness = mix(tankRoughness, 0.95, clamp(tankDust + tankSoot, 0.0, 1.0));
         metalness = mix(metalness, 0.0, clamp(tankDust + tankSoot, 0.0, 1.0));
@@ -1394,10 +1394,7 @@ void main() {
         specularStrength = pc.specularStrength * mix(0.5, 1.5, tankSpecularGrain(fragUV));
     }
     if (tankMaterial) {
-        float grainFade = 1.0 - smoothstep(0.015, 0.06, length(fwidth(fragUV)));
-        float grain = mix(0.5, tankSpecularGrain(fragUV), grainFade);
-        specularStrength = mix(pc.specularStrength, max(pc.specularStrength, 0.22), tankWear) *
-                           mix(0.85, 1.15, grain);
+        specularStrength = pc.specularStrength * mix(0.75, 1.25, tankGrain);
         specularStrength *= 1.0 - clamp(tankDust * 1.7 + tankSoot * 0.9, 0.0, 0.9);
     }
     // Stone has a broad, faint mineral response; foliage only a tiny waxy
@@ -1471,14 +1468,11 @@ void main() {
     // exactly the energy diffuseWeight removes below for metals. Without
     // this, a high-metalness surface (diffuseWeight collapses toward 0) is
     // only ever lit by the sun's tight GGX highlight, reading as near-black
-    // everywhere else -- real metal ambient response needs a reflected
-    // environment term, which this model doesn't have yet (a real
-    // prefiltered environment/irradiance pass is later roadmap work). This
-    // is a flat, non-directional stand-in for that: f0Ambient tints it by
-    // the material's own colour for metals (bare steel reflecting flat sky
-    // light isn't white) and by the small dielectric F0 otherwise (already
-    // negligible next to that material's own diffuse term). Zero for
-    // leaves, which don't use this energy model at all.
+    // everywhere else. Most materials use a broad normal-based sky fill;
+    // the tank adds a view-dependent sky/ground approximation below. A real
+    // prefiltered environment/irradiance pass remains later roadmap work.
+    // F0 tints this by the steel colour for metals and by the small
+    // dielectric reflectance otherwise. Leaves keep their existing model.
     vec3 ambientSpecular = vec3(0.0);
     if (isLeaf) {
         vec3 halfDir = normalize(toLight + viewDir);
@@ -1504,6 +1498,20 @@ void main() {
         // Fresnel term above -- no separate rim term needed.
         ambientSpecular = skyAmbientTint(shadingNormal) * frame.ambientColor.w * aoFactor *
                           f0 * mix(1.0, 0.5, roughness);
+        if (tankMaterial) {
+            // A broad sky/ground reflection gives armour a moving sheen
+            // even away from the direct sun highlight. Approximate the
+            // rough environment analytically, without extra reflection rays.
+            vec3 reflected = reflect(-viewDir, shadingNormal);
+            vec3 groundFill = frame.ambientColor.rgb * vec3(0.32, 0.29, 0.23);
+            vec3 environment = mix(groundFill, skyGradient(reflected),
+                                   smoothstep(-0.25, 0.35, reflected.y));
+            environment = mix(environment, skyAmbientTint(shadingNormal), roughness * roughness);
+            float grazing = pow(1.0 - max(dot(shadingNormal, viewDir), 0.0), 5.0);
+            vec3 envFresnel = f0 + (max(vec3(1.0 - roughness), f0) - f0) * grazing;
+            ambientSpecular = environment * frame.ambientColor.w * aoFactor *
+                              envFresnel * mix(1.0, 0.5, roughness);
+        }
     }
 
     vec3 base = albedo * lighting * diffuseWeight + ambientSpecular + albedo * dynamicLight;
