@@ -160,7 +160,9 @@ them; they are not prerequisites for this work.
   `TerrainMaterials` stage classifies rock (thin/scarred soil on steep ground),
   moisture (bank distance, storm exposure, gullies) and sediment (deposition),
   shared verbatim between `basic.frag` (new terrain field texture) and CPU
-  placement (pebbles, grass tufts, rock clusters, shrubs, tree appeal). Ground
+  placement (pebbles, grass tufts, rock clusters, shrubs, tree appeal), with
+  flow-animated stream ripple, geology-aware rounded/angular rock forms per
+  cluster and moisture-thinned shoreline reed fringes on the same data. Ground
   texture art direction stays open to iteration.
 - [x] Consolidate to one final advanced generator: `--terrain legacy|advanced`,
   advanced default with 2x refinement and material fields; the menu offers the

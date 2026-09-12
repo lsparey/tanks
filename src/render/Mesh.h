@@ -164,6 +164,12 @@ public:
     // scattered across grassy terrain (see Application::spawnGrassClumps).
     // Real geometry, not a billboard card -- `seed` varies blade count/
     // placement/lean per variant the same way Mesh::shrub's seed does.
+    // A tall waterside reed/rush clump: straighter, taller blades than
+    // grassClump plus a few dark bulrush seed heads. Placed along generated
+    // shorelines (see Application::spawnReeds); drawn through the same
+    // instanced near-field path as grass tufts.
+    static Mesh reedClump(VulkanContext& ctx, CommandContext& commands, glm::vec3 color,
+                           uint32_t seed);
     static Mesh grassClump(VulkanContext& ctx, CommandContext& commands, glm::vec3 color,
                            uint32_t seed);
 

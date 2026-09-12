@@ -982,6 +982,60 @@ void appendGrassBlade(std::vector<Vertex>& vertices, std::vector<uint32_t>& indi
 // see PLAN.md's "Near-field ground vegetation" for that tradeoff). `seed`
 // varies blade count/placement/lean per variant, the same way Mesh::shrub's
 // seed does for its blob jitter.
+Mesh Mesh::reedClump(VulkanContext& ctx, CommandContext& commands, glm::vec3 color, uint32_t seed) {
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> angleDist(0.0f, 2.0f * kPi);
+    std::uniform_real_distribution<float> radiusDist(0.0f, 0.16f);
+    std::uniform_real_distribution<float> heightDist(0.55f, 1.0f);
+    std::uniform_real_distribution<float> widthDist(0.028f, 0.05f);
+    std::uniform_real_distribution<float> leanDist(-0.05f, 0.05f);
+    std::uniform_real_distribution<float> shadeDist(0.75f, 1.25f);
+    constexpr int kBladeCount = 9;
+    for (int i = 0; i < kBladeCount; ++i) {
+        float placementAngle = angleDist(rng);
+        float placementRadius = radiusDist(rng);
+        glm::vec2 base(std::cos(placementAngle) * placementRadius,
+                       std::sin(placementAngle) * placementRadius);
+        glm::vec2 lean(leanDist(rng), leanDist(rng));
+        glm::vec3 bladeColor = glm::clamp(color * shadeDist(rng), 0.0f, 1.0f);
+        appendGrassBlade(vertices, indices, base, heightDist(rng), widthDist(rng), lean,
+                        angleDist(rng), bladeColor);
+    }
+    // A few bulrush stems: a very narrow blade topped with a dark-brown
+    // seed-head lozenge, the silhouette that actually reads as "reeds by
+    // water" rather than just taller grass. Double-sided like the blades,
+    // with the same faked mostly-up normal.
+    std::uniform_int_distribution<int> headCountDist(2, 3);
+    int headCount = headCountDist(rng);
+    for (int i = 0; i < headCount; ++i) {
+        float placementAngle = angleDist(rng);
+        float placementRadius = radiusDist(rng) * 0.7f;
+        glm::vec2 base(std::cos(placementAngle) * placementRadius,
+                       std::sin(placementAngle) * placementRadius);
+        glm::vec2 lean(leanDist(rng) * 0.6f, leanDist(rng) * 0.6f);
+        float stemHeight = heightDist(rng) + 0.25f;
+        appendGrassBlade(vertices, indices, base, stemHeight, 0.018f, lean, angleDist(rng),
+                        glm::clamp(color * 0.8f, 0.0f, 1.0f));
+        glm::vec3 tip(base.x + lean.x, stemHeight, base.y + lean.y);
+        glm::vec3 headColor = glm::vec3(0.23f, 0.14f, 0.07f) * shadeDist(rng);
+        float yaw = angleDist(rng), c = std::cos(yaw), s = std::sin(yaw);
+        glm::vec3 half(c * 0.021f, 0.0f, s * 0.021f);
+        float bottom = stemHeight - 0.17f, top = stemHeight + 0.015f;
+        glm::vec3 normal = glm::normalize(glm::mix(
+            glm::normalize(glm::vec3(-s, 0.0f, c)), glm::vec3(0.0f, 1.0f, 0.0f), 0.55f));
+        uint32_t i0 = static_cast<uint32_t>(vertices.size());
+        vertices.push_back({{tip.x - half.x, bottom, tip.z - half.z}, normal, headColor, {0, 0}});
+        vertices.push_back({{tip.x + half.x, bottom, tip.z + half.z}, normal, headColor, {1, 0}});
+        vertices.push_back({{tip.x + half.x, top, tip.z + half.z}, normal, headColor, {1, 1}});
+        vertices.push_back({{tip.x - half.x, top, tip.z - half.z}, normal, headColor, {0, 1}});
+        indices.insert(indices.end(), {i0, i0 + 1, i0 + 2, i0, i0 + 2, i0 + 3,
+                                       i0, i0 + 2, i0 + 1, i0, i0 + 3, i0 + 2});
+    }
+    return Mesh(ctx, commands, vertices, indices);
+}
+
 Mesh Mesh::grassClump(VulkanContext& ctx, CommandContext& commands, glm::vec3 color, uint32_t seed) {
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;

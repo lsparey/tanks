@@ -847,6 +847,15 @@ void main() {
     vec3 metalTint = vec3(1.0);
     if (materialType > 0.5 && materialType < 1.5) {        // terrain: soil/grass/gravel
         roughness = 0.85; f0Dielectric = 0.035;
+        // Field-driven response: exposed rock/gravel carries a broader
+        // mineral sheen than turf, and damp bank soil takes a wet-ground
+        // gloss with a slightly stronger Fresnel term -- the sun sheen you
+        // read on real mud at the waterline. Legacy terrain has zero fields
+        // (terrainFields.a = 0) and keeps only the rockiness term.
+        float wetGround = smoothstep(0.5, 1.0, terrainFields.g) * terrainFields.a;
+        roughness = mix(roughness, 0.7, terrainRockiness * 0.6);
+        roughness = mix(roughness, 0.42, wetGround);
+        f0Dielectric = mix(f0Dielectric, 0.05, wetGround);
     } else if (isLeaf) {                                   // foliage: waxy leaf sheen
         roughness = 0.55; f0Dielectric = 0.02;
     } else if (rockMaterial) {                             // stone: broad mineral sheen
@@ -1419,6 +1428,11 @@ void main() {
                           sin(p1.x * 3.1 - s3 + 1.7) * cos(p1.y * 2.3 + s4), blend);
         // Moving water is choppier than a still pond.
         vec2 bump = vec2(wave1, wave2) * waveStrength * (1.0 + moving * 0.6);
+        // Distant ripple wavelengths fall below a pixel and alias into a
+        // honeycomb lattice in grazing cloud reflections (visible on any
+        // large lake); fade toward calm water with distance instead. The
+        // small floor keeps a hint of sparkle without the full pattern.
+        bump *= mix(1.0, 0.1, smoothstep(18.0, 50.0, currentViewDist));
         shadingNormal = normalize(normal + vec3(bump.x, 0.0, bump.y));
         // A real sun-glint on water is a small, tight, bright highlight, not
         // a broad sheen -- low roughness gives GGX the same tight-highlight

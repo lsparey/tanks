@@ -277,7 +277,8 @@ private:
     std::vector<std::unique_ptr<Mesh>> treeLeafProxyMeshes_;
     std::array<std::vector<std::unique_ptr<Mesh>>,2> treeReflectionMeshes_;
     std::vector<std::unique_ptr<Mesh>> shrubMeshes_;  // small pool of distinct bush shapes
-    std::vector<std::unique_ptr<Mesh>> grassClumpMeshes_;  // small pool of distinct grass tufts
+    std::vector<std::unique_ptr<Mesh>> grassClumpMeshes_;  // grass tufts, then waterside reed clumps
+    int grassTuftVariants_ = 0;  // pool indices below this are tufts, at/after it reeds
     std::unique_ptr<Mesh> cloudDomeMesh_;
     std::vector<Box> boxes_;
     std::vector<Projectile> projectiles_;
@@ -378,6 +379,7 @@ private:
     void spawnShrubs();
     void spawnSmallRocks();
     void spawnGrassClumps();
+    void spawnReeds();
     void spawnExplosion(glm::vec3 position);
     void spawnDynamicLight(glm::vec3 position, glm::vec3 color, float radius, float intensity,
                             float lifetime);

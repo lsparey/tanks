@@ -840,6 +840,18 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
         grassClumpMeshes_.push_back(std::make_unique<Mesh>(
             Mesh::grassClump(*context_, *commands_, grassPalette[i], static_cast<uint32_t>(i) + 151)));
     }
+    // Waterside reed clumps live in the same pool/draw path AFTER the tuft
+    // variants; spawnGrassClumps only rolls tuft indices, spawnReeds only
+    // reed indices. Muted waterside greens; the bulrush heads inside
+    // Mesh::reedClump carry their own brown.
+    grassTuftVariants_ = static_cast<int>(grassClumpMeshes_.size());
+    const glm::vec3 reedPalette[] = {
+        {0.09f, 0.17f, 0.07f}, {0.12f, 0.21f, 0.08f}, {0.16f, 0.23f, 0.09f},
+    };
+    for (size_t i = 0; i < sizeof(reedPalette) / sizeof(reedPalette[0]); ++i) {
+        grassClumpMeshes_.push_back(std::make_unique<Mesh>(
+            Mesh::reedClump(*context_, *commands_, reedPalette[i], static_cast<uint32_t>(i) + 331)));
+    }
     // Geometry supplies sky directions; basic.frag shares the cloud lookup
     // and palette with water reflections, independently of the mesh UVs.
     cloudDomeMesh_ =
@@ -852,6 +864,7 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
     spawnShrubs();
     spawnSmallRocks();
     spawnGrassClumps();
+    spawnReeds();
 
     // Static collision circles for the tank's own movement (see
     // Tank::update) -- trees/rocks never move, so this is built once
@@ -1902,14 +1915,25 @@ void Application::spawnGrassClumps() {
     std::uniform_real_distribution<float> scaleDist(0.7f, 1.3f);
     std::uniform_real_distribution<float> chanceDist(0.0f, 1.0f);
     std::uniform_int_distribution<int> countDist(1, 2);
-    std::uniform_int_distribution<int> variantDist(0, static_cast<int>(grassClumpMeshes_.size()) - 1);
+    std::uniform_int_distribution<int> variantDist(0, grassTuftVariants_ - 1);
 
     float half = terrain_->worldSize() * 0.5f - kEdgeMargin;
     for (float gx = -half; gx <= half; gx += kGridStep) {
         for (float gz = -half; gz <= half; gz += kGridStep) {
             if (glm::length(glm::vec2(gx, gz) - spawnXZ_) < kMinDistanceFromSpawn) continue;
             if (terrainGravelAmount(*terrain_, gx, gz) > kMaxGravelForGrass) continue;
-            if (chanceDist(rng) > kSpawnChance) continue;
+            // Generated moisture drives tuft density and palette: damp
+            // ground grows denser, lusher (darker) tufts, dry uplands grow
+            // sparser yellow-green ones. The tuft palette is ordered lush
+            // to dry, so the moisture just slides an index window over it.
+            // Legacy terrain has no fields and keeps the uniform behaviour.
+            float moisture = -1.0f;
+            if (const auto& materials = terrain_->state().materials) {
+                moisture = materials->moistureAt(gx, gz);
+                if (chanceDist(rng) > kSpawnChance * (0.7f + moisture * 0.6f)) continue;
+            } else if (chanceDist(rng) > kSpawnChance) {
+                continue;
+            }
 
             int count = countDist(rng);
             for (int k = 0; k < count; ++k) {
@@ -1921,7 +1945,14 @@ void Application::spawnGrassClumps() {
                 clump.position = glm::vec3(px, terrain_->heightAt(px, pz), pz);
                 clump.yaw = yawDist(rng);
                 clump.scale = scaleDist(rng);
-                clump.meshVariant = variantDist(rng);
+                if (moisture >= 0.0f) {
+                    float lushIndex = (1.0f - moisture) * (grassTuftVariants_ - 1) +
+                                      (chanceDist(rng) - 0.5f) * 3.0f;
+                    clump.meshVariant = std::clamp(static_cast<int>(std::lround(lushIndex)),
+                                                   0, grassTuftVariants_ - 1);
+                } else {
+                    clump.meshVariant = variantDist(rng);
+                }
                 float radius =
                     grassClumpMeshes_.at(clump.meshVariant)->horizontalBoundingRadius() * clump.scale;
                 if (!allowsScenery({px, pz}, radius) || (terrain_->state().reservation &&
@@ -1929,6 +1960,55 @@ void Application::spawnGrassClumps() {
                 grassClumps_.push_back(clump);
             }
         }
+    }
+}
+
+void Application::spawnReeds() {
+    // Reeds and rushes fringe the generated shoreline: dry ground right at
+    // the water's edge on gentle banks, thinned by the same moisture field
+    // the ground shading uses. Legacy terrain has no shoreline queries or
+    // material fields and keeps its original look. Reeds join grassClumps_
+    // (variants at/after grassTuftVariants_) so they reuse the tufts'
+    // culled instanced draw path, and like tufts they are drive-through
+    // vegetation with no collision obstacle.
+    const auto& state = terrain_->state();
+    if (!state.water || !state.materials) return;
+    constexpr float kMinShoreDistance = 0.06f;  // dry, not standing in water
+    constexpr float kMaxShoreDistance = 1.25f;  // world units of fringed bank
+    constexpr float kMaxSteepness = 0.22f;
+    constexpr float kMinDistanceFromSpawn = 6.0f;
+    constexpr float kEdgeMargin = 3.0f;
+
+    std::mt19937 rng(worldSeed_ ^ 0xb17u);
+    std::uniform_real_distribution<float> unitDist(0.0f, 1.0f);
+    std::uniform_real_distribution<float> jitterDist(-0.9f, 0.9f);
+    std::uniform_real_distribution<float> yawDist(0.0f, 6.2831853f);
+    std::uniform_real_distribution<float> scaleDist(0.8f, 1.3f);
+    std::uniform_int_distribution<int> variantDist(grassTuftVariants_,
+                                                   static_cast<int>(grassClumpMeshes_.size()) - 1);
+    float half = terrain_->worldSize() * 0.5f - kEdgeMargin;
+    // One thinned candidate per shoreline contour segment: segment density
+    // already tracks bank length, so the fringe follows the actual shore
+    // instead of a grid hunting for water.
+    for (const auto& shore : state.water->shores()) {
+        if (unitDist(rng) > 0.35f) continue;
+        glm::vec2 pos = (shore.a + shore.b) * 0.5f + glm::vec2(jitterDist(rng), jitterDist(rng));
+        if (std::abs(pos.x) > half || std::abs(pos.y) > half) continue;
+        if (glm::length(pos - spawnXZ_) < kMinDistanceFromSpawn) continue;
+        auto shoreDistance = state.water->shorelineDistanceAt(pos.x, pos.y);
+        if (!shoreDistance || *shoreDistance < kMinShoreDistance || *shoreDistance > kMaxShoreDistance)
+            continue;
+        if (1.0f - terrain_->contactNormalAt(pos.x, pos.y).y > kMaxSteepness) continue;
+        if (unitDist(rng) > 0.35f + state.materials->moistureAt(pos.x, pos.y) * 0.65f) continue;
+        GrassClumpInstance reed;
+        reed.position = glm::vec3(pos.x, terrain_->heightAt(pos.x, pos.y), pos.y);
+        reed.yaw = yawDist(rng);
+        reed.scale = scaleDist(rng);
+        reed.meshVariant = variantDist(rng);
+        // Radius 0: reeds may overhang the waterline like real rushes; the
+        // wet-centre and route-reservation checks still apply.
+        if (!allowsScenery(pos, 0)) continue;
+        grassClumps_.push_back(reed);
     }
 }
 
@@ -2827,8 +2907,12 @@ void Application::drawFrame() {
         // edge on clear ground.
         constexpr float kGrassDrawDistance = 40.0f;
         if (glm::distance(camera_.position(), clump.position) > kGrassDrawDistance) continue;
-        glm::vec3 center = clump.position + glm::vec3(0.0f, 0.15f * clump.scale, 0.0f);
-        if (sphereIntersectsFrustum(planes, center, 0.3f * clump.scale))
+        // Reed clumps (pool variants at/after grassTuftVariants_) stand over
+        // a metre tall; a tuft-sized cull sphere would clip them at the
+        // frustum edges.
+        bool reed = clump.meshVariant >= grassTuftVariants_;
+        glm::vec3 center = clump.position + glm::vec3(0.0f, (reed ? 0.65f : 0.15f) * clump.scale, 0.0f);
+        if (sphereIntersectsFrustum(planes, center, (reed ? 0.9f : 0.3f) * clump.scale))
             grassGroups[clump.meshVariant].push_back(clump.worldMatrix());
     }
     struct InstanceBatch {
