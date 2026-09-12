@@ -62,6 +62,11 @@ BuildResult build(const Settings& settings) {
         if (!settings.combinedWater) throw std::invalid_argument("ground materials require final combined water");
         TerrainMaterials::validate(*settings.materials);
     }
+    if (settings.outcrops) {
+        if (settings.preset != Preset::DrainedValley)
+            throw std::invalid_argument("rock outcrops require finalized drained-valley terrain");
+        RockOutcrops::validate(*settings.outcrops);
+    }
     if (settings.playability) {
         if (!settings.combinedWater) throw std::invalid_argument("playability requires final combined water");
         TerrainPlayability::validate(*settings.playability);
@@ -86,6 +91,7 @@ BuildResult build(const Settings& settings) {
     auto start = Clock::now();
     std::optional<MacroTerrain::Fields> fields;
     std::optional<HydraulicErosion::Result> erosion;
+    std::optional<RockOutcrops::Result> outcrops;
     std::optional<TerrainDrainage::Result> drainage;
     std::optional<LakeWater::Result> water;
     std::optional<StreamNetwork::Result> streams;
@@ -105,6 +111,9 @@ BuildResult build(const Settings& settings) {
         if (settings.preset == Preset::DrainedValley) {
             HydraulicErosion::settle(*fields, *erosion);
             if (settings.refinementPasses) refinement = TerrainRefinement::apply(*fields, settings.refinementPasses);
+            // Outcrops are the LAST height-changing pass before hydrology and
+            // every contact/render consumer; drainage below sees final ground.
+            if (settings.outcrops) outcrops = RockOutcrops::apply(*fields, settings.seed, *settings.outcrops);
             drainage = TerrainDrainage::analyze(*fields, {settings.erosion.rainfall, settings.erosion.infiltration});
             if (settings.lakes) water = LakeWater::build(*fields, *drainage, *settings.lakes);
             if (settings.streams) streams = StreamNetwork::build(*fields, *drainage, *water, *settings.streams);
@@ -147,6 +156,10 @@ BuildResult build(const Settings& settings) {
         stats.erosionWorkingBytes = erosion->peakWorkingBytes;
         stats.settlementMs = erosion->settlementMs;
         stats.heightfieldMs -= stats.settlementMs;
+    }
+    if (outcrops) {
+        stats.outcropsMs = outcrops->elapsedMs;
+        stats.heightfieldMs -= stats.outcropsMs;
     }
     if (drainage) {
         stats.drainageMs = drainage->elapsedMs;
@@ -197,7 +210,7 @@ BuildResult build(const Settings& settings) {
         stats.playabilityMs = playability->elapsedMs;
         stats.playabilityBytes = playability->payloadBytes();
     }
-    return {settings, std::move(surface), std::move(mesh), stats, std::move(fields), std::move(erosion), std::move(drainage), std::move(water), std::move(streams), std::move(streamSections), std::move(channelCarving), std::move(combinedWater), std::move(materials), std::move(playability), std::move(refinement)};
+    return {settings, std::move(surface), std::move(mesh), stats, std::move(fields), std::move(erosion), std::move(outcrops), std::move(drainage), std::move(water), std::move(streams), std::move(streamSections), std::move(channelCarving), std::move(combinedWater), std::move(materials), std::move(playability), std::move(refinement)};
 }
 
 } // namespace TerrainGenerator

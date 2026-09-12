@@ -28,6 +28,7 @@ add_library(terrain_generation STATIC
     src/scene/ChannelCarving.cpp
     src/scene/TerrainWater.cpp
     src/scene/TerrainMaterials.cpp
+    src/scene/RockOutcrops.cpp
     src/scene/TerrainPlayability.cpp
     src/scene/TerrainSurface.cpp
     src/scene/TerrainGenerator.cpp

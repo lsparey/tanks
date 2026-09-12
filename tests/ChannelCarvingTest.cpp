@@ -87,13 +87,22 @@ int main() {
         auto d = TerrainDrainage::analyze(f);
         auto w = LakeWater::build(f, d);
         auto n = StreamNetwork::build(f, d, w, settings);
-        auto r = ChannelCarving::apply(f, d, n);
-        check(before, f, d, n, r, {});
+        // Exact-position analytics need the straight centreline.
+        ChannelCarving::Settings straight;
+        straight.meander = 0;
+        auto r = ChannelCarving::apply(f, d, n, straight);
+        check(before, f, d, n, r, straight);
         require(r.changedCells > 0, "fixture generated no physical channel");
         close(r.cutDepth[4 * 9 + 3], .25, 1e-7, "analytic channel centre has wrong cut depth");
         close(r.cutDepth[3 * 9 + 3], 0, 0, "channel cut beyond its width");
         if (soilDepth == 1) close(r.budget.exportedBedrock, 0, 0, "deep soil fixture cut bedrock");
         else require(r.budget.exportedBedrock > 0, "thin soil fixture did not reach bedrock");
+        // The default meander must actually move the cut pattern off the
+        // straight edges while every bound/budget above still holds.
+        auto meandered = before;
+        auto mr = ChannelCarving::apply(meandered, d, n);
+        check(before, meandered, d, n, mr, {});
+        require(mr.cutDepth != r.cutDepth, "meander left the cut pattern exactly straight");
         auto stale = f;
         rejects([&] { ChannelCarving::apply(stale, d, n); });
         require(stale.heightmap.heights == f.heightmap.heights && stale.soil == f.soil, "stale-input rejection mutated terrain");
@@ -106,7 +115,7 @@ int main() {
         auto water = LakeWater::build(terrain, drainage);
         auto wide = settings; wide.widthAtThreshold = wide.maximumWidth = 4;
         auto streams = StreamNetwork::build(terrain, drainage, water, wide);
-        ChannelCarving::Settings smooth; smooth.smoothBanks = true;
+        ChannelCarving::Settings smooth; smooth.smoothBanks = true; smooth.meander = 0;
         auto result = ChannelCarving::apply(terrain, drainage, streams, smooth);
         check(original, terrain, drainage, streams, result, smooth);
         close(result.cutDepth[4 * 9 + 3], .25, 1e-7, "smooth banks changed centre depth");

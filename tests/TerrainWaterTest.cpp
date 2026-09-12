@@ -98,7 +98,13 @@ void check(const MacroTerrain::Fields& f, const TerrainWater::Result& r) {
             close(glm::length(sample->flow - a.flow), 0, 1e-5, "mesh and query flow disagree");
             // On a sloping surface, flow follows decreasing water height.
             close(glm::length(a.flow - b.flow), 0, 0, "flow changes within one water triangle");
-            require(double(a.flow.x) * a.normal.x + double(a.flow.y) * a.normal.z >= -1e-7,
+            // Flow is defined against the triangle's own plane; vertex
+            // normals are smoothed across faces for shading and are not the
+            // flow's reference. Rebuild the face normal from positions.
+            glm::dvec3 faceNormal = glm::cross(glm::dvec3(b.position) - glm::dvec3(a.position),
+                                               glm::dvec3(c.position) - glm::dvec3(a.position));
+            if (faceNormal.y < 0) faceNormal = -faceNormal;
+            require(double(a.flow.x) * faceNormal.x + double(a.flow.y) * faceNormal.z >= -1e-9,
                     "water flow climbs its surface");
         }
     }

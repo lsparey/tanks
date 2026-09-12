@@ -212,6 +212,7 @@ void exportDiagnostics(const TerrainGenerator::BuildResult& build, const std::fi
     if (build.streamSections) stem += "-sections-v" + std::to_string(StreamSections::kVersion);
     if (build.channelCarving) stem += "-carved-v" + std::to_string(ChannelCarving::kVersion);
     if (build.combinedWater) stem += "-water-v" + std::to_string(TerrainWater::kVersion);
+    if (build.outcrops) stem += "-outcrops-v" + std::to_string(RockOutcrops::kVersion);
     if (build.materials) stem += "-materials-v" + std::to_string(TerrainMaterials::kVersion);
     if (build.playability) stem += "-play-v" + std::to_string(TerrainPlayability::kVersion);
     auto open = [&](std::string_view suffix) {
@@ -735,6 +736,7 @@ int main(int argc, char** argv) {
                              "                  [--soil-depth N] [--apron-width N]\n"
                              "  Landforms: [--landform mixed|valley|hills|ridges|plain|basin] [--warp-strength N]\n"
                              "  Erosion: [--erosion-seconds N] [--rain-seconds N] [--max-timestep N] [--talus-passes N]\n"
+                             "           [--rock-outcrops on|off]\n"
                              "           [--erosion-workers 1..4] [--terrain-refinement off|on|2x|4x]\n"
                              "  Drained valley: [--lake-water on|off] [--lake-evaporation N] [--lake-seepage N]\n"
                              "  Stream guides (requires lakes): [--streams on|off] [--stream-min-discharge N]\n"
@@ -808,6 +810,12 @@ int main(int argc, char** argv) {
                 settings.combinedWater = value == "on";
             }
             else if (option == "--repeats") repeats = number<int>(argv[i]);
+            else if (option == "--rock-outcrops") {
+                std::string_view value(argv[i]);
+                if (value != "on" && value != "off") throw std::invalid_argument("--rock-outcrops expects on or off");
+                if (value == "on") settings.outcrops.emplace();
+                else settings.outcrops.reset();
+            }
             else if (option == "--terrain-materials") {
                 std::string_view value(argv[i]);
                 if (value != "on" && value != "off") throw std::invalid_argument("--terrain-materials expects on or off");

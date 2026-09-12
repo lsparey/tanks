@@ -3,10 +3,15 @@
 #include "StreamNetwork.h"
 
 namespace ChannelCarving {
-inline constexpr uint32_t kVersion = 1;
+inline constexpr uint32_t kVersion = 2;
 struct Settings {
     float maximumCut = .6f; // world units; no fill or hidden sediment deposition
     bool smoothBanks = false; // quartic profile has zero derivative at the rim
+    // Maximum lateral wander of the cut centreline, in world units; a shared
+    // smooth world-space warp keeps adjacent edges' cuts joined. Amplitude is
+    // additionally bounded by the local half width; zero restores exactly
+    // straight grid-edge cuts (used by analytic fixtures).
+    float meander = 1.3f;
 };
 struct Budget {
     double initialSoil = 0, finalSoil = 0;

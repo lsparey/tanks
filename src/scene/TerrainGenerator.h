@@ -12,6 +12,7 @@
 #include "ChannelCarving.h"
 #include "TerrainWater.h"
 #include "TerrainMaterials.h"
+#include "RockOutcrops.h"
 #include "TerrainSurface.h"
 #include "TerrainPlayability.h"
 
@@ -35,6 +36,7 @@ struct Settings {
     float amplitude = 2.2f; // legacy recipe only
     MacroTerrain::Settings macro; // valley recipes
     HydraulicErosion::Settings erosion; // eroded/drained-valley prototypes
+    std::optional<RockOutcrops::Settings> outcrops; // post-refinement geology detail; drained valley only
     std::optional<LakeWater::Settings> lakes; // opt-in drained-valley extension
     std::optional<StreamNetwork::Settings> streams; // requires lake loss/overflow resolution
     std::optional<StreamSections::Settings> streamSections; // exact bank/spill survey; requires streams
@@ -61,7 +63,7 @@ struct Statistics {
     double meshMs = 0;
     double totalMs = 0;
     double erosionMs = 0;
-    double settlementMs = 0, drainageMs = 0;
+    double settlementMs = 0, outcropsMs = 0, drainageMs = 0;
     double waterMs = 0;
     double streamsMs = 0;
     double streamSectionsMs = 0;
@@ -91,6 +93,7 @@ struct BuildResult {
     Statistics statistics;
     std::optional<MacroTerrain::Fields> generationFields; // absent for legacy
     std::optional<HydraulicErosion::Result> erosion;
+    std::optional<RockOutcrops::Result> outcrops;
     std::optional<TerrainDrainage::Result> drainage;
     std::optional<LakeWater::Result> water;
     std::optional<StreamNetwork::Result> streams;

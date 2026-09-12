@@ -117,7 +117,9 @@ int main() {
                     fine.surface.heightmap().heights == fine.combinedWater->surface.ground().heightmap().heights,
                     "water/contact still use coarse ground");
             near(fine.channelCarving->budget.initialSoil,
-                 fine.erosion->budget.finalSoil + fine.refinement->soilVolumeDelta, 1e-6,
+                 fine.erosion->budget.finalSoil + fine.refinement->soilVolumeDelta +
+                     (fine.outcrops ? fine.outcrops->soilVolumeDelta : 0),
+                 1e-6,
                  "reconstruction volume is missing between erosion and carving budgets");
             for (size_t i = 0; i < fine.mesh.vertices.size(); ++i)
                 require(fine.mesh.vertices[i].position.y == fine.surface.heightmap().heights[i], "render ground differs from contact");

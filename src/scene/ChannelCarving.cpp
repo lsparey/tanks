@@ -12,10 +12,35 @@ float roundUp(double value) {
     float rounded = float(value);
     return double(rounded) < value ? std::nextafter(rounded, std::numeric_limits<float>::infinity()) : rounded;
 }
+// Smooth deterministic value noise for the meander warp below. Fixed lattice
+// constants (like the renderer's terrain noise): per-seed terrain positions
+// already vary the pattern, and carving must stay reproducible.
+double meanderHash(int x, int z) {
+    uint32_t h = uint32_t(x) * 374761393u + uint32_t(z) * 668265263u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    return double((h ^ (h >> 16)) & 0xFFFFFFu) / double(0xFFFFFF);
+}
+double meanderNoise(glm::dvec2 p) {
+    int x0 = int(std::floor(p.x)), z0 = int(std::floor(p.y));
+    double tx = p.x - x0, tz = p.y - z0;
+    double sx = tx * tx * (3 - 2 * tx), sz = tz * tz * (3 - 2 * tz);
+    double a = std::lerp(meanderHash(x0, z0), meanderHash(x0 + 1, z0), sx);
+    double b = std::lerp(meanderHash(x0, z0 + 1), meanderHash(x0 + 1, z0 + 1), sx);
+    return std::lerp(a, b, sz);
+}
+// Continuous unit-bounded lateral wander; one shared world-space field keeps
+// adjacent route edges' cuts joined seamlessly.
+glm::dvec2 meander(glm::dvec2 p) {
+    glm::dvec2 q = p * 0.18;
+    return glm::dvec2(meanderNoise(q + glm::dvec2(31.7, 11.3)) - .5,
+                      meanderNoise(q + glm::dvec2(7.9, 53.1)) - .5) * 2.0;
+}
 }
 void validate(const Settings& s) {
     if (!std::isfinite(s.maximumCut) || s.maximumCut <= 0 || s.maximumCut > 2)
         throw std::invalid_argument("maximum channel cut must be greater than zero and at most 2 world units");
+    if (!std::isfinite(s.meander) || s.meander < 0 || s.meander > 3)
+        throw std::invalid_argument("channel meander must be between zero and 3 world units");
 }
 size_t Result::payloadBytes() const {
     return cutDepth.capacity() * sizeof(float) + protectedCells.capacity() * sizeof(uint8_t);
@@ -123,7 +148,8 @@ Result apply(MacroTerrain::Fields& f, const TerrainDrainage::Result& d,
         uint32_t j = uint32_t(a.downstream);
         const auto& b = network.nodes[j];
         auto p = glm::dvec2(a.position), q = glm::dvec2(b.position), edge = q - p;
-        double lengthSquared = glm::dot(edge, edge), radius = std::max(a.width, b.width) * .5;
+        double lengthSquared = glm::dot(edge, edge),
+               radius = std::max(a.width, b.width) * .5 + settings.meander;
         int xmin = int(std::lower_bound(coordinates.begin(), coordinates.end(), std::min(p.x, q.x) - radius) - coordinates.begin());
         int xmax = int(std::upper_bound(coordinates.begin(), coordinates.end(), std::max(p.x, q.x) + radius) - coordinates.begin());
         int zmin = int(std::lower_bound(coordinates.begin(), coordinates.end(), std::min(p.y, q.y) - radius) - coordinates.begin());
@@ -135,7 +161,14 @@ Result apply(MacroTerrain::Fields& f, const TerrainDrainage::Result& d,
                 glm::dvec2 at(coordinates[x], coordinates[z]);
                 double t = std::clamp(glm::dot(at - p, edge) / lengthSquared, 0.0, 1.0);
                 double halfWidth = std::lerp(double(a.width), double(b.width), t) * .5;
-                auto delta = at - (p + t * edge);
+                // Meander: warp the sample position with the shared smooth
+                // noise field so the cut winds naturally instead of tracing
+                // its straight grid edge. Amplitude is bounded by the local
+                // half width so narrow brooks stay over their route cells.
+                glm::dvec2 warped = at + meander(at) * std::min(double(settings.meander), halfWidth * 0.8);
+                t = std::clamp(glm::dot(warped - p, edge) / lengthSquared, 0.0, 1.0);
+                halfWidth = std::lerp(double(a.width), double(b.width), t) * .5;
+                auto delta = warped - (p + t * edge);
                 double relativeSquared = glm::dot(delta, delta) / (halfWidth * halfWidth);
                 if (relativeSquared >= 1) continue;
                 double rim = std::lerp(double(a.ground), double(b.ground), t);

@@ -34,6 +34,7 @@ TerrainGenerator::Settings recipe(uint32_t seed, float hullWidth, float hullLeng
     // pass -- and median generation drops from 3.3 s to 2.3 s. The probe and
     // fixtures keep the 24-second default for recorded-baseline continuity.
     s.erosion.duration = 18; s.erosion.rainDuration = 13.5;
+    s.outcrops.emplace(); // strata ledges and crests on steep thin-soil faces
     MacroTerrain::landformName(landform); // fail invalid input before generation
     s.macro.landform = landform;
     s.lakes.emplace(); s.streams.emplace(); s.channelCarving.emplace();

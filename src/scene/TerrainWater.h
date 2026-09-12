@@ -3,7 +3,7 @@
 #include "StreamNetwork.h"
 
 namespace TerrainWater {
-inline constexpr uint32_t kVersion = 2;
+inline constexpr uint32_t kVersion = 3;
 enum class Kind { Lake, Stream };
 struct Vertex {
     glm::vec3 position{0}, normal{0, 1, 0};

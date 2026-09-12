@@ -250,6 +250,34 @@ Result build(const MacroTerrain::Fields& f, const TerrainDrainage::Result& d,
             }
         }
     }
+    // Smooth per-vertex shading normals for the stream sheet: the level field
+    // is piecewise linear per triangle, so flat plane normals show every
+    // polygon of the rendered surface. Central differences over the
+    // reconstructed levels give one continuous normal field instead; clipped
+    // vertices sample it bilinearly. Flow stays per-face: it drives ripple
+    // advection, not lighting.
+    std::vector<glm::vec3> levelNormals(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        int x = int(i % n), z = int(i / n);
+        auto levelAt = [&](int lx, int lz) {
+            return r.streamLevels[size_t(std::clamp(lz, 0, n - 1)) * n + std::clamp(lx, 0, n - 1)];
+        };
+        float gx = (levelAt(x + 1, z) - levelAt(x - 1, z)) / (2 * f.spacing);
+        float gz = (levelAt(x, z + 1) - levelAt(x, z - 1)) / (2 * f.spacing);
+        levelNormals[i] = glm::normalize(glm::vec3(-gx, 1.0f, -gz));
+    }
+    auto smoothNormal = [&](glm::vec2 at) {
+        float u = (at.x / f.playableWorldSize + .5f) * (m - 1) + apron;
+        float v = (at.y / f.playableWorldSize + .5f) * (m - 1) + apron;
+        u = std::clamp(u, 0.0f, float(n - 1));
+        v = std::clamp(v, 0.0f, float(n - 1));
+        int x = std::min(int(u), n - 2), z = std::min(int(v), n - 2);
+        float fx = u - x, fz = v - z;
+        size_t i = size_t(z) * n + x;
+        glm::vec3 low = levelNormals[i] + (levelNormals[i + 1] - levelNormals[i]) * fx;
+        glm::vec3 high = levelNormals[i + n] + (levelNormals[i + n + 1] - levelNormals[i + n]) * fx;
+        return glm::normalize(low + (high - low) * fz);
+    };
     r.surface.streamLevels_.resize(size_t(m) * m);
     r.surface.triangles_.resize(size_t(m - 1) * (m - 1) * 2);
     for (int z = 0; z < m; ++z)
@@ -316,7 +344,7 @@ Result build(const MacroTerrain::Fields& f, const TerrainDrainage::Result& d,
                             const auto& p = polygon[v];
                             r.surface.mesh_.indices.push_back(uint32_t(r.surface.mesh_.vertices.size()));
                             r.surface.mesh_.vertices.push_back({{p.xz.x, float(height(p)), p.xz.y},
-                                moving ? glm::vec3(normal) : glm::vec3(0, 1, 0), moving ? triangle.flow : glm::vec2(0),
+                                moving ? smoothNormal(p.xz) : glm::vec3(0, 1, 0), moving ? triangle.flow : glm::vec2(0),
                                 float(std::max(0.0, height(p) - p.ground))});
                         }
                     }
