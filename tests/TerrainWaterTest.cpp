@@ -180,8 +180,13 @@ int main() {
     require(centre && centre->kind == TerrainWater::Kind::Lake && centre->height == 1 && centre->flow == glm::vec2(0),
             "standing lake interior lost its fixed level or acquired flow");
     require(pr.surface.shorelineDistanceAt(0, 0).value() < 0, "wet shoreline distance is not signed");
-    require(!pr.surface.sampleAt(-3, 0), "zero-depth spill acquired an epsilon film");
-    require(!pr.surface.sampleAt(-2.5f, 0), "zero-depth spill span acquired water between its nodes");
+    // The escaping sheet stands a bounded spill head above the crest, so the
+    // lake connects to its outlet stream instead of pinching dry at the sill.
+    auto spill = pr.surface.sampleAt(-3, 0);
+    require(spill && spill->kind == TerrainWater::Kind::Stream && spill->depth > 0 &&
+            spill->depth <= settings.spillHead + 1e-5f, "spill crossing lost its positive-depth sheet");
+    auto span = pr.surface.sampleAt(-2.5f, 0);
+    require(span && span->depth > 0, "spill span is dry between its nodes");
     StreamNetwork::Result noStreams;
     auto lakeOnly = TerrainWater::build(pond, pd, pw, noStreams);
     check(pond, lakeOnly); coverage(lakeOnly, pond.playableWorldSize);
@@ -248,6 +253,31 @@ int main() {
     for (const auto& node : sinkN.nodes)
         if (node.kind == StreamNetwork::Kind::DrySink)
             require(!sink.connected[node.cell], "dry sink has a positive-depth stream endpoint");
+    // An under-supplied two-tier basin renders its partial lake at the
+    // equilibrium level; the exposed upper tier stays dry ground.
+    auto tiers = field();
+    std::fill(tiers.heightmap.heights.begin(), tiers.heightmap.heights.end(), 5);
+    for (int x = 0; x <= 3; ++x) tiers.heightmap.heights[4 * 9 + x] = x == 0 ? 0 : 1;
+    tiers.heightmap.heights[4 * 9 + 6] = 2;
+    for (int z = 3; z <= 5; ++z) {
+        tiers.heightmap.heights[z * 9 + 4] = 0;
+        tiers.heightmap.heights[z * 9 + 5] = .5f;
+    }
+    auto td = TerrainDrainage::analyze(tiers);
+    auto fullTiers = LakeWater::build(tiers, td);
+    LakeWater::Settings partialLoss;
+    partialLoss.evaporation = fullTiers.lakes[0].inflow / 3.5;
+    partialLoss.seepage = 0;
+    auto tw = LakeWater::build(tiers, td, partialLoss);
+    require(tw.lakes[0].partial && tw.lakes[0].level == .5f, "two-tier fixture missed its partial lake");
+    auto tn = StreamNetwork::build(tiers, td, tw, settings);
+    auto trw = TerrainWater::build(tiers, td, tw, tn);
+    check(tiers, trw); receiverReference(tiers, td, tw, tn, trw);
+    coverage(trw, tiers.playableWorldSize); seams(trw, tiers.playableWorldSize);
+    auto deepTier = trw.surface.sampleAt(0, 0); // the deep cell at x4, row 4
+    require(deepTier && deepTier->kind == TerrainWater::Kind::Lake && deepTier->height == .5f &&
+            deepTier->depth == .5f, "partial lake interior lost its equilibrium level");
+    require(!trw.surface.sampleAt(1, 0), "exposed partial-lake tier is wet"); // shallow cell at x5
 
     auto cropped = f; cropped.apronCells = 2; cropped.playableResolution = 5; cropped.playableWorldSize = 4;
     auto cr = TerrainWater::build(cropped, d, w, n);

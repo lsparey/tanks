@@ -198,10 +198,12 @@ public:
     VkPipeline foliageHandle() const { return foliagePipeline_; }
     // highA/highB and lowA/lowB are only sampled/blended when a draw's
     // PushConstants::heightBlend is nonzero (terrain). terrainControl is an
-    // optional fifth terrain-only lookup; other sets fall back to highA.
+    // optional fifth terrain-only lookup and terrainFields an optional sixth
+    // generated rock/moisture/sediment map; other sets fall back to highA.
     VkDescriptorSet allocateMaterialDescriptorSet(const Texture& highA, const Texture& highB,
                                                    const Texture& lowA, const Texture& lowB,
-                                                   const Texture* terrainControl = nullptr);
+                                                   const Texture* terrainControl = nullptr,
+                                                   const Texture* terrainFields = nullptr);
     void updateTLASDescriptor(size_t frameIndex, VkAccelerationStructureKHR tlas);
     void updateEnvironmentDescriptor(const Texture& clouds);
     void updateHistoryDescriptor(size_t frameIndex, VkImageView historyView, VkSampler historySampler,

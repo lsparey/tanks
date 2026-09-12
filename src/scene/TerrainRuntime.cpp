@@ -30,7 +30,7 @@ TerrainGenerator::Settings recipe(uint32_t seed, float hullWidth, float hullLeng
     MacroTerrain::landformName(landform); // fail invalid input before generation
     s.macro.landform = landform;
     s.lakes.emplace(); s.streams.emplace(); s.channelCarving.emplace();
-    s.combinedWater = true; s.playability.emplace();
+    s.combinedWater = true; s.materials.emplace(); s.playability.emplace();
     s.playability->hullWidth = hullWidth; s.playability->hullLength = hullLength;
     TerrainPlayability::validate(*s.playability);
     return s;
@@ -113,10 +113,11 @@ State retain(TerrainGenerator::BuildResult& build) {
     // Validate/build the reservation before moving any payload out of build.
     std::optional<Reservation> reservation;
     if (!legacy) reservation.emplace(build.surface, *build.playability, build.settings.playability->minimumConnectedArea);
-    State state{std::move(build.surface), {}, {}, std::move(reservation), {}};
+    State state{std::move(build.surface), {}, {}, {}, std::move(reservation), {}};
     if (!legacy) {
         state.water.emplace(std::move(build.combinedWater->surface));
         state.navigation = std::move(build.playability);
+        state.materials = std::move(build.materials);
         state.playabilitySettings = build.settings.playability;
     }
     return state;
@@ -160,11 +161,15 @@ std::vector<TreeInstance> placeTrees(const State& state, uint32_t seed, int vari
 
     auto steepness = [&](glm::vec2 at) { return 1.f - state.ground.contactNormalAt(at.x, at.y).y; };
     // Soil appeal weights the survivors: flat ground beats a hillside, and
-    // moist ground inside the shoreline apron (but clear of the water) most of all.
+    // moist ground inside the shoreline apron (but clear of the water) most of
+    // all. Generated material fields, when present, favour damp soil and
+    // reject exposed rock with the same data the ground shading uses.
     auto appeal = [&](glm::vec2 at) {
         float score = 1.f - steepness(at) * 4.f;
         auto shore = state.water->shorelineDistanceAt(at.x, at.y);
         if (shore && *shore > radius) score += .5f;
+        if (state.materials)
+            score += state.materials->moistureAt(at.x, at.y) * .4f - state.materials->rockAt(at.x, at.y) * .8f;
         return score;
     };
 

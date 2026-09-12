@@ -4,11 +4,15 @@
 
 namespace StreamNetwork {
 
-inline constexpr uint32_t kVersion = 1;
+inline constexpr uint32_t kVersion = 2;
 struct Settings {
     double minimumDischarge = 4; // same artistic volume/time units as LakeWater
     float widthAtThreshold = .8f, maximumWidth = 4;
     float depthAtThreshold = .08f, maximumDepth = .4f;
+    // Lake outlets stand this far above their spill crest (bounded by the
+    // outlet's discharge depth), so the escaping sheet keeps positive depth
+    // across the saddle instead of pinching dry at the crest.
+    float spillHead = .05f;
 };
 enum class Kind { Channel, Boundary, LakeInlet, LakeOutlet, DrySink };
 const char* kindName(Kind kind);
@@ -42,7 +46,9 @@ struct Result {
 
 // Read-only stream selection/profile prototype. Uses RESOLVED lake discharge,
 // not the raw drainage potential. Reservoir interiors are not river routes;
-// unsupplied basins stop streams and never generate an outlet stream.
+// under-supplied basins stop streams and never generate an outlet stream.
+// Streams entering a partial lake below its rim terminate as dry sinks; a wet
+// entry meets the partial surface as a lake inlet at the equilibrium level.
 // This result is a channel design guide, NOT a rendered/queryable water mesh.
 Result build(const MacroTerrain::Fields& fields, const TerrainDrainage::Result& drainage,
              const LakeWater::Result& water, const Settings& settings = {});

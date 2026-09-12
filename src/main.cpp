@@ -43,12 +43,14 @@ int main(int argc, char** argv) {
         bool originalTankModel = false;
         bool animateTracks = true;
         bool weaponPreview = false;
-        bool valleyTerrain = false;
+        // The advanced (drained-valley) generator is the game default; the
+        // original quick heightmap remains available as --terrain legacy.
+        bool valleyTerrain = true;
         bool showTerrainMenu = false;
         std::optional<MacroTerrain::Landform> landform;
         uint32_t terrainAttempts = 1;
         std::optional<int> terrainResolution;
-        int refinementPasses = 0;
+        std::optional<int> refinementPasses;
         for (int i = 1; i < argc; ++i) {
             if (std::strcmp(argv[i], "--tree-lod-benchmark") == 0) treeLodBenchmark = true;
             if (std::strcmp(argv[i], "--tree-lod") == 0) {
@@ -83,9 +85,12 @@ int main(int argc, char** argv) {
                     throw std::runtime_error("invalid --seed");
                 seed = value;
             } else if (std::strcmp(argv[i], "--terrain") == 0) {
-                if (++i >= argc || (std::strcmp(argv[i], "legacy") != 0 && std::strcmp(argv[i], "drained-valley") != 0))
-                    throw std::runtime_error("--terrain requires legacy or drained-valley");
-                valleyTerrain = std::strcmp(argv[i], "drained-valley") == 0;
+                // drained-valley remains accepted as the advanced generator's
+                // historical name from earlier prototypes and scripts.
+                if (++i >= argc || (std::strcmp(argv[i], "legacy") != 0 && std::strcmp(argv[i], "advanced") != 0 &&
+                                    std::strcmp(argv[i], "drained-valley") != 0))
+                    throw std::runtime_error("--terrain requires legacy or advanced");
+                valleyTerrain = std::strcmp(argv[i], "legacy") != 0;
             } else if (std::strcmp(argv[i], "--landform") == 0) {
                 if (++i >= argc) throw std::runtime_error("--landform requires a name");
                 landform = MacroTerrain::parseLandform(argv[i]);
@@ -122,19 +127,23 @@ int main(int argc, char** argv) {
             }
         }
         if (!valleyTerrain && terrainAttempts != 1)
-            throw std::runtime_error("--terrain-attempts above 1 requires --terrain drained-valley");
+            throw std::runtime_error("--terrain-attempts above 1 requires --terrain advanced");
         if (!valleyTerrain && landform)
-            throw std::runtime_error("--landform requires --terrain drained-valley");
+            throw std::runtime_error("--landform requires --terrain advanced");
         if (!valleyTerrain && terrainResolution)
-            throw std::runtime_error("--terrain-resolution requires --terrain drained-valley");
-        if (refinementPasses && (!valleyTerrain || terrainResolution.value_or(257) != 257))
-            throw std::runtime_error("terrain refinement requires --terrain drained-valley with the 257 erosion grid");
+            throw std::runtime_error("--terrain-resolution requires --terrain advanced");
+        if (refinementPasses.value_or(0) && (!valleyTerrain || terrainResolution.value_or(257) != 257))
+            throw std::runtime_error("terrain refinement requires --terrain advanced with the 257 erosion grid");
+        // The advanced generator refines its final surface by default; the
+        // 513-erosion path keeps refinement off unless explicitly requested.
+        if (!refinementPasses)
+            refinementPasses = valleyTerrain && terrainResolution.value_or(257) == 257 ? 1 : 0;
         if (treeLodBenchmark && (weaponPreview || showTerrainMenu || parseScreenshotRequest(argc,argv)))
             throw std::runtime_error("--tree-lod-benchmark cannot be combined with menu, weapon preview or screenshot capture");
         if (treeLodBenchmark && view.empty()) view = "trees";
         if (!view.empty() && !seed) seed = 7331;
         Application app(parseScreenshotRequest(argc, argv), profile, seed, view, originalTankModel, animateTracks, weaponPreview, valleyTerrain, terrainAttempts,
-                        landform.value_or(MacroTerrain::Landform::Mixed), terrainResolution.value_or(257), refinementPasses, showTerrainMenu);
+                        landform.value_or(MacroTerrain::Landform::Mixed), terrainResolution.value_or(257), *refinementPasses, showTerrainMenu);
         app.setTreeShadowMode(treeShadowMode);
         app.setShadowPreview(shadowPreview,freezeWind);
         app.setDrivePreview(drivePreview);

@@ -191,21 +191,31 @@ std::vector<uint8_t> generateTerrainControlPixels(uint32_t size, float worldSize
 float terrainGravelAmount(const Terrain& terrain, float x, float z) {
     constexpr float kRockyBaseHeight = -1.7f;  // matches basic.frag
     glm::vec2 worldXZ(x, z);
-    float threshold = kRockyBaseHeight +
-                      (terrainValueNoise(worldXZ * 0.05f + glm::vec2(153.2f, 88.7f)) -
-                       0.5f) *
-                          1.05f;
     float grassPatch = terrainValueNoise(worldXZ * 0.06f + glm::vec2(19.3f, 4.7f)) * 0.7f +
                        terrainValueNoise(worldXZ * 0.15f + glm::vec2(58.1f, 91.4f)) * 0.3f;
     float gravelPatch = terrainValueNoise(worldXZ * 0.08f + glm::vec2(71.2f, 33.6f)) * 0.7f +
                         terrainValueNoise(worldXZ * 0.2f + glm::vec2(12.9f, 47.5f)) * 0.3f;
     float boundaryBreakup = (grassPatch - gravelPatch) * 0.28f;
-    float rockyBoundary = threshold - (terrain.heightAt(x, z) + boundaryBreakup);
     glm::vec3 terrainNormal = terrain.normalAt(x, z);
     float terrainSlope = glm::length(glm::vec2(terrainNormal.x, terrainNormal.z)) /
                          std::max(std::abs(terrainNormal.y), 0.15f);
-    float physicalBlendWidth = glm::clamp(terrainSlope * 0.9f, 0.035f, 0.14f);
-    float blendCoverage = glm::smoothstep(-physicalBlendWidth, physicalBlendWidth, rockyBoundary);
+    float blendCoverage;
+    if (const auto& materials = terrain.state().materials) {
+        // Mirror basic.frag's field-driven exposure: generated rock plus
+        // bank-side deposition bars, broken up by the same patch masks.
+        float sedimentBar = std::max(materials->sedimentAt(x, z) - 0.5f, 0.0f) * 2.0f *
+                            glm::smoothstep(0.55f, 0.85f, materials->moistureAt(x, z));
+        blendCoverage = glm::clamp(materials->rockAt(x, z) + sedimentBar + boundaryBreakup * 0.5f,
+                                   0.0f, 1.0f);
+    } else {
+        float threshold = kRockyBaseHeight +
+                          (terrainValueNoise(worldXZ * 0.05f + glm::vec2(153.2f, 88.7f)) -
+                           0.5f) *
+                              1.05f;
+        float rockyBoundary = threshold - (terrain.heightAt(x, z) + boundaryBreakup);
+        float physicalBlendWidth = glm::clamp(terrainSlope * 0.9f, 0.035f, 0.14f);
+        blendCoverage = glm::smoothstep(-physicalBlendWidth, physicalBlendWidth, rockyBoundary);
+    }
     float materialPattern =
         0.1f + terrainValueNoise(worldXZ * 0.9f + glm::vec2(37.1f, 214.6f)) * 0.8f;
     float heightRockiness =
@@ -437,6 +447,33 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
     terrainControlTexture_ = std::make_unique<Texture>(Texture::fromPixels(
         *context_, *commands_, kTerrainTextureRes, kTerrainTextureRes, terrainControlPixels,
         /*repeat=*/false));
+    // Generated rock/moisture/sediment classification for the upgraded
+    // terrain. Legacy terrain binds one neutral zero texel: alpha 0 keeps
+    // basic.frag's analytic height/slope rules in charge there.
+    std::vector<uint8_t> terrainFieldPixels(4, 0);
+    uint32_t terrainFieldRes = 1;
+    if (terrainBuild.materials) {
+        const auto& fields = *terrainBuild.materials;
+        terrainFieldRes = kTerrainTextureRes;
+        terrainFieldPixels.assign(size_t(terrainFieldRes) * terrainFieldRes * 4, 0);
+        auto encodeField = [](float value) {
+            return static_cast<uint8_t>(std::lround(glm::clamp(value, 0.0f, 1.0f) * 255.0f));
+        };
+        for (uint32_t y = 0; y < terrainFieldRes; ++y) {
+            float worldZ = (static_cast<float>(y) / (terrainFieldRes - 1) - 0.5f) * fields.worldSize;
+            for (uint32_t x = 0; x < terrainFieldRes; ++x) {
+                float worldX = (static_cast<float>(x) / (terrainFieldRes - 1) - 0.5f) * fields.worldSize;
+                size_t offset = (static_cast<size_t>(y) * terrainFieldRes + x) * 4;
+                terrainFieldPixels[offset] = encodeField(fields.rockAt(worldX, worldZ));
+                terrainFieldPixels[offset + 1] = encodeField(fields.moistureAt(worldX, worldZ));
+                terrainFieldPixels[offset + 2] = encodeField(fields.sedimentAt(worldX, worldZ));
+                terrainFieldPixels[offset + 3] = 255;
+            }
+        }
+    }
+    terrainFieldTexture_ = std::make_unique<Texture>(Texture::fromPixels(
+        *context_, *commands_, terrainFieldRes, terrainFieldRes, terrainFieldPixels,
+        /*repeat=*/false));
     std::vector<uint8_t> trackPixels = TrackTextureGenerator::generate(128);
     trackTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 128, 128, trackPixels, /*repeat=*/false));
@@ -485,7 +522,8 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
     // supply that same texture as the unused control-map fallback.
     terrainMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*grassTextureA_, *grassTextureB_,
                                                                     *rockTextureA_, *rockTextureB_,
-                                                                    terrainControlTexture_.get());
+                                                                    terrainControlTexture_.get(),
+                                                                    terrainFieldTexture_.get());
     trackMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*trackTexture_, *trackTexture_,
                                                                   *trackTexture_, *trackTexture_);
     cloudMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*cloudTexture_, *cloudTexture_,
@@ -1033,6 +1071,7 @@ void Application::cleanup() noexcept {
     cloudTexture_.reset();
     trackTexture_.reset();
     terrainControlTexture_.reset();
+    terrainFieldTexture_.reset();
     rockTextureB_.reset();
     rockTextureA_.reset();
     grassTextureB_.reset();
@@ -1657,6 +1696,16 @@ void Application::spawnRocks() {
             bool underwater = isUnderwater(candidate.x, candidate.y);
             center = candidate;
             if (!tooCloseToSpawn && !tooCloseToOther && !underwater && allowsScenery(candidate, 0)) {
+                // Generated terrain: prefer exposed rock and deposition bars,
+                // so the loose clusters agree with the material below them.
+                // Late attempts accept any legal spot rather than starving.
+                if (const auto& materials = terrain_->state().materials;
+                    materials && attempt < kMaxAttemptsPerCluster - 6) {
+                    float exposure = std::max(materials->rockAt(candidate.x, candidate.y),
+                                              materials->sedimentAt(candidate.x, candidate.y));
+                    std::uniform_real_distribution<float> unitDist(0.0f, 1.0f);
+                    if (unitDist(rng) > 0.15f + exposure) continue;
+                }
                 found = true;
                 break;
             }
@@ -1715,6 +1764,14 @@ void Application::spawnShrubs() {
             });
             bool underwater = isUnderwater(candidate.x, candidate.y);
             if (tooCloseToSpawn || tooCloseToOther || underwater || !allowsScenery(candidate, shrubRadius)) continue;
+            // Generated terrain: shrubs root in soil, not exposed rock, and
+            // favour damp ground. Late attempts accept any legal spot.
+            if (const auto& materials = terrain_->state().materials; materials && attempt < kMaxAttemptsPerShrub - 5) {
+                float rock = materials->rockAt(candidate.x, candidate.y);
+                float moisture = materials->moistureAt(candidate.x, candidate.y);
+                std::uniform_real_distribution<float> unitDist(0.0f, 1.0f);
+                if (unitDist(rng) > 0.45f + moisture * 0.55f - rock) continue;
+            }
             pos = candidate;
             found = true;
             break;

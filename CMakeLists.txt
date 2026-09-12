@@ -27,6 +27,7 @@ add_library(terrain_generation STATIC
     src/scene/StreamSections.cpp
     src/scene/ChannelCarving.cpp
     src/scene/TerrainWater.cpp
+    src/scene/TerrainMaterials.cpp
     src/scene/TerrainPlayability.cpp
     src/scene/TerrainSurface.cpp
     src/scene/TerrainGenerator.cpp
@@ -75,6 +76,9 @@ if(BUILD_TESTING)
     add_executable(channel_carving_test tests/ChannelCarvingTest.cpp)
     target_link_libraries(channel_carving_test PRIVATE terrain_generation)
     add_test(NAME channel_carving COMMAND channel_carving_test)
+    add_executable(terrain_materials_test tests/TerrainMaterialsTest.cpp)
+    target_link_libraries(terrain_materials_test PRIVATE terrain_generation)
+    add_test(NAME terrain_materials COMMAND terrain_materials_test)
     add_executable(terrain_water_test tests/TerrainWaterTest.cpp)
     target_link_libraries(terrain_water_test PRIVATE terrain_generation)
     add_test(NAME terrain_water COMMAND terrain_water_test)

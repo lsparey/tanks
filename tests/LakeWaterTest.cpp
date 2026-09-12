@@ -38,11 +38,13 @@ void check(const MacroTerrain::Fields& f, const TerrainDrainage::Result& d, cons
     double loss = 0, exported = 0;
     for (size_t b = 0; b < w.lakes.size(); ++b) {
         const auto& lake = w.lakes[b];
-        require(lake.level == d.basins[b].spillElevation && lake.area > 0 && lake.volume > 0,
-                "invalid lake geometry or lake exceeds spill level");
+        require(lake.partial ? lake.present && lake.level < d.basins[b].spillElevation
+                             : lake.level == d.basins[b].spillElevation,
+                "lake level disagrees with its supply policy");
+        require(lake.area > 0 && lake.volume > 0, "invalid lake geometry");
         close(lake.inflow, lake.loss + lake.outflow, 1e-8, "lake-local supply/loss budget drift");
         require(lake.loss >= 0 && lake.outflow >= 0, "negative lake flux");
-        if (!lake.present) require(lake.outflow == 0, "under-supplied lake leaks downstream");
+        if (!lake.present || lake.partial) require(lake.outflow == 0, "under-supplied lake leaks downstream");
         loss += lake.loss;
     }
     for (size_t i = 0; i < w.discharge.size(); ++i) {
@@ -85,7 +87,7 @@ void same(const LakeWater::Result& a, const LakeWater::Result& b) {
             a.surface.shores().size() == b.surface.shores().size(), "nondeterministic lake result");
     for (size_t i = 0; i < a.lakes.size(); ++i) {
         const auto& x = a.lakes[i]; const auto& y = b.lakes[i];
-        require(x.present == y.present && x.level == y.level && x.area == y.area && x.volume == y.volume &&
+        require(x.present == y.present && x.partial == y.partial && x.level == y.level && x.area == y.area && x.volume == y.volume &&
                 x.inflow == y.inflow && x.loss == y.loss && x.outflow == y.outflow &&
                 x.spillFrom == y.spillFrom && x.spillTo == y.spillTo, "nondeterministic lake budget");
     }

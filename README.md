@@ -151,18 +151,15 @@ data. The current terrain, water and non-tree scenery can be replaced. Existing
 tree geometry, density, progressive LOD, wind and soft shadows are preserved;
 tree placement will adapt to the new ground.
 
-The first foundation is implemented: CPU generation is separate from Vulkan
-upload, contact heights follow the rendered triangles, and a standalone tool
-provides repeatable timing and neutral diagnostic exports. The legacy landform
-remains active. A selectable CPU rolling-valley prototype now adds broad
-landforms, bedrock/soil, erodibility and an apron with open boundary faces;
-see the [macro terrain guide](docs/TERRAIN_MACRO.md) for previews and commands.
-A separate [eroded-valley CPU prototype](docs/TERRAIN_EROSION_PROTOTYPE.md) now
-simulates hydraulic transport, deposition and limited soil relaxation, with
-conservation budgets and deterministic parallel workers. Persistent hydrology,
-spawn/routes, the environment rebuild and game integration are still planned.
-See the [terrain baseline](docs/TERRAIN_BASELINE.md) for commands, measurements
-and outstanding hardware checks.
+The advanced generator is now the game default: seeded British landforms,
+hydraulic erosion, final drainage with lakes and streams (including
+positive-depth spill connections and equilibrium partial lakes), channel
+carving, a refined 513-sample final surface, generated rock/moisture/sediment
+material fields shared by shading and placement, and footprint-aware
+spawn/route selection. The original quick heightmap remains available as
+`--terrain legacy`. Remaining work: wider startup/driving measurements, a
+memory cap, and continued material/texture art direction.
+See the [terrain plan](docs/TERRAIN_EROSION_PLAN.md) for the full status.
 
 ## Requirements
 
@@ -403,35 +400,33 @@ For matched terrain comparisons, `--view terrain` uses a fixed world camera.
 unchanged erosion step limit. It cannot be combined with `--terrain legacy`.
 See the [resolution comparison](docs/TERRAIN_RESOLUTION.md) for results.
 
-`--terrain-refinement on` instead builds a 513-sample final surface after the
-usual 257-sample erosion pass, with smoother channel banks. It is opt-in and
-requires upgraded terrain with the default 257 erosion resolution. Try
-`./out/runtime-release/tanks --terrain drained-valley --seed 42 --terrain-refinement on --view terrain`.
-See the [refinement results and remaining water-junction issue](docs/TERRAIN_REFINEMENT.md).
-For a denser comparison, `--terrain-refinement 2x` is equivalent to `on`
-(513 final samples), while `--terrain-refinement 4x` produces 1025 final samples.
-Both retain 257-sample erosion. Compare the same seed and `--view terrain`;
-see the [513/1025 test procedure](docs/TERRAIN_REFINEMENT_4X.md).
+`--terrain-refinement 2x` (alias `on`) builds a 513-sample final surface after
+the usual 257-sample erosion pass, with smoother channel banks; it is the
+advanced generator's default. `--terrain-refinement off` restores the raw
+257-sample surface and `4x` produces experimental 1025 final samples with a
+measured rendering cost. All retain 257-sample erosion. Compare the same seed
+and `--view terrain`; see the [refinement results](docs/TERRAIN_REFINEMENT.md)
+and the [513/1025 test procedure](docs/TERRAIN_REFINEMENT_4X.md).
 
-`./build/tanks --menu` opens a terrain menu before the loading screen, with the
-original, faster generator selected. Choose original terrain, eroded landscapes,
-513/1025 refined terrain, or the slower full-513 erosion experiment, then select
-a landform and seed and click **Start Game**. Click the landform to cycle it;
-click the seed to replace it, or use **Random**. Tab/arrow keys move focus,
-Enter activates a control, and Escape quits. Invalid seeds disable Start Game.
+`./build/tanks --menu` opens a terrain menu before the loading screen with two
+generators: the original fast heightmap and the advanced eroded terrain
+(selected by default). Choose a landform and seed and click **Start Game**.
+Click the landform to cycle it; click the seed to replace it, or use
+**Random**. Tab/arrow keys move focus, Enter activates a control, and Escape
+quits. Invalid seeds disable Start Game.
 See the [menu preview](docs/terrain-menu.png).
 
 **The menu only appears with `--menu`.** Plain `./build/tanks` starts the
-original terrain directly, as does `./build/tanks --terrain legacy`.
-The experimental erosion pipeline requires `--terrain drained-valley` when
-launching through the command line.
-For testing it, prefer the optimized build:
-`./out/runtime-release/tanks --terrain drained-valley --seed 7331`.
-The Debug build remains much slower when erosion is explicitly enabled.
-Within the experimental pipeline, `--landform mixed` chooses hills, ridges,
-plains, basins or a valley from the seed. Add `--landform hills` (or `ridges`,
-`plain`, `basin`, `valley`) to choose a family. Landform, resolution and refinement
-options require `--terrain drained-valley`.
+advanced generator directly; `./build/tanks --terrain legacy` starts the
+original quick heightmap instead (`drained-valley` is still accepted as the
+advanced generator's historical name).
+For normal play, prefer the optimized build:
+`./out/runtime-release/tanks --seed 7331`.
+The Debug build remains much slower because erosion runs at generation time.
+Within the advanced generator, `--landform mixed` (the default) chooses hills,
+ridges, plains, basins or a valley from the seed. Add `--landform hills` (or
+`ridges`, `plain`, `basin`, `valley`) to choose a family. Landform, resolution
+and refinement options require the advanced generator.
 The new path uses the loaded tank's dimensions to select a dry spawn and route,
 then preserves that route during scenery placement. `--terrain-attempts 1..8`
 explicitly bounds seed selection (default 1); logs record both requested and

@@ -39,6 +39,11 @@ layout(set = 1, binding = 3) uniform sampler2D materialTexLowB;
 // sets bind their regular texture here because their shader paths never read
 // this binding.
 layout(set = 1, binding = 4) uniform sampler2D terrainControlTex;
+// Generated ground classification for the upgraded terrain: R exposed rock,
+// G persistent moisture, B recent sediment/deposition, A = 1 when these
+// fields drive the material rules (legacy terrain binds a neutral zero texel
+// and keeps the analytic height-threshold rules below).
+layout(set = 1, binding = 5) uniform sampler2D terrainFieldTex;
 layout(set = 2, binding = 0) uniform accelerationStructureEXT sceneTLAS;
 layout(set = 3, binding = 0) uniform sampler2D historyShadow;
 // Independently-smoothed foliage-transmission factor -- see traceSoftShadow
@@ -644,6 +649,7 @@ void main() {
         sampleUV = fragWorldPos.xz / 3.0;  // matches Terrain.cpp
     }
     vec4 terrainControl = vec4(0.0);
+    vec4 terrainFields = vec4(0.0);
     if (heightBlend > 0.5) {
         // The control map covers the whole 180-unit terrain. Half-texel
         // inset maps its world-space edges to texel centres, preserving the
@@ -653,6 +659,7 @@ void main() {
         vec2 controlUV = (fragWorldPos.xz / kTerrainWorldSize + 0.5) * (1.0 - kControlTexel) +
                          0.5 * kControlTexel;
         terrainControl = texture(terrainControlTex, controlUV);
+        terrainFields = texture(terrainFieldTex, controlUV);
         sampleUV += (terrainControl.rg - 0.5) * 0.6;
     }
 
@@ -685,6 +692,9 @@ void main() {
             mix(texColor, texture(materialTexHighB, sampleUV).rgb, smoothstep(0.4, 0.6, grassPatch));
         vec3 gravelColor = mix(texture(materialTexLowA, sampleUV).rgb, texture(materialTexLowB, sampleUV).rgb,
                                 smoothstep(0.4, 0.6, gravelPatch));
+        // Fresh deposits read as warmer, sandier silt than the parent gravel.
+        gravelColor = mix(gravelColor, gravelColor * vec3(1.08, 1.0, 0.82),
+                          terrainFields.b * terrainFields.a);
 
         // Fade to the low-point (gravel) blend in valleys. Center threshold
         // tuned against the heightmap's actual range (roughly -2.2..-4 on
@@ -708,6 +718,17 @@ void main() {
         float terrainSlope = length(terrainNormal.xz) / max(abs(terrainNormal.y), 0.15);
         float physicalBlendWidth = clamp(terrainSlope * 0.9, 0.035, 0.14);
         float blendCoverage = smoothstep(-physicalBlendWidth, physicalBlendWidth, rockyBoundary);
+        // Generated terrain drives exposure from its actual soil/erosion
+        // history instead of the legacy height threshold: thin or scarred
+        // soil reads as rock and strong deposition reads as bare bars. The
+        // patch masks still break the boundary into interlocking pieces.
+        // Deposition only reads as a bare bar right against the water: the
+        // moisture gate keeps broad valley-floor sediment under its grass.
+        float sedimentBar = max(terrainFields.b - 0.5, 0.0) * 2.0 *
+                            smoothstep(0.55, 0.85, terrainFields.g);
+        float fieldCoverage = clamp(terrainFields.r + sedimentBar +
+                                    boundaryBreakup * 0.5, 0.0, 1.0);
+        blendCoverage = mix(blendCoverage, fieldCoverage, terrainFields.a);
         float materialPattern =
             0.1 + valueNoise2D(fragWorldPos.xz * 0.9 + vec2(37.1, 214.6)) * 0.8;
         float patternEdgeWidth = max(fwidth(materialPattern) * 1.5, 0.025);
@@ -743,7 +764,10 @@ void main() {
             float dampHeightBias =
                 1.0 - smoothstep(dampThreshold - 0.4, dampThreshold + 1.0, fragWorldPos.y);
             float dampPattern = valueNoise2D(fragWorldPos.xz * 1.6 + vec2(12.9, 88.4));
-            float damp = dampFlatness * dampHeightBias * smoothstep(0.3, 0.7, dampPattern) * 0.35
+            // Generated moisture (bank strips, storm-wetted floors, gullies)
+            // replaces the low-height guess wherever the fields are bound.
+            float dampAmount = mix(dampHeightBias, terrainFields.g, terrainFields.a);
+            float damp = dampFlatness * dampAmount * smoothstep(0.3, 0.7, dampPattern) * 0.35
                        * (1.0 - smoothstep(30.0, 45.0, currentViewDist));
             texColor = mix(texColor, texColor * vec3(0.75, 0.88, 0.72), damp);
         }

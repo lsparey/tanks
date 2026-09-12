@@ -110,8 +110,8 @@ void Pipeline::createMaterialSetLayout() {
     // still needs a valid descriptor bound at each (Vulkan requires it even
     // if the shader branch skips reading it), so callers bind highA into the
     // terrain-control slot when they do not provide a dedicated lookup.
-    VkDescriptorSetLayoutBinding bindings[5]{};
-    for (uint32_t i = 0; i < 5; ++i) {
+    VkDescriptorSetLayoutBinding bindings[6]{};
+    for (uint32_t i = 0; i < 6; ++i) {
         bindings[i].binding = i;
         bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         bindings[i].descriptorCount = 1;
@@ -120,7 +120,7 @@ void Pipeline::createMaterialSetLayout() {
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 5;
+    layoutInfo.bindingCount = 6;
     layoutInfo.pBindings = bindings;
 
     VK_CHECK(vkCreateDescriptorSetLayout(ctx_.device(), &layoutInfo, nullptr, &materialSetLayout_));
@@ -313,7 +313,8 @@ void Pipeline::updateEnvironmentDescriptor(const Texture& clouds) {
 
 VkDescriptorSet Pipeline::allocateMaterialDescriptorSet(const Texture& highA, const Texture& highB,
                                                           const Texture& lowA, const Texture& lowB,
-                                                          const Texture* terrainControl) {
+                                                          const Texture* terrainControl,
+                                                          const Texture* terrainFields) {
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = descriptorPool_;
@@ -323,11 +324,12 @@ VkDescriptorSet Pipeline::allocateMaterialDescriptorSet(const Texture& highA, co
     VkDescriptorSet set;
     VK_CHECK(vkAllocateDescriptorSets(ctx_.device(), &allocInfo, &set));
 
-    const Texture* textures[5] = {&highA, &highB, &lowA, &lowB,
-                                  terrainControl ? terrainControl : &highA};
-    VkDescriptorImageInfo imageInfos[5]{};
-    VkWriteDescriptorSet writes[5]{};
-    for (uint32_t i = 0; i < 5; ++i) {
+    const Texture* textures[6] = {&highA, &highB, &lowA, &lowB,
+                                  terrainControl ? terrainControl : &highA,
+                                  terrainFields ? terrainFields : &highA};
+    VkDescriptorImageInfo imageInfos[6]{};
+    VkWriteDescriptorSet writes[6]{};
+    for (uint32_t i = 0; i < 6; ++i) {
         imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         imageInfos[i].imageView = textures[i]->view();
         imageInfos[i].sampler = textures[i]->sampler();
@@ -341,7 +343,7 @@ VkDescriptorSet Pipeline::allocateMaterialDescriptorSet(const Texture& highA, co
         writes[i].pImageInfo = &imageInfos[i];
     }
 
-    vkUpdateDescriptorSets(ctx_.device(), 5, writes, 0, nullptr);
+    vkUpdateDescriptorSets(ctx_.device(), 6, writes, 0, nullptr);
     return set;
 }
 

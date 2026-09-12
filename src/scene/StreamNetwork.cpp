@@ -24,7 +24,8 @@ void validate(const Settings& s) {
         !std::isfinite(s.widthAtThreshold) || s.widthAtThreshold < .01f ||
         !std::isfinite(s.maximumWidth) || s.maximumWidth < s.widthAtThreshold || s.maximumWidth > 100 ||
         !std::isfinite(s.depthAtThreshold) || s.depthAtThreshold < .001f ||
-        !std::isfinite(s.maximumDepth) || s.maximumDepth < s.depthAtThreshold || s.maximumDepth > 10)
+        !std::isfinite(s.maximumDepth) || s.maximumDepth < s.depthAtThreshold || s.maximumDepth > 10 ||
+        !std::isfinite(s.spillHead) || s.spillHead < 0 || s.spillHead > 1)
         throw std::invalid_argument("invalid stream selection/profile settings");
 }
 size_t Result::payloadBytes() const {
@@ -75,8 +76,12 @@ Result build(const MacroTerrain::Fields& f, const TerrainDrainage::Result& d,
     }
     for (size_t b = 0; b < w.lakes.size(); ++b) {
         const auto& lake = w.lakes[b];
+        // Full lakes stand at their spill; partial lakes stand strictly below
+        // it, consume their whole inflow and never generate an outlet stream.
+        bool level = lake.partial ? lake.present && lake.level < d.basins[b].spillElevation && lake.outflow == 0
+                                  : lake.level == d.basins[b].spillElevation;
         if (lake.spillFrom < 0 || size_t(lake.spillFrom) >= count || d.basin[lake.spillFrom] != int32_t(b) ||
-            lake.spillTo != d.downstream[lake.spillFrom] || lake.level != d.basins[b].spillElevation ||
+            lake.spillTo != d.downstream[lake.spillFrom] || !level ||
             !std::isfinite(lake.outflow) || lake.outflow < 0 ||
             lake.outflow != w.discharge[lake.spillFrom])
             throw std::invalid_argument("stream lake outlet does not match resolved runoff");
@@ -96,8 +101,11 @@ Result build(const MacroTerrain::Fields& f, const TerrainDrainage::Result& d,
         node.ground = f.heightmap.heights[cell];
         node.position = {(float(int(cell % n) - apron) / (m - 1) - .5f) * f.playableWorldSize,
                          (float(int(cell / n) - apron) / (m - 1) - .5f) * f.playableWorldSize};
+        // A stream reaching a partial lake's basin above the waterline ends as
+        // a dry sink; only an actually submerged entry meets the lake surface.
         if (node.lake >= 0) node.kind = terminal ?
-            (w.lakes[node.lake].present ? Kind::LakeInlet : Kind::DrySink) : Kind::LakeOutlet;
+            (w.lakes[node.lake].present && w.lakes[node.lake].level > node.ground ?
+                Kind::LakeInlet : Kind::DrySink) : Kind::LakeOutlet;
         else node.kind = d.downstream[cell] < 0 ? Kind::Boundary : Kind::Channel;
         if (!terminal) node.discharge = w.discharge[cell];
         uint32_t id = uint32_t(r.nodes.size());
@@ -120,13 +128,20 @@ Result build(const MacroTerrain::Fields& f, const TerrainDrainage::Result& d,
         auto ra = rank[r.nodes[a].cell], rb = rank[r.nodes[b].cell];
         return ra != rb ? ra < rb : a < b;
     });
+    // Inlets meet the standing surface exactly. Outlets stand a bounded head
+    // above the crest, as spilling water does, so the sheet leaving the lake
+    // keeps positive depth where the saddle ground equals the lake level.
+    auto lakeSurface = [&](const Node& node) {
+        float level = w.lakes[node.lake].level;
+        return node.kind == Kind::LakeOutlet ? level + std::min(s.spillHead, node.requestedDepth) : level;
+    };
     std::vector<float> cap(r.nodes.size(), std::numeric_limits<float>::infinity());
     for (uint32_t i = 0; i < r.nodes.size(); ++i) {
         auto& node = r.nodes[i];
         double ratio = node.discharge / s.minimumDischarge;
         node.width = float(std::min(double(s.maximumWidth), s.widthAtThreshold * std::sqrt(ratio)));
         node.requestedDepth = float(std::min(double(s.maximumDepth), s.depthAtThreshold * std::cbrt(ratio)));
-        if (node.kind == Kind::LakeInlet || node.kind == Kind::LakeOutlet) cap[i] = w.lakes[node.lake].level;
+        if (node.kind == Kind::LakeInlet || node.kind == Kind::LakeOutlet) cap[i] = lakeSurface(node);
         if (node.downstream >= 0) {
             auto delta = glm::dvec2(r.nodes[node.downstream].position) - glm::dvec2(node.position);
             node.flow = glm::vec2(glm::normalize(delta));
@@ -146,7 +161,7 @@ Result build(const MacroTerrain::Fields& f, const TerrainDrainage::Result& d,
     for (uint32_t i : r.downstreamOrder) {
         auto& node = r.nodes[i];
         bool lake = node.kind == Kind::LakeInlet || node.kind == Kind::LakeOutlet;
-        float desired = lake ? w.lakes[node.lake].level : node.ground + node.requestedDepth;
+        float desired = lake ? lakeSurface(node) : node.ground + node.requestedDepth;
         float downstream = node.downstream >= 0 ? r.nodes[node.downstream].waterLevel : desired;
         node.waterLevel = std::min(cap[i], std::max(desired, downstream));
         if (!std::isfinite(node.waterLevel) || node.waterLevel < node.ground ||

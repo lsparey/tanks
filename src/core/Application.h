@@ -207,6 +207,7 @@ private:
     // generated once so the fragment shader does not rebuild those six
     // procedural noise values for every covered pixel.
     std::unique_ptr<Texture> terrainControlTexture_;
+    std::unique_ptr<Texture> terrainFieldTexture_;
     std::unique_ptr<Texture> trackTexture_;
     std::unique_ptr<Texture> cloudTexture_;
     std::unique_ptr<Texture> crateTexture_;

@@ -45,12 +45,21 @@ void check(const MacroTerrain::Fields& f, const TerrainDrainage::Result& d, cons
         close(node.availableDepth, double(node.waterLevel) - node.ground, 1e-6, "incorrect longitudinal clearance");
         bool lake = node.kind == Kind::LakeInlet || node.kind == Kind::LakeOutlet;
         if (lake) {
-            require(node.lake >= 0 && w.lakes[node.lake].present && node.waterLevel == w.lakes[node.lake].level,
+            float head = node.kind == Kind::LakeOutlet ? std::min(s.spillHead, node.requestedDepth) : 0;
+            require(node.lake >= 0 && w.lakes[node.lake].present &&
+                    node.waterLevel == w.lakes[node.lake].level + head,
                     "stream does not meet lake at its fixed level");
         } else {
             close(node.depthDeficit, std::max(0.0f, node.requestedDepth - node.availableDepth), 1e-6, "unreported channel depth deficit");
+            // Lake caps carry a positive spill head, so no capped node pinches
+            // to zero depth at a saddle whose ground equals the lake level.
+            require(node.availableDepth + 1e-5f >= std::min(s.spillHead, s.depthAtThreshold),
+                    "capped stream node lost its positive spill sheet");
         }
-        if (node.kind == Kind::DrySink) require(!w.lakes[node.lake].present, "supplied lake marked as dry sink");
+        if (node.kind == Kind::DrySink)
+            require(!w.lakes[node.lake].present ||
+                    (w.lakes[node.lake].partial && w.lakes[node.lake].level <= node.ground),
+                    "supplied lake marked as dry sink");
         if (node.downstream >= 0) {
             uint32_t j = uint32_t(node.downstream);
             require(j < r.nodes.size() && rank[j] < rank[i], "stream cycle or bad downstream order");
@@ -150,7 +159,8 @@ int main() {
         for (const auto& outlet : pr.nodes) {
             if (outlet.kind != Kind::LakeOutlet || outlet.cell != inlet.cell) continue;
             sharedCell = true;
-            require(inlet.downstream == -1 && outlet.downstream >= 0 && inlet.waterLevel == outlet.waterLevel,
+            require(inlet.downstream == -1 && outlet.downstream >= 0 &&
+                    outlet.waterLevel == inlet.waterLevel + std::min(s.spillHead, outlet.requestedDepth),
                     "lake inlet/outlet were joined into an artificial river through the basin");
         }
     }
@@ -162,6 +172,40 @@ int main() {
             "unsupplied lake created an outlet stream from raw drainage potential");
     require(std::any_of(sr.nodes.begin(), sr.nodes.end(), [](const auto& node) { return node.kind == Kind::DrySink; }),
             "under-supplied basin did not stop incoming streams");
+
+    // A two-tier under-supplied basin stands at its sampled equilibrium level.
+    // Streams meet it as a wet inlet where the entry cell is actually
+    // submerged and as a dry sink at the exposed upper tier.
+    auto tiers = fixture(9);
+    std::fill(tiers.heightmap.heights.begin(), tiers.heightmap.heights.end(), 5);
+    for (int x = 0; x <= 3; ++x) tiers.heightmap.heights[4 * 9 + x] = x == 0 ? 0 : 1;
+    tiers.heightmap.heights[4 * 9 + 6] = 2;
+    for (int z = 3; z <= 5; ++z) {
+        tiers.heightmap.heights[z * 9 + 4] = 0;
+        tiers.heightmap.heights[z * 9 + 5] = .5f;
+    }
+    auto td = TerrainDrainage::analyze(tiers);
+    auto full = LakeWater::build(tiers, td);
+    require(full.lakes.size() == 1 && full.lakes[0].present && !full.lakes[0].partial,
+            "two-tier fixture is not supplied under default losses");
+    LakeWater::Settings partialLoss;
+    partialLoss.evaporation = full.lakes[0].inflow / 3.5;
+    partialLoss.seepage = 0;
+    auto tw = LakeWater::build(tiers, td, partialLoss);
+    const auto& partial = tw.lakes[0];
+    require(partial.present && partial.partial && partial.level == .5f && partial.outflow == 0 &&
+            partial.level < td.basins[0].spillElevation && partial.area > 0 && partial.volume > 0,
+            "under-supplied two-tier basin missed its equilibrium partial lake");
+    close(partial.loss, partial.inflow, 1e-9, "partial lake does not consume its whole inflow");
+    auto tr = StreamNetwork::build(tiers, td, tw, s);
+    check(tiers, td, tw, tr, s);
+    require(std::none_of(tr.nodes.begin(), tr.nodes.end(), [](const auto& node) { return node.kind == Kind::LakeOutlet; }),
+            "partial lake generated an outlet stream");
+    require(std::any_of(tr.nodes.begin(), tr.nodes.end(), [](const auto& node) {
+                return node.kind == Kind::LakeInlet && node.waterLevel == .5f; }),
+            "submerged entry does not meet the partial lake surface");
+    require(std::any_of(tr.nodes.begin(), tr.nodes.end(), [](const auto& node) { return node.kind == Kind::DrySink; }),
+            "exposed partial-lake tier did not stop its incoming stream");
 
     // Keep the full analysis apron. Changing only the crop cannot remove
     // upstream tributaries, sources or lake constraints from the network.

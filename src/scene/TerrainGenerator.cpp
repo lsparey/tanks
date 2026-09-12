@@ -58,6 +58,10 @@ BuildResult build(const Settings& settings) {
     }
     if (settings.combinedWater && !settings.streams)
         throw std::invalid_argument("combined water requires stream profiles");
+    if (settings.materials) {
+        if (!settings.combinedWater) throw std::invalid_argument("ground materials require final combined water");
+        TerrainMaterials::validate(*settings.materials);
+    }
     if (settings.playability) {
         if (!settings.combinedWater) throw std::invalid_argument("playability requires final combined water");
         TerrainPlayability::validate(*settings.playability);
@@ -88,6 +92,7 @@ BuildResult build(const Settings& settings) {
     std::optional<StreamSections::Result> streamSections;
     std::optional<ChannelCarving::Result> channelCarving;
     std::optional<TerrainWater::Result> combinedWater;
+    std::optional<TerrainMaterials::Fields> materials;
     double channelPreparationMs = 0;
     std::optional<TerrainRefinement::Result> refinement;
     HeightmapGenerator::Heightmap hm;
@@ -116,6 +121,8 @@ BuildResult build(const Settings& settings) {
             }
             if (settings.streamSections) streamSections = StreamSections::build(*fields, *streams, *settings.streamSections);
             if (settings.combinedWater) combinedWater = TerrainWater::build(*fields, *drainage, *water, *streams);
+            if (settings.materials)
+                materials = TerrainMaterials::build(*fields, *erosion, *drainage, *water, *combinedWater, *settings.materials);
         }
         hm = fields->crop();
     } else {
@@ -181,11 +188,16 @@ BuildResult build(const Settings& settings) {
         stats.combinedWaterBytes = combinedWater->payloadBytes();
         stats.heightfieldMs -= stats.combinedWaterMs;
     }
+    if (materials) {
+        stats.materialsMs = materials->elapsedMs;
+        stats.materialsBytes = materials->payloadBytes();
+        stats.heightfieldMs -= stats.materialsMs;
+    }
     if (playability) {
         stats.playabilityMs = playability->elapsedMs;
         stats.playabilityBytes = playability->payloadBytes();
     }
-    return {settings, std::move(surface), std::move(mesh), stats, std::move(fields), std::move(erosion), std::move(drainage), std::move(water), std::move(streams), std::move(streamSections), std::move(channelCarving), std::move(combinedWater), std::move(playability), std::move(refinement)};
+    return {settings, std::move(surface), std::move(mesh), stats, std::move(fields), std::move(erosion), std::move(drainage), std::move(water), std::move(streams), std::move(streamSections), std::move(channelCarving), std::move(combinedWater), std::move(materials), std::move(playability), std::move(refinement)};
 }
 
 } // namespace TerrainGenerator

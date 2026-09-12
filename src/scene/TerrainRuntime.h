@@ -26,6 +26,7 @@ struct State {
     TerrainSurface ground;
     std::optional<TerrainWater::Surface> water;
     std::optional<TerrainPlayability::Result> navigation;
+    std::optional<TerrainMaterials::Fields> materials; // shared by shading and placement
     std::optional<Reservation> reservation;
     std::optional<TerrainPlayability::Settings> playabilitySettings;
 

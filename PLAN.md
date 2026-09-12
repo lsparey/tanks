@@ -36,9 +36,10 @@ initial delivered passes, not a ceiling on future visual fidelity.
 
 ## Current goal
 
-**Hydraulic erosion terrain overhaul — CPU erosion, channel carving and combined
-stream/lake geometry and queries implemented; water quality, playability and
-runtime integration pending.** Replace
+**Hydraulic erosion terrain overhaul — the advanced generator is the game
+default: erosion, continuous spill-connected water, partial lakes, refined
+513-sample surface and generated material fields are implemented; wider
+startup/driving measurements and a memory cap remain.** Replace
 terrain generation and rebuild the surrounding environment as needed, preserving
 the delivered tree system. The user has explicitly allowed the current terrain,
 water, ground materials and non-tree scenery approach to be discarded. Tree
@@ -51,10 +52,11 @@ The default direction remains a temperate British landscape, with erosion,
 drainage, soil/rock exposure and placement derived from shared data. Work is
 planned in this order:
 
-`--menu` shows a terrain-selection menu, with the original generator selected
-for fast startup. Without it, launches go directly to loading.
-Erosion and refinement remain experimental, selectable in the menu or explicitly
-with `--terrain drained-valley`; further terrain-generation work is paused.
+`--menu` shows a two-option terrain menu (original fast heightmap, advanced
+eroded terrain) with the advanced generator selected. Without it, launches load
+the advanced generator directly with 2x surface refinement; `--terrain legacy`
+keeps the original quick generator and `drained-valley` remains an accepted
+alias for `advanced`.
 
 Current scope is **British summertime**. Broader landforms are implemented;
 lower new-map generation time and terrain/water quality remain the priorities.
@@ -76,9 +78,11 @@ them; they are not prerequisites for this work.
 - [x] Extend final refinement to 1025 samples with unchanged 257 erosion;
   capture matched 513/1025 views and measure stationary GPU/loading/memory costs
   ([comparison and test procedure](docs/TERRAIN_REFINEMENT_4X.md)).
-- [ ] Complete refined-surface driving and visual acceptance; fix the remaining
-  tributary gap before considering a default change. Global 1025 refinement
-  remains experimental because of its measured rendering cost.
+- [x] Fix the remaining tributary gap: lake outlets now stand a bounded spill
+  head above their crest, so escaping sheets keep positive depth. All 16 seeds
+  report zero dry sections and zero zero-depth spill controls; 2x refinement is
+  now the advanced default. Global 1025 refinement remains experimental because
+  of its measured rendering cost.
 - [ ] Compare shorter/coarser erosion against the current visual reference;
   measure quality and startup cost before choosing further CPU/GPU work.
 - [ ] Deferred: add regional temperature/precipitation fields and blended
@@ -130,8 +134,12 @@ them; they are not prerequisites for this work.
 - [x] Add bounded deterministic terrain selection with explicit acceptance,
   attempt diagnostics, cancellation boundaries and accounting for rejected work
   ([selection policy and tests](docs/TERRAIN_SELECTION.md)).
-- [ ] Finish channel/bank/confluence shape, positive-depth spill connections
-  and partial-lake policy; accept the combined water geometry and its cost.
+- [x] Add positive-depth spill connections (bounded outlet spill head) and an
+  explicit partial-lake policy (under-supplied basins stand at their sampled
+  equilibrium level, consume their inflow and never spill). Combined water is
+  continuous across every junction and spill on the 16 fixed seeds; narrow
+  steep tributaries may still render sub-pixel thin, which stays accepted as
+  wet ground. LakeWater/StreamNetwork/TerrainWater are now v2.
 - [x] Connect selectable valley generation to responsive loading, retain final
   water/navigation, use the selected spawn and reserve/recheck routes through
   scenery placement while preserving 100 trees
@@ -144,10 +152,24 @@ them; they are not prerequisites for this work.
 - [x] Specialize the foliage lighting shader without reducing tree fidelity;
   validate matched captures and record the initial modest GPU improvement
   ([measurements and comparison limits](docs/FOLIAGE_LIGHTING.md)).
-- [ ] Validate actual driving and complete Stage 3 water/playability acceptance.
-- [ ] Rebuild ground materials and non-tree scenery; place existing trees.
-- [ ] Integrate and validate loading, gameplay, dynamic lighting, performance
-  and the final visual references.
+- [x] Smoke-validate actual driving: deterministic Release `--drive-preview`
+  runs drive, track and fire on advanced terrain across seeds without errors.
+  Extended interactive driving/effects coverage remains part of the measurement
+  work below.
+- [x] Rebuild ground materials and scenery placement from generated fields: the
+  `TerrainMaterials` stage classifies rock (thin/scarred soil on steep ground),
+  moisture (bank distance, storm exposure, gullies) and sediment (deposition),
+  shared verbatim between `basic.frag` (new terrain field texture) and CPU
+  placement (pebbles, grass tufts, rock clusters, shrubs, tree appeal). Ground
+  texture art direction stays open to iteration.
+- [x] Consolidate to one final advanced generator: `--terrain legacy|advanced`,
+  advanced default with 2x refinement and material fields; the menu offers the
+  two generators plus landform/seed. Release loading is 4.30 s median / 4.80 s
+  maximum across three seeds and three repeats on the Arc A370M machine, within
+  the roughly 5.3-second target.
+- [ ] Complete the outstanding measurement gates: unlocked-desktop GPU frame
+  benchmark, extended driving/effects coverage, grid-bias/convergence checks
+  and an enforced memory cap.
 
 The accepted roughly 5.3-second cold-start baseline remains the target; cache
 hits must not hide a slower new-seed path. Keep generation out of normal frames

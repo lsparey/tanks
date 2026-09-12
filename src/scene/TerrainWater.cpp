@@ -134,7 +134,8 @@ Result build(const MacroTerrain::Fields& f, const TerrainDrainage::Result& d,
         int32_t j = d.downstream[i];
         if (!std::isfinite(h) || std::abs(h) > 1e6 || !std::isfinite(d.spillElevation[i]) || d.spillElevation[i] < h ||
             b < -1 || (b >= 0 && size_t(b) >= lakes.lakes.size()) || (b >= 0) != (h < d.spillElevation[i]) ||
-            (b >= 0 && lakes.lakes[b].level != d.spillElevation[i]) || j < -1 ||
+            (b >= 0 && (lakes.lakes[b].partial ? lakes.lakes[b].level >= d.spillElevation[i]
+                                               : lakes.lakes[b].level != d.spillElevation[i])) || j < -1 ||
             (j >= 0 && (size_t(j) >= count || drainageRank[j] >= drainageRank[i] || d.spillElevation[j] > d.spillElevation[i])))
             throw std::invalid_argument("invalid or stale combined water ground/basins");
         if (j >= 0) {
@@ -161,13 +162,30 @@ Result build(const MacroTerrain::Fields& f, const TerrainDrainage::Result& d,
                                   d.downstream[a.cell] != int32_t(network.nodes[j].cell))))
             throw std::invalid_argument("invalid or stale combined water stream profile");
         int32_t b = d.basin[a.cell];
-        if ((a.kind == StreamNetwork::Kind::LakeInlet || a.kind == StreamNetwork::Kind::LakeOutlet) &&
+        // Inlets meet the standing surface exactly; outlets may stand a small
+        // bounded spill head above their crest so the escaping sheet stays wet.
+        if (a.kind == StreamNetwork::Kind::LakeInlet &&
             (b < 0 || !lakes.lakes[b].present || a.waterLevel != lakes.lakes[b].level))
             throw std::invalid_argument("combined water stream does not meet its lake level");
-        if (a.kind == StreamNetwork::Kind::DrySink && (b < 0 || lakes.lakes[b].present))
+        if (a.kind == StreamNetwork::Kind::LakeOutlet &&
+            (b < 0 || !lakes.lakes[b].present || a.waterLevel < lakes.lakes[b].level ||
+             a.waterLevel > lakes.lakes[b].level + 1))
+            throw std::invalid_argument("combined water outlet leaves its bounded spill head");
+        if (a.kind == StreamNetwork::Kind::DrySink &&
+            (b < 0 || (lakes.lakes[b].present &&
+                       (!lakes.lakes[b].partial || lakes.lakes[b].level > a.ground))))
             throw std::invalid_argument("combined water dry sink does not match basin supply");
-        if (nodeAt[a.cell] >= 0 && level(network.nodes[nodeAt[a.cell]]) != level(a))
-            throw std::invalid_argument("conflicting water levels at shared stream vertex");
+        if (nodeAt[a.cell] >= 0 && level(network.nodes[nodeAt[a.cell]]) != level(a)) {
+            // A lake's inlet and outlet may share the spill cell; the outlet
+            // stands above the inlet by its spill head. Anything else is stale.
+            const auto& other = network.nodes[nodeAt[a.cell]];
+            auto spillPair = [](const StreamNetwork::Node& outlet, const StreamNetwork::Node& inlet) {
+                return outlet.kind == StreamNetwork::Kind::LakeOutlet &&
+                       inlet.kind == StreamNetwork::Kind::LakeInlet && outlet.waterLevel >= inlet.waterLevel;
+            };
+            if (!spillPair(a, other) && !spillPair(other, a))
+                throw std::invalid_argument("conflicting water levels at shared stream vertex");
+        }
         nodeAt[a.cell] = int32_t(i);
         if (j < 0) continue;
         const auto& target = network.nodes[j];

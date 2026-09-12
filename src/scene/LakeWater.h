@@ -8,18 +8,23 @@
 
 namespace LakeWater {
 
-inline constexpr uint32_t kVersion = 1;
+inline constexpr uint32_t kVersion = 2;
 struct Settings {
     // Artistic steady depth/time rates. Together these define full-basin loss
-    // capacity. Under-supplied basins consume inflow and have no lake surface;
-    // supplied basins stand at the spill level and pass excess downstream.
+    // capacity. Supplied basins stand at the spill level and pass excess
+    // downstream. Under-supplied basins consume their whole inflow and stand
+    // at the bounded equilibrium level where area-dependent loss balances it;
+    // a level with no submerged depth leaves the candidate absent.
     double evaporation = .001;
     double seepage = .001;
 };
 struct Lake {
     bool present = false;
+    bool partial = false; // present below its spill; consumes inflow, no outflow
     float level = 0;
-    double area = 0, volume = 0; // integrals at spill level, including absent candidates
+    // Integrals at the standing level: spill level for full and absent
+    // candidates, the equilibrium level for partial lakes.
+    double area = 0, volume = 0;
     double inflow = 0, loss = 0, outflow = 0;
     int32_t spillFrom = -1, spillTo = -1;
 };
@@ -78,7 +83,8 @@ struct Result {
 // Uniform local supply is recovered from drainage.generatedRunoff/domainArea.
 // Basins route excess through their first (lowest-rank) spill edge. This makes
 // the contracted basin graph acyclic even with several equal-height exits.
-// This bounded full-or-dry policy does not model nested partially filled lakes.
+// Under-supplied basins hold one partial lake at their sampled equilibrium
+// level; sub-depressions above that level do not form nested lakes.
 Result build(const MacroTerrain::Fields& fields, const TerrainDrainage::Result& drainage,
              const Settings& settings = {});
 

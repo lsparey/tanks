@@ -168,6 +168,13 @@ uint64_t fieldFingerprint(const TerrainGenerator::BuildResult& build) {
             word(uint32_t(bits)); word(uint32_t(bits >> 32));
         }
     }
+    if (build.materials) {
+        word(TerrainMaterials::kVersion);
+        const auto& m = *build.materials;
+        word(uint32_t(m.resolution));
+        for (const auto* values : {&m.rock, &m.moisture, &m.sediment})
+            for (float v : *values) word(std::bit_cast<uint32_t>(v));
+    }
     if (build.playability) {
         const auto& r = *build.playability;
         word(TerrainPlayability::kVersion); word(uint32_t(r.status)); word(uint32_t(r.resolution));
@@ -205,6 +212,7 @@ void exportDiagnostics(const TerrainGenerator::BuildResult& build, const std::fi
     if (build.streamSections) stem += "-sections-v" + std::to_string(StreamSections::kVersion);
     if (build.channelCarving) stem += "-carved-v" + std::to_string(ChannelCarving::kVersion);
     if (build.combinedWater) stem += "-water-v" + std::to_string(TerrainWater::kVersion);
+    if (build.materials) stem += "-materials-v" + std::to_string(TerrainMaterials::kVersion);
     if (build.playability) stem += "-play-v" + std::to_string(TerrainPlayability::kVersion);
     auto open = [&](std::string_view suffix) {
         std::ofstream file(directory / (stem + std::string(suffix)), std::ios::binary);
@@ -297,6 +305,12 @@ void exportDiagnostics(const TerrainGenerator::BuildResult& build, const std::fi
         fieldImage("-bedrock.pgm", fields.bedrock, *rockMin, *rockMax);
         fieldImage("-soil.pgm", fields.soil, 0, soilMax);
         fieldImage("-erodibility.pgm", fields.erodibility, 0, 1);
+        if (build.materials) {
+            const auto& m = *build.materials;
+            fieldImage("-material-rock.pgm", m.rock, 0, 1, m.resolution);
+            fieldImage("-material-moisture.pgm", m.moisture, 0, 1, m.resolution);
+            fieldImage("-material-sediment.pgm", m.sediment, 0, 1, m.resolution);
+        }
         auto outlets = open("-outlets.pgm");
         outlets << "P5\n" << fields.heightmap.resolution << ' ' << fields.heightmap.resolution << "\n255\n";
         for (uint8_t value : fields.openFaces) outlets.put(static_cast<char>(value));
@@ -634,6 +648,14 @@ void exportDiagnostics(const TerrainGenerator::BuildResult& build, const std::fi
                  << "\ncombined_water_ms=" << r.elapsedMs << "\ncombined_water_bytes=" << r.payloadBytes()
                  << "\ncombined_shoreline=full-apron zero-depth contours; no crop boundary bank; exact nearest-segment BVH\n";
     }
+    if (build.materials) {
+        const auto& m = *build.materials;
+        metadata << "materials_version=" << TerrainMaterials::kVersion
+                 << "\nmaterials_resolution=" << m.resolution
+                 << "\nmaterials_policy=rock from thin soil and hydraulic scars; moisture from final water distance, storm exposure and throughflow; sediment from deposition"
+                 << "\nmaterials_ms=" << m.elapsedMs << "\nmaterials_bytes=" << m.payloadBytes()
+                 << "\nmaterials_pgm=playable grid, zero to one\n";
+    }
     if (build.playability) {
         const auto& r = *build.playability;
         const auto& s = *build.settings.playability;
@@ -701,6 +723,7 @@ int main(int argc, char** argv) {
         StreamSections::Settings sectionSettings;
         bool channelCarving = false, carvingOptions = false;
         ChannelCarving::Settings carvingSettings;
+        bool terrainMaterials = false;
         bool playability = false, playabilityOptions = false, failedPlayability = false;
         TerrainPlayability::Settings playabilitySettings;
         for (int i = 1; i < argc; ++i) {
@@ -718,6 +741,7 @@ int main(int argc, char** argv) {
                              "  Bank surveys (requires streams): [--stream-sections on|off] [--bank-search-distance N]\n"
                              "  Terrain edits (requires streams): [--channel-carving on|off] [--channel-max-cut N]\n"
                              "  Combined water mesh/queries (requires streams): [--combined-water on|off]\n"
+                             "  Ground classification (requires combined water): [--terrain-materials on|off]\n"
                              "  Spawn/routes (requires combined water): [--playability on|off]\n"
                              "    [--tank-width N] [--tank-length N] [--spawn-clearance N] [--play-boundary-inset N]\n"
                              "    [--route-max-slope N] [--spawn-max-slope N] [--play-min-area N] [--play-min-span N]\n"
@@ -784,6 +808,11 @@ int main(int argc, char** argv) {
                 settings.combinedWater = value == "on";
             }
             else if (option == "--repeats") repeats = number<int>(argv[i]);
+            else if (option == "--terrain-materials") {
+                std::string_view value(argv[i]);
+                if (value != "on" && value != "off") throw std::invalid_argument("--terrain-materials expects on or off");
+                terrainMaterials = value == "on";
+            }
             else if (option == "--playability") {
                 std::string_view value(argv[i]);
                 if (value != "on" && value != "off") throw std::invalid_argument("--playability expects on or off");
@@ -816,11 +845,12 @@ int main(int argc, char** argv) {
         if (carvingOptions && !channelCarving) throw std::invalid_argument("channel cut options require --channel-carving on");
         if (channelCarving) settings.channelCarving = carvingSettings;
         if (playabilityOptions && !playability) throw std::invalid_argument("playability options require --playability on");
+        if (terrainMaterials) settings.materials.emplace();
         if (playability) settings.playability = playabilitySettings;
         std::vector<uint32_t> seeds(TerrainGenerator::kRegressionSeeds.begin(), TerrainGenerator::kRegressionSeeds.end());
         if (seed) seeds = {*seed};
         std::vector<double> times;
-        std::cout << "preset,version,seed,resolution,repeat,heightfield_ms,surface_ms,mesh_ms,total_ms,surface_bytes,mesh_bytes,field_bytes,mesh_fnv1a64,field_fnv1a64,erosion_ms,erosion_steps,erosion_field_bytes,erosion_working_bytes,water_residual,solid_residual,solid_rounding_delta,settlement_ms,drainage_ms,drainage_field_bytes,drainage_working_bytes,basins,runoff_residual,removed_transient_water,settled_sediment,lake_version,water_ms,water_bytes,lakes_present,water_triangles,lake_runoff_residual,stream_version,stream_ms,stream_bytes,stream_nodes,stream_reaches,stream_confluences,stream_deficient_nodes,stream_max_deficit,section_version,sections_ms,sections_bytes,sections,bounded_sections,dry_sections,domain_limited_sections,search_limited_sections,spill_controls,carving_version,channel_preparation_ms,carving_ms,carving_bytes,carved_cells,exported_soil,exported_bedrock,removed_ground,carving_residual,carving_rounding_delta,combined_water_version,combined_water_ms,combined_water_bytes,combined_stream_triangles,combined_lake_triangles,combined_stream_area,combined_lake_area,playability_version,playability_status,playability_ms,playability_bytes,playability_working_bytes,playability_components,spawn_x,spawn_y,spawn_z,spawn_connected_area,route_length,route_span,landform_version,landform_requested,landform_resolved,warp_strength,final_resolution,refinement_version,refinement_ms\n";
+        std::cout << "preset,version,seed,resolution,repeat,heightfield_ms,surface_ms,mesh_ms,total_ms,surface_bytes,mesh_bytes,field_bytes,mesh_fnv1a64,field_fnv1a64,erosion_ms,erosion_steps,erosion_field_bytes,erosion_working_bytes,water_residual,solid_residual,solid_rounding_delta,settlement_ms,drainage_ms,drainage_field_bytes,drainage_working_bytes,basins,runoff_residual,removed_transient_water,settled_sediment,lake_version,water_ms,water_bytes,lakes_present,water_triangles,lake_runoff_residual,stream_version,stream_ms,stream_bytes,stream_nodes,stream_reaches,stream_confluences,stream_deficient_nodes,stream_max_deficit,section_version,sections_ms,sections_bytes,sections,bounded_sections,dry_sections,domain_limited_sections,search_limited_sections,spill_controls,carving_version,channel_preparation_ms,carving_ms,carving_bytes,carved_cells,exported_soil,exported_bedrock,removed_ground,carving_residual,carving_rounding_delta,combined_water_version,combined_water_ms,combined_water_bytes,combined_stream_triangles,combined_lake_triangles,combined_stream_area,combined_lake_area,playability_version,playability_status,playability_ms,playability_bytes,playability_working_bytes,playability_components,spawn_x,spawn_y,spawn_z,spawn_connected_area,route_length,route_span,landform_version,landform_requested,landform_resolved,warp_strength,final_resolution,refinement_version,refinement_ms,materials_version,materials_ms,materials_bytes\n";
         for (uint32_t value : seeds) {
             settings.seed = value;
             std::optional<uint64_t> expected;
@@ -899,7 +929,9 @@ int main(int argc, char** argv) {
                           << MacroTerrain::landformName(MacroTerrain::resolveLandform(settings.macro.landform, value))
                           << ',' << settings.macro.warpStrength << ',' << build.surface.heightmap().resolution
                           << ',' << (build.refinement ? TerrainRefinement::kVersion : 0)
-                          << ',' << (build.refinement ? build.refinement->elapsedMs : 0) << '\n';
+                          << ',' << (build.refinement ? build.refinement->elapsedMs : 0)
+                          << ',' << (build.materials ? TerrainMaterials::kVersion : 0)
+                          << ',' << stats.materialsMs << ',' << stats.materialsBytes << '\n';
                 if (repeat == 0 && !directory.empty()) exportDiagnostics(build, directory);
             }
         }

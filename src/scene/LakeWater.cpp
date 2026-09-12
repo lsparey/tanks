@@ -184,6 +184,14 @@ Result build(const MacroTerrain::Fields& f, const TerrainDrainage::Result& d, co
         r.discharge[i] = localRate * areaAt(f, i);
         r.generatedRunoff += r.discharge[i];
     }
+    // Sampled hypsometry for the partial-lake equilibrium solve. Cell heights
+    // and dual-cell areas are a bounded sampling of each basin rather than the
+    // exact triangle integral used for the full-lake loss capacity.
+    std::vector<std::vector<std::pair<float, double>>> hypsometry(r.lakes.size());
+    for (uint32_t i = 0; i < count; ++i)
+        if (d.basin[i] >= 0) hypsometry[d.basin[i]].push_back({f.heightmap.heights[i], areaAt(f, i)});
+    for (auto& cells : hypsometry)
+        std::sort(cells.begin(), cells.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     // Basin members collect inflow instead of forwarding it along the raw
     // flood tree. At the lowest-rank member every inflow is known; excess is
     // released to a strictly earlier vertex, preserving a single acyclic pass.
@@ -195,10 +203,29 @@ Result build(const MacroTerrain::Fields& f, const TerrainDrainage::Result& d, co
             lake.inflow += r.discharge[i];
             r.discharge[i] = 0;
             if (i != uint32_t(lake.spillFrom)) continue;
-            double lossCapacity = lake.area * (settings.evaporation + settings.seepage);
+            double rate = settings.evaporation + settings.seepage;
+            double lossCapacity = lake.area * rate;
             lake.loss = std::min(lake.inflow, lossCapacity);
             lake.outflow = lake.inflow - lake.loss;
             lake.present = lake.area > 0 && lake.inflow > 0 && lake.inflow >= lossCapacity;
+            if (!lake.present && lake.inflow > 0 && lake.area > 0) {
+                // Equilibrium level: rise while the strictly submerged sampled
+                // area still loses less than the inflow supplies. The measure
+                // mismatch fallback stands at the highest sampled basin cell.
+                const auto& cells = hypsometry[b];
+                double cumulative = 0;
+                float level = cells.back().first;
+                for (const auto& [height, area] : cells) {
+                    cumulative += area;
+                    if (cumulative * rate > lake.inflow) { level = height; break; }
+                }
+                if (level > d.basins[b].minimumGround) {
+                    lake.present = lake.partial = true;
+                    lake.level = level;
+                    lake.area = lake.volume = 0; // re-integrated at the standing level
+                    r.surface.levels_[b] = level;
+                }
+            }
             r.basinLoss += lake.loss;
             r.discharge[i] = lake.outflow;
         }
@@ -209,6 +236,14 @@ Result build(const MacroTerrain::Fields& f, const TerrainDrainage::Result& d, co
 
     triangles([&](int32_t b, int x, int z, int t, const Polygon& polygon) {
         if (!r.lakes[b].present || polygon.size < 3) return;
+        if (r.lakes[b].partial) {
+            for (int k = 1; k + 1 < polygon.size; ++k) {
+                const auto &a = polygon.points[0], &v = polygon.points[k], &w = polygon.points[k + 1];
+                double area = triangleArea(a, v, w);
+                r.lakes[b].area += area;
+                r.lakes[b].volume += area * (a.depth + v.depth + w.depth) / 3;
+            }
+        }
         for (int k = 0; k < polygon.size; ++k) {
             const auto& a = polygon.points[k]; const auto& v = polygon.points[(k + 1) % polygon.size];
             if (a.depth == 0 && v.depth == 0 && a.xz != v.xz) shores.push_back({a.xz, v.xz});

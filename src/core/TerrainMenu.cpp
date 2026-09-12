@@ -13,11 +13,8 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
     constexpr float width = 1024, height = 720;
     struct Mode { const char* title; const char* description; int erosion, passes; };
     constexpr Mode modes[] = {
-        {"ORIGINAL TERRAIN - FAST", "CLASSIC TERRAIN. NO EROSION SIMULATION.", 257, 0},
-        {"ERODED LANDSCAPES - 257", "EXPERIMENTAL HILLS, RIDGES, PLAINS, BASINS AND VALLEYS.", 257, 0},
-        {"REFINED TERRAIN - 513", "FINER SURFACE AND SMOOTHER BANKS. KEEPS THE 257 EROSION GRID.", 257, 1},
-        {"REFINED TERRAIN - 1025", "EXTRA SURFACE DETAIL. HIGHER MEMORY USE AND LOWER FRAME RATE.", 257, 2},
-        {"FINE EROSION - 513 / SLOW", "MUCH SLOWER GENERATION. SOME MAPS MAY FAIL TO GENERATE.", 513, 0},
+        {"ORIGINAL TERRAIN - FAST", "CLASSIC HEIGHTMAP. NO EROSION SIMULATION.", 257, 0},
+        {"ADVANCED TERRAIN", "ERODED LANDFORMS, RIVERS, LAKES AND CLASSIFIED GROUND.", 257, 1},
     };
     constexpr MacroTerrain::Landform forms[] = {
         MacroTerrain::Landform::Mixed, MacroTerrain::Landform::Hills,
@@ -29,15 +26,15 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
         float x, y, w, h;
         bool contains(float px, float py) const { return px >= x && px < x+w && py >= y && py < y+h; }
     };
-    std::array<Rect, 11> controls{};
-    for (int i = 0; i < 5; ++i) controls[i] = {232, 118.f + i * 56, 560, 48};
-    controls[5] = {232, 428, 272, 40};
-    controls[6] = {512, 428, 168, 40};
-    controls[7] = {688, 428, 104, 40};
-    controls[8] = {232, 506, 272, 44};
-    controls[9] = {688, 506, 104, 44};
-    controls[10] = {512, 506, 168, 44};  // SHADOWS toggle, between start and quit
-    int selected = 0, focus = 8, form = 0;
+    std::array<Rect, 8> controls{};
+    for (int i = 0; i < 2; ++i) controls[i] = {232, 118.f + i * 56, 560, 48};
+    controls[2] = {232, 428, 272, 40};
+    controls[3] = {512, 428, 168, 40};
+    controls[4] = {688, 428, 104, 40};
+    controls[5] = {232, 506, 272, 44};
+    controls[6] = {688, 506, 104, 44};
+    controls[7] = {512, 506, 168, 44};  // SHADOWS toggle, between start and quit
+    int selected = 1, focus = 5, form = 0;
     std::string seed = std::to_string(worldSeed_);
     bool selectSeed = false, mouseWasDown = false;
     std::array<bool, GLFW_KEY_LAST + 1> keys{};
@@ -61,10 +58,10 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
         if (key(GLFW_KEY_TAB) || key(GLFW_KEY_DOWN) || key(GLFW_KEY_UP)) {
             bool backwards = key(GLFW_KEY_UP) || (key(GLFW_KEY_TAB) &&
                 (glfwGetKey(window_, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS || glfwGetKey(window_, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS));
-            focus = (focus + (backwards ? 10 : 1)) % 11;
-            if (focus == 6) selectSeed = true;
+            focus = (focus + (backwards ? 7 : 1)) % 8;
+            if (focus == 3) selectSeed = true;
         }
-        if (focus == 5 && selected != 0 && (key(GLFW_KEY_LEFT) || key(GLFW_KEY_RIGHT)))
+        if (focus == 2 && selected != 0 && (key(GLFW_KEY_LEFT) || key(GLFW_KEY_RIGHT)))
             form = (form + (key(GLFW_KEY_LEFT) ? 5 : 1)) % 6;
         int windowWidth, windowHeight;
         glfwGetWindowSize(window_, &windowWidth, &windowHeight);
@@ -74,19 +71,19 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
         float x = (float(mx) - (windowWidth - width * scale) * .5f) / scale;
         float y = (float(my) - (windowHeight - height * scale) * .5f) / scale;
         int hovered = -1;
-        for (int i = 0; i < 11; ++i) if (controls[i].contains(x, y)) hovered = i;
+        for (int i = 0; i < 8; ++i) if (controls[i].contains(x, y)) hovered = i;
         bool mouseDown = glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         int activated = -1;
         if (mouseDown && !mouseWasDown && hovered >= 0) {
             focus = activated = hovered;
-            if (focus == 6) selectSeed = true;
+            if (focus == 3) selectSeed = true;
         }
         if (key(GLFW_KEY_ENTER) || key(GLFW_KEY_KP_ENTER)) activated = focus;
-        if (activated >= 0 && activated < 5) selected = activated;
-        if (activated == 5 && selected != 0) form = (form + 1) % 6;
-        if (activated == 7) { seed = std::to_string(std::random_device{}()); selectSeed = false; }
-        if (activated == 10) shadowsEnabled_ = !shadowsEnabled_;
-        if (focus == 6) {
+        if (activated >= 0 && activated < 2) selected = activated;
+        if (activated == 2 && selected != 0) form = (form + 1) % 6;
+        if (activated == 4) { seed = std::to_string(std::random_device{}()); selectSeed = false; }
+        if (activated == 7) shadowsEnabled_ = !shadowsEnabled_;
+        if (focus == 3) {
             if (key(GLFW_KEY_A) && (glfwGetKey(window_, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
                                    glfwGetKey(window_, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS)) selectSeed = true;
             if (key(GLFW_KEY_BACKSPACE) || key(GLFW_KEY_DELETE)) {
@@ -103,8 +100,8 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
         uint32_t parsedSeed = 0;
         auto parsed = std::from_chars(seed.data(), seed.data() + seed.size(), parsedSeed);
         bool validSeed = parsed.ec == std::errc{} && parsed.ptr == seed.data() + seed.size();
-        if (activated == 9) { glfwSetWindowShouldClose(window_, GLFW_TRUE); break; }
-        if (activated == 8 && validSeed) {
+        if (activated == 6) { glfwSetWindowShouldClose(window_, GLFW_TRUE); break; }
+        if (activated == 5 && validSeed) {
             valleyTerrain = selected != 0;
             terrainResolution = modes[selected].erosion;
             refinementPasses = modes[selected].passes;
@@ -132,14 +129,14 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
             const glm::vec3 white(.95f,.96f,.97f), muted(.62f,.66f,.70f);
             const glm::vec3 accent(.38f,.79f,.76f), warn(.96f,.56f,.36f);
             text("SELECT TERRAIN", 232, 52, 2.2f, white);
-            text("ORIGINAL IS FASTEST. EXPERIMENTAL MODES MAY TAKE LONGER.", 232, 84, 1.2f, muted);
-            for (int i = 0; i < 11; ++i) {
-                bool disabled = (i == 5 && selected == 0) || (i == 8 && !validSeed);
+            text("ORIGINAL IS FASTEST. ADVANCED SIMULATES EROSION AND WATER.", 232, 84, 1.2f, muted);
+            for (int i = 0; i < 8; ++i) {
+                bool disabled = (i == 2 && selected == 0) || (i == 5 && !validSeed);
                 Rect r = controls[i];
                 glm::vec3 border = !disabled && focus == i ? accent : glm::vec3(.15f,.17f,.19f);
                 quad(r, border);
                 quad({r.x+1,r.y+1,r.w-2,r.h-2}, !disabled && hovered == i ? glm::vec3(.10f,.12f,.13f) : glm::vec3(.05f,.06f,.07f));
-                if (i < 5) {
+                if (i < 2) {
                     if (selected == i) quad({r.x+1,r.y+1,4,r.h-2},accent);
                     text(modes[i].title,r.x+18,r.y+9,1.5f,selected == i ? accent : white);
                     text(modes[i].description,r.x+18,r.y+27,1.1f,muted);
@@ -148,7 +145,7 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
             text("LANDFORM",232,410,1.1f,muted);
             text(selected == 0 ? "NOT USED" : formNames[form],246,441,1.4f,selected == 0 ? muted : white);
             text("SEED",512,410,1.1f,muted);
-            if (focus == 6 && selectSeed) quad({516,434,152,28},{.14f,.28f,.27f});
+            if (focus == 3 && selectSeed) quad({516,434,152,28},{.14f,.28f,.27f});
             text(seed.empty() ? "-" : seed,520,441,1.4f,white);
             text("RANDOM",712,442,1.3f,white);
             text(validSeed ? "TAB / ARROWS: FOCUS   ENTER: ACTIVATE   ESC: QUIT" : "ENTER A SEED FROM 0 TO 4294967295",232,478,1.2f,validSeed ? muted : warn);

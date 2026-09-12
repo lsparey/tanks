@@ -11,6 +11,7 @@
 #include "StreamSections.h"
 #include "ChannelCarving.h"
 #include "TerrainWater.h"
+#include "TerrainMaterials.h"
 #include "TerrainSurface.h"
 #include "TerrainPlayability.h"
 
@@ -39,6 +40,7 @@ struct Settings {
     std::optional<StreamSections::Settings> streamSections; // exact bank/spill survey; requires streams
     std::optional<ChannelCarving::Settings> channelCarving; // opt-in terrain edits, followed by fresh hydrology
     bool combinedWater = false; // terrain-clipped stream/lake surface; requires stream profiles
+    std::optional<TerrainMaterials::Settings> materials; // final rock/moisture/sediment classification; requires combined water
     std::optional<TerrainPlayability::Settings> playability; // read-only final-ground spawn/route analysis
 };
 
@@ -65,6 +67,7 @@ struct Statistics {
     double streamSectionsMs = 0;
     double channelPreparationMs = 0, channelCarvingMs = 0;
     double combinedWaterMs = 0;
+    double materialsMs = 0;
     double playabilityMs = 0;
     // Owned vector payload only; excludes allocator overhead, generator
     // scratch, upload packing/staging, driver allocations and the rest of scene.
@@ -78,6 +81,7 @@ struct Statistics {
     size_t streamSectionsBytes = 0;
     size_t channelCarvingBytes = 0;
     size_t combinedWaterBytes = 0;
+    size_t materialsBytes = 0;
     size_t playabilityBytes = 0;
 };
 struct BuildResult {
@@ -93,6 +97,7 @@ struct BuildResult {
     std::optional<StreamSections::Result> streamSections;
     std::optional<ChannelCarving::Result> channelCarving;
     std::optional<TerrainWater::Result> combinedWater;
+    std::optional<TerrainMaterials::Fields> materials;
     std::optional<TerrainPlayability::Result> playability;
     std::optional<TerrainRefinement::Result> refinement;
 };
