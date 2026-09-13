@@ -26,7 +26,7 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
         float x, y, w, h;
         bool contains(float px, float py) const { return px >= x && px < x+w && py >= y && py < y+h; }
     };
-    std::array<Rect, 8> controls{};
+    std::array<Rect, 9> controls{};
     for (int i = 0; i < 2; ++i) controls[i] = {232, 118.f + i * 56, 560, 48};
     controls[2] = {232, 428, 272, 40};
     controls[3] = {512, 428, 168, 40};
@@ -34,6 +34,7 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
     controls[5] = {232, 506, 272, 44};
     controls[6] = {688, 506, 104, 44};
     controls[7] = {512, 506, 168, 44};  // SHADOWS toggle, between start and quit
+    controls[8] = {512, 562, 168, 44};  // SOUND toggle, directly below shadows
     int selected = 1, focus = 5, form = 0;
     std::string seed = std::to_string(worldSeed_);
     bool selectSeed = false, mouseWasDown = false;
@@ -58,7 +59,7 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
         if (key(GLFW_KEY_TAB) || key(GLFW_KEY_DOWN) || key(GLFW_KEY_UP)) {
             bool backwards = key(GLFW_KEY_UP) || (key(GLFW_KEY_TAB) &&
                 (glfwGetKey(window_, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS || glfwGetKey(window_, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS));
-            focus = (focus + (backwards ? 7 : 1)) % 8;
+            focus = (focus + (backwards ? 8 : 1)) % 9;
             if (focus == 3) selectSeed = true;
         }
         if (focus == 2 && selected != 0 && (key(GLFW_KEY_LEFT) || key(GLFW_KEY_RIGHT)))
@@ -71,7 +72,7 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
         float x = (float(mx) - (windowWidth - width * scale) * .5f) / scale;
         float y = (float(my) - (windowHeight - height * scale) * .5f) / scale;
         int hovered = -1;
-        for (int i = 0; i < 8; ++i) if (controls[i].contains(x, y)) hovered = i;
+        for (int i = 0; i < 9; ++i) if (controls[i].contains(x, y)) hovered = i;
         bool mouseDown = glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         int activated = -1;
         if (mouseDown && !mouseWasDown && hovered >= 0) {
@@ -83,6 +84,14 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
         if (activated == 2 && selected != 0) form = (form + 1) % 6;
         if (activated == 4) { seed = std::to_string(std::random_device{}()); selectSeed = false; }
         if (activated == 7) shadowsEnabled_ = !shadowsEnabled_;
+        if (activated == 8) {
+            // Enabling can fail (no audio device), so read the actual state
+            // back rather than assuming the flip took effect. The shot is an
+            // audible confirmation that output really works.
+            audio_->setEnabled(!soundEnabled_);
+            soundEnabled_ = audio_->enabled();
+            if (soundEnabled_) audio_->playShot();
+        }
         if (focus == 3) {
             if (key(GLFW_KEY_A) && (glfwGetKey(window_, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
                                    glfwGetKey(window_, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS)) selectSeed = true;
@@ -130,7 +139,7 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
             const glm::vec3 accent(.38f,.79f,.76f), warn(.96f,.56f,.36f);
             text("SELECT TERRAIN", 232, 52, 2.2f, white);
             text("ORIGINAL IS FASTEST. ADVANCED SIMULATES EROSION AND WATER.", 232, 84, 1.2f, muted);
-            for (int i = 0; i < 8; ++i) {
+            for (int i = 0; i < 9; ++i) {
                 bool disabled = (i == 2 && selected == 0) || (i == 5 && !validSeed);
                 Rect r = controls[i];
                 glm::vec3 border = !disabled && focus == i ? accent : glm::vec3(.15f,.17f,.19f);
@@ -151,6 +160,7 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
             text(validSeed ? "TAB / ARROWS: FOCUS   ENTER: ACTIVATE   ESC: QUIT" : "ENTER A SEED FROM 0 TO 4294967295",232,478,1.2f,validSeed ? muted : warn);
             text("START GAME",250,520,1.5f,validSeed ? accent : muted);
             text(shadowsEnabled_ ? "SHADOWS: ON" : "SHADOWS: OFF",526,523,1.2f,shadowsEnabled_ ? accent : muted);
+            text(soundEnabled_ ? "SOUND: ON" : "SOUND: OFF",526,579,1.2f,soundEnabled_ ? accent : muted);
             text("QUIT",723,520,1.5f,white);
         });
         glfwWaitEventsTimeout(1.0 / 30.0);

@@ -292,6 +292,10 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
     auto loadingStart = std::chrono::steady_clock::now();
     weaponPreview_ = weaponPreview;
     initWindow();
+    // Constructed before the terrain menu so its SOUND toggle can enable
+    // playback immediately. Construction only synthesizes the clips; the OS
+    // audio device stays untouched until the toggle actually enables sound.
+    audio_ = std::make_unique<AudioEngine>();
     context_ = std::make_unique<VulkanContext>(window_);
 
     VkPhysicalDeviceProperties physicalDeviceProperties{};
@@ -1078,6 +1082,10 @@ void Application::cleanup() noexcept {
         gpuTimestampPool_ = VK_NULL_HANDLE;
     }
 
+    // Stop sound first -- its device callback runs on its own thread and
+    // has no Vulkan/GLFW dependencies to wait on.
+    audio_.reset();
+
     // Destroy in dependency order before the GLFW window disappears.
     treeShadowMap_.reset();
     historyBuffer_.reset();
@@ -1401,6 +1409,13 @@ void Application::mainLoop() {
                           wadeDepth);
         }
         updateTrackMarks(deltaTime);
+
+        // Engine drone follows whichever is stronger: hull speed or a pivot
+        // turn (where signedSpeed is ~0 but the engine is working hard).
+        // Thresholds mirror updateTrackMarks' speedAmount/turnAmount.
+        float driveAmount = glm::smoothstep(0.15f, 5.5f, std::abs(tank_->signedSpeed()));
+        float turnAmount = glm::clamp(tank_->angularSpeed() / 0.9f, 0.0f, 1.0f);
+        audio_->updateEngineSound(std::max(driveAmount, turnAmount), deltaTime);
 
         bool fireDown = !treeLodBenchmark_ && (glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS ||
                         glfwGetKey(window_, GLFW_KEY_SPACE) == GLFW_PRESS);
@@ -2164,6 +2179,10 @@ void Application::spawnWaterRipple(glm::vec3 position, float initialRadius, floa
 }
 
 void Application::spawnExplosion(glm::vec3 position) {
+    // Every explosion in the game (shell impacts, crushed crates, previews)
+    // funnels through here, so this one call covers them all.
+    audio_->playExplosion(glm::distance(position, camera_.position()));
+
     // Bright orange flash, unshadowed -- see DynamicLight.h. Radius/
     // lifetime roughly matched to the debris burst below so nearby geometry
     // lights up for about as long as the explosion visually reads as
@@ -2557,6 +2576,8 @@ void Application::recreateSwapchainDependentResources() {
 
 void Application::fireProjectile() {
     constexpr float kShellSpeed = 25.0f;
+
+    audio_->playShot();
 
     Projectile shell;
     shell.position = tank_->muzzleWorldPosition();

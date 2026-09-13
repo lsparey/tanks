@@ -113,9 +113,16 @@ find_package(Vulkan 1.3 REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(assimp CONFIG REQUIRED)
 find_package(Stb REQUIRED)
+# Header-only, like Stb; no imported target to link.
+find_path(MINIAUDIO_INCLUDE_DIR "miniaudio.h" REQUIRED)
+
+add_executable(audio_probe tools/AudioProbe.cpp src/audio/AudioEngine.cpp)
+target_include_directories(audio_probe PRIVATE src ${MINIAUDIO_INCLUDE_DIR})
+target_link_libraries(audio_probe PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
 
 add_executable(tanks
     src/main.cpp
+    src/audio/AudioEngine.cpp
     src/core/Application.cpp
     src/core/TerrainMenu.cpp
     src/render/VulkanContext.cpp
@@ -165,7 +172,7 @@ target_compile_definitions(tanks PRIVATE
     ASSET_ROOT="${CMAKE_SOURCE_DIR}"
 )
 
-target_include_directories(tanks PRIVATE ${Stb_INCLUDE_DIR})
+target_include_directories(tanks PRIVATE ${Stb_INCLUDE_DIR} ${MINIAUDIO_INCLUDE_DIR})
 
 target_link_libraries(tanks PRIVATE
     Vulkan::Vulkan
@@ -175,6 +182,9 @@ target_link_libraries(tanks PRIVATE
     Threads::Threads
     terrain_generation
     combat_hud
+    # miniaudio dlopens the platform audio backend (ALSA/PulseAudio) at
+    # runtime rather than linking it.
+    ${CMAKE_DL_LIBS}
 )
 
 include(cmake/CompileShaders.cmake)

@@ -421,6 +421,18 @@ Click the landform to cycle it; click the seed to replace it, or use
 quits. Invalid seeds disable Start Game.
 See the [menu preview](docs/terrain-menu.png).
 
+The menu's **SOUND** toggle enables sound effects: a two-layer engine sound
+modelled on the Challenger 2's CV12 diesel (combustion drone plus a lagging
+turbo whine under load) that follows the tank's speed including pivot turns,
+the 120 mm gun report with an echoing rumble tail, and shell explosions
+attenuated by distance from the camera. Sound defaults to off and
+there is no in-game key for it, so without the menu the audio device is never
+opened. All three clips are synthesized procedurally at startup (no audio
+asset files) and played through miniaudio; enabling the toggle plays a
+confirmation shot, and if no playback device exists the toggle stays off.
+The build also produces an `audio_probe` tool that plays each effect once,
+for auditioning the sounds without launching the game.
+
 **The menu only appears with `--menu`.** Plain `./build/tanks` starts the
 advanced generator directly; `./build/tanks --terrain legacy` starts the
 original quick heightmap instead (`drained-valley` is still accepted as the

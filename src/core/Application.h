@@ -10,6 +10,7 @@
 
 #include "FrameProfiler.h"
 
+#include "../audio/AudioEngine.h"
 #include "../render/AccelerationStructure.h"
 #include "../render/CommandContext.h"
 #include "../render/HistoryBuffer.h"
@@ -150,6 +151,10 @@ private:
     // rawShadow/rawAO) -- lets a perf/quality comparison run without
     // restarting, and doubles as the terrain menu's SHADOWS button default.
     bool shadowsEnabled_ = true;
+    // Sound effects are opt-in from the terrain menu's SOUND toggle and
+    // default off -- there is no in-game key for this, so with the menu
+    // skipped (no --menu flag) the audio device is never opened at all.
+    bool soundEnabled_ = false;
     int treeShadowMode_ = 2;
     bool prevTreeShadowKeyDown_ = false;
     bool aoEnabled_ = true;
@@ -197,6 +202,7 @@ private:
     std::unique_ptr<Terrain> terrain_;
     std::unique_ptr<Tank> tank_;
     std::unique_ptr<InputManager> input_;
+    std::unique_ptr<AudioEngine> audio_;
     Camera camera_;
 
     std::unique_ptr<HudRenderer> hud_;
