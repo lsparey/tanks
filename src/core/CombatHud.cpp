@@ -52,7 +52,7 @@ std::string fixed(float value, int decimals=0) {
 
 glm::vec2 mapPosition(glm::vec3 position, float boundaryHalfExtent) {
     float half=std::max(boundaryHalfExtent,.001f);
-    return glm::clamp(glm::vec2(position.x,-position.z)/half,-1.f,1.f)*.5f+glm::vec2(.5f);
+    return glm::clamp(glm::vec2(-position.x,-position.z)/half,-1.f,1.f)*.5f+glm::vec2(.5f);
 }
 
 float headingDegrees(glm::vec3 direction) {
@@ -128,12 +128,12 @@ void draw(HudGeometry& hud, glm::vec2 viewportPixels, const State& s) {
     auto point=[&](glm::vec3 p){return glm::vec2(mapX+5,mapY+5)+mapPosition(p,s.boundaryHalfExtent)*(mapSize-10);};
     for (const auto& target:s.targets) if (target.alive) c.diamond(point(target.position),2.5f,warn);
     glm::vec2 player=point(s.position);
-    glm::vec2 direction(s.forward.x,-s.forward.z);
+    glm::vec2 direction(-s.forward.x,-s.forward.z);
     direction/=std::max(glm::length(direction),.001f);
     glm::vec2 right(-direction.y,direction.x);
     c.hud.addTriangle(c.ndc(player+direction*6.f),c.ndc(player-direction*4.f-right*4.f),
                       c.ndc(player-direction*4.f+right*4.f),accent);
-    glm::vec2 aimDirection(s.aimDirection.x,-s.aimDirection.z);
+    glm::vec2 aimDirection(-s.aimDirection.x,-s.aimDirection.z);
     aimDirection/=std::max(glm::length(aimDirection),.001f);
     glm::vec2 gunEnd=glm::clamp(player+aimDirection*14.f,{mapX,mapY},{mapX+mapSize,mapY+mapSize});
     c.line(player,gunEnd,1.5f,white);
