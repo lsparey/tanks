@@ -572,3 +572,7 @@ readback, so it does not depend on desktop screenshot support.
   exact `./vcpkg` path used above, then configure again.
 - **Window creation or presentation fails:** confirm a working X11/Wayland
   session and that the installed Vulkan driver supports presentation to it.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE.md).
