@@ -39,8 +39,8 @@ struct State {
     bool matchActive = false;      // hides the whole turn/combat panel outside --match
     bool opponentPresent = false;  // guards the opponent panel independent of matchActive
     CombatantHud playerCombat, opponentCombat;
-    // Pre-formatted by the caller (e.g. "YOUR TURN - MOVE", "OPPONENT'S
-    // TURN", "RESOLVING", "YOU WIN"), same reasoning as inventoryText.
+    // Pre-formatted by the caller (e.g. "YOUR TURN", "OPPONENT TURN",
+    // "RESOLVING", "YOU WIN"), same reasoning as inventoryText.
     std::string_view turnLabel;
 
     // Big center-screen banner, distinct from the small persistent

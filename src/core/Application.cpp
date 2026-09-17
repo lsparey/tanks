@@ -49,6 +49,14 @@ constexpr uint32_t kGpuTimestampsPerFrame = 12;
 constexpr float kAimProjectionDistance = 25.0f;
 // Roughly one hull length -- see MatchState::splashDamage and Tank::distanceToHull.
 constexpr float kSplashRadius = 4.5f;
+// Front armor: a hit landing within this cone of the hull's forward axis
+// (see Tank::HullCapsule::axis) takes half damage, modeling a thicker/
+// sloped frontal plate -- 60 degrees half-angle each side of dead-ahead
+// (cos(60 deg) = 0.5), a generously wide "front" given this game's already
+// approximate aiming/hit model. Applies identically to a direct hit or a
+// nearby splash, using the same impact-point-vs-hull geometry either way.
+constexpr float kFrontArmorCosine = 0.5f;
+constexpr float kFrontArmorDamageMultiplier = 0.5f;
 constexpr std::array<Application::TreeLodMode,8> kTreeLodBenchmarkModes = {
     Application::TreeLodMode::Previous, Application::TreeLodMode::Reduced,
     Application::TreeLodMode::Far, Application::TreeLodMode::Hidden,
@@ -277,12 +285,13 @@ glm::vec2 haltonJitter(uint32_t frameIndex) {
 Application::Application(std::optional<ScreenshotRequest> screenshotRequest, bool performanceReporting,
                          std::optional<uint32_t> worldSeed, std::string referenceView,
                          bool originalTankModel, bool animateTracks, bool weaponPreview,
-                         bool valleyTerrain, uint32_t terrainAttempts, MacroTerrain::Landform landform, int terrainResolution, int refinementPasses, bool showTerrainMenu)
+                         bool valleyTerrain, uint32_t terrainAttempts, MacroTerrain::Landform landform, int terrainResolution, int refinementPasses, bool showTerrainMenu,
+                         bool matchEnabled)
     : worldSeed_(worldSeed ? *worldSeed : std::random_device{}()),
       referenceView_(std::move(referenceView)), performanceReporting_(performanceReporting),
       screenshotRequest_(std::move(screenshotRequest)) {
     try {
-        initialize(originalTankModel, animateTracks, weaponPreview, valleyTerrain, terrainAttempts, landform, terrainResolution, refinementPasses, showTerrainMenu);
+        initialize(originalTankModel, animateTracks, weaponPreview, valleyTerrain, terrainAttempts, landform, terrainResolution, refinementPasses, showTerrainMenu, matchEnabled);
     } catch (...) {
         cleanup();
         throw;
@@ -290,7 +299,8 @@ Application::Application(std::optional<ScreenshotRequest> screenshotRequest, boo
 }
 
 void Application::initialize(bool originalTankModel, bool animateTracks, bool weaponPreview,
-                             bool valleyTerrain, uint32_t terrainAttempts, MacroTerrain::Landform landform, int terrainResolution, int refinementPasses, bool showTerrainMenu) {
+                             bool valleyTerrain, uint32_t terrainAttempts, MacroTerrain::Landform landform, int terrainResolution, int refinementPasses, bool showTerrainMenu,
+                             bool matchEnabled) {
     auto loadingStart = std::chrono::steady_clock::now();
     weaponPreview_ = weaponPreview;
     initWindow();
@@ -354,10 +364,15 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
         tonemapPass_->updateSourceDescriptor(i, taaHistory_->imageView(i), taaHistory_->sampler());
     }
     if (showTerrainMenu) {
-        if (!selectTerrain(valleyTerrain, landform, terrainResolution, refinementPasses)) return;
+        if (!selectTerrain(valleyTerrain, landform, terrainResolution, refinementPasses, matchEnabled)) return;
         // Time spent choosing settings is not loading time.
         loadingStart = std::chrono::steady_clock::now();
     }
+    // Either the menu's MATCH MODE choice (above) or, with no menu, the
+    // CLI --match flag passed straight through from main.cpp -- exactly one
+    // assignment point, so nothing can silently overwrite the other (see
+    // matchEnabled_'s own comment for why this used to be a footgun).
+    matchEnabled_ = matchEnabled;
     std::cout << "World seed: " << worldSeed_ << '\n';
     // Show the loading bar before textures, terrain and tank assets load so
     // the window remains responsive during the expensive
@@ -1478,13 +1493,13 @@ void Application::mainLoop() {
                 wadeDepth = std::max(
                     0.0f, *level - terrain_->heightAt(hullPosition.x, hullPosition.z));
             }
-            // Driving further narrows to the player's own Move phase (item 5
-            // fix: this originally checked phase alone, harmless while
-            // nothing ever changed the active combatant -- now that a turn
-            // can pass, driving must stop once it's the opponent's, not just
-            // reset to Move).
+            // Driving further requires actual fuel remaining -- reaching
+            // zero no longer changes phase (firing stays available either
+            // way), so this is the only thing that stops movement once
+            // fuel runs out.
             bool driveEnabled = playerTurnActive &&
-                (!matchEnabled_ || matchState_.phase() == Phase::Move);
+                (!matchEnabled_ || (matchState_.phase() == Phase::Turn &&
+                                     matchState_.combatant(CombatantId::Player).fuelRemaining > 0.0f));
             // The opponent is a moving obstacle once item 7 gives it real
             // driving -- appended fresh each frame (unlike the static
             // trees/rocks in obstacles_) rather than folded into it.
@@ -1504,19 +1519,11 @@ void Application::mainLoop() {
         }
 
         if (matchEnabled_) {
-            Phase beforeSpend = matchState_.phase();
+            bool wasOutOfFuel = matchState_.combatant(CombatantId::Player).fuelRemaining <= 0.0f;
             matchState_.spendFuel(MatchState::movementFuelCost(
                 tank_->signedSpeed(), tank_->angularSpeed(), deltaTime));
-            if (beforeSpend == Phase::Move && matchState_.phase() != Phase::Move)
-                std::cout << "Fuel exhausted -- move phase ended\n";
-            // "The move phase can also be ended early by the player" (PLAN.md).
-            bool endMoveKeyDown = glfwGetKey(window_, GLFW_KEY_TAB) == GLFW_PRESS;
-            if (endMoveKeyDown && !prevEndMoveKeyDown_ && matchState_.phase() == Phase::Move) {
-                matchState_.endMovePhase();
-                std::cout << "Move phase ended (Tab), "
-                          << matchState_.combatant(CombatantId::Player).fuelRemaining << " fuel remaining\n";
-            }
-            prevEndMoveKeyDown_ = endMoveKeyDown;
+            if (!wasOutOfFuel && matchState_.combatant(CombatantId::Player).fuelRemaining <= 0.0f)
+                std::cout << "Fuel exhausted -- firing still available\n";
 
             // Cycle which held power-up is armed for the next shot (see
             // PLAN.md's "Power-up crates"), skipping types not currently
@@ -1547,7 +1554,15 @@ void Application::mainLoop() {
 
         bool fireDown = !treeLodBenchmark_ && (glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS ||
                         glfwGetKey(window_, GLFW_KEY_SPACE) == GLFW_PRESS);
-        if (fireDown && !prevFireDown_ && playerTurnActive) fireProjectile(*tank_, CombatantId::Player);
+        // Firing is available any time during the player's own turn --
+        // driving and firing are independent (see driveEnabled's own fuel
+        // check above): you can fire immediately without moving at all, or
+        // drive first and fire after, in either order, any number of times
+        // this turn permits (see PLAN.md's "fire at any time" design
+        // change). Only excluded during Resolving (a shell of yours is
+        // already in flight) or when it's not your turn at all.
+        bool fireEnabled = playerTurnActive && (!matchEnabled_ || matchState_.phase() == Phase::Turn);
+        if (fireDown && !prevFireDown_ && fireEnabled) fireProjectile(*tank_, CombatantId::Player);
         prevFireDown_ = fireDown;
         }
 
@@ -2718,10 +2733,11 @@ void Application::driveTankWithAI(Tank& self, Tank& opponent, CombatantId selfId
     if (matchState_.activeCombatant() != selfId || matchState_.isGameOver()) {
         // Not this combatant's turn right now -- still give it a neutral
         // update() each frame so it stays grounded/settled the same way
-        // a manually-driven tank always does, and clear both "solved once
-        // per phase" flags so its next real turn starts fresh.
+        // a manually-driven tank always does, and clear this turn's
+        // progress flags so its next real turn starts fresh.
         self.update(Tank::Controls{}, deltaTime, *terrain_, obstacles_, boundaryHalfExtent_, 0.0f);
         turnState.moveTargetSet = false;
+        turnState.arrived = false;
         turnState.aimSolved = false;
         return;
     }
@@ -2729,11 +2745,14 @@ void Application::driveTankWithAI(Tank& self, Tank& opponent, CombatantId selfId
     glm::vec2 selfXZ(self.position().x, self.position().z);
     glm::vec2 opponentXZ(opponent.position().x, opponent.position().z);
     Tank::Controls controls;
-    bool arrivedAtMoveTarget = false;
     bool turretAligned = false, elevationAligned = false, powerAligned = false;
     constexpr float kTwoPi = 6.2831853f;
 
-    if (matchState_.phase() == Phase::Move) {
+    // MatchState's Phase no longer distinguishes "still driving" from
+    // "ready to aim" (see PLAN.md's "fire at any time" design change) --
+    // the AI keeps its own drive-then-aim sequencing via turnState.arrived
+    // rather than relying on phase() for it.
+    if (matchState_.phase() == Phase::Turn && !turnState.arrived) {
         if (!turnState.moveTargetSet) {
             std::vector<glm::vec2> aliveCrates;
             aliveCrates.reserve(boxes_.size());
@@ -2745,7 +2764,10 @@ void Application::driveTankWithAI(Tank& self, Tank& opponent, CombatantId selfId
         glm::vec2 toTarget = turnState.moveTarget - selfXZ;
         float distanceToTarget = glm::length(toTarget);
         constexpr float kArriveThreshold = 3.0f;
-        if (distanceToTarget > kArriveThreshold) {
+        // Out of fuel replaces the old auto-phase-transition-on-exhaustion:
+        // stop trying to drive and switch to aiming from wherever it is.
+        bool outOfFuel = matchState_.combatant(selfId).fuelRemaining <= 0.0f;
+        if (distanceToTarget > kArriveThreshold && !outOfFuel) {
             glm::vec2 desiredHeading = toTarget / distanceToTarget;
             glm::vec2 hullForward(self.forward().x, self.forward().z);
             float currentYaw = std::atan2(hullForward.x, hullForward.y);
@@ -2756,13 +2778,11 @@ void Application::driveTankWithAI(Tank& self, Tank& opponent, CombatantId selfId
             else if (yawError < -kYawTolerance) controls.turn = -1.0f;
             controls.throttle = 1.0f;
         } else {
-            arrivedAtMoveTarget = true;
+            turnState.arrived = true;
         }
-    } else {
-        turnState.moveTargetSet = false;
     }
 
-    if (matchState_.phase() == Phase::AimFire) {
+    if (matchState_.phase() == Phase::Turn && turnState.arrived) {
         if (!turnState.aimSolved) {
             float horizontalDistance = glm::length(opponentXZ - selfXZ);
             float muzzleHeight = self.muzzleWorldPosition().y - self.position().y;
@@ -2814,11 +2834,13 @@ void Application::driveTankWithAI(Tank& self, Tank& opponent, CombatantId selfId
     selfObstacles.push_back({opponentXZ, float(terrain_->state().navigation->footprintRadius)});
     self.update(controls, deltaTime, *terrain_, selfObstacles, boundaryHalfExtent_, selfWadeDepth);
 
-    if (matchState_.phase() == Phase::Move) {
+    if (matchState_.phase() != Phase::Turn) {
+        // Resolving (or the match just ended) -- nothing left to decide
+        // this frame.
+    } else if (!turnState.arrived) {
         matchState_.spendFuel(MatchState::movementFuelCost(
             self.signedSpeed(), self.angularSpeed(), deltaTime));
-        if (arrivedAtMoveTarget && matchState_.phase() == Phase::Move) matchState_.endMovePhase();
-    } else if (matchState_.phase() == Phase::AimFire && turretAligned && elevationAligned && powerAligned) {
+    } else if (turretAligned && elevationAligned && powerAligned) {
         fireProjectile(self, selfId);
         turnState.aimSolved = false;
     }
@@ -3005,7 +3027,7 @@ void Application::fireProjectile(Tank& firingTank, CombatantId firer) {
     // triggerHit), and dispersion below reads this turn's now-settled
     // accuracyBonus.
     bool feedsMatchState = matchEnabled_ && matchState_.activeCombatant() == firer &&
-                           matchState_.phase() == Phase::AimFire;
+                           matchState_.phase() == Phase::Turn;
     if (feedsMatchState) matchState_.consumeArmedPowerUp();
 
     audio_->playShot();
@@ -3108,7 +3130,8 @@ void Application::updateProjectilesAndCollisions(float deltaTime) {
         // shell actually hit, both tanks' distance to that point feeds the
         // same MatchState::splashDamage curve, so a direct hit on a tank
         // (distance 0, see the dedicated check below) and splash from a
-        // nearby terrain/box/tree/rock hit are the same code path, not two.
+        // nearby terrain/box/tree/rock hit are the same code path, not two
+        // -- and both go through the same front-armor check (kFrontArmorCosine).
         auto triggerHit = [&](glm::vec3 hitPoint) {
             shell.alive = false;
             ImpactEffect effect;
@@ -3131,6 +3154,16 @@ void Application::updateProjectilesAndCollisions(float deltaTime) {
                     float damage = MatchState::splashDamage(target->distanceToHull(hitXZ), effectiveSplashRadius) *
                                    firer.damageMultiplier;
                     if (damage <= 0.0f) return;
+                    // Front armor (see kFrontArmorCosine): halve damage
+                    // when the impact point falls within the hull's
+                    // forward cone, regardless of whether this was a
+                    // direct hit or nearby splash.
+                    Tank::HullCapsule capsule = target->hullCapsule();
+                    glm::vec2 toHit = hitXZ - capsule.position;
+                    if (glm::length(toHit) > 1e-4f &&
+                        glm::dot(glm::normalize(toHit), capsule.axis) >= kFrontArmorCosine) {
+                        damage *= kFrontArmorDamageMultiplier;
+                    }
                     bool wasOver = matchState_.isGameOver();
                     matchState_.applyDamage(id, damage);
                     if (!wasOver && matchState_.isGameOver()) {
@@ -4533,8 +4566,7 @@ void Application::drawFrame() {
         if (matchState_.isGameOver()) {
             turnLabelStorage = matchState_.winner() == CombatantId::Player ? "YOU WIN" : "OPPONENT WINS";
         } else if (matchState_.activeCombatant() == CombatantId::Player) {
-            turnLabelStorage = matchState_.phase() == Phase::Move ? "YOUR TURN - MOVE" :
-                matchState_.phase() == Phase::AimFire ? "YOUR TURN - AIM/FIRE" : "RESOLVING";
+            turnLabelStorage = matchState_.phase() == Phase::Resolving ? "RESOLVING" : "YOUR TURN";
         } else {
             turnLabelStorage = matchState_.phase() == Phase::Resolving ? "RESOLVING" : "OPPONENT TURN";
         }

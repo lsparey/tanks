@@ -9,7 +9,7 @@
 #include <GLFW/glfw3.h>
 
 bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& landform,
-                                int& terrainResolution, int& refinementPasses) {
+                                int& terrainResolution, int& refinementPasses, bool& matchEnabled) {
     constexpr float width = 1024, height = 720;
     struct Mode { const char* title; const char* description; int erosion, passes; };
     constexpr Mode modes[] = {
@@ -22,11 +22,22 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
         MacroTerrain::Landform::Basin, MacroTerrain::Landform::Valley
     };
     constexpr const char* formNames[] = {"MIXED", "HILLS", "RIDGES", "PLAIN", "BASIN", "VALLEY"};
+    // 1v1 Match needs a second spawn (see hasOpponent_'s own comment), which
+    // only the advanced/valley generator's navigation result produces --
+    // legacy terrain would silently make the match mode a no-op, so it's
+    // only selectable alongside advanced terrain (same restriction LANDFORM
+    // already has, one control below).
+    struct MatchModeOption { const char* title; const char* description; };
+    constexpr MatchModeOption matchModes[] = {
+        {"FREEROAM", "DRIVE AND EXPLORE. NO OPPONENT AI OR TURN RULES."},
+        {"1V1 MATCH", "TURN-BASED DUEL. FUEL, AIMING, DAMAGE, POWER-UPS."},
+    };
     struct Rect {
         float x, y, w, h;
         bool contains(float px, float py) const { return px >= x && px < x+w && py >= y && py < y+h; }
     };
-    std::array<Rect, 9> controls{};
+    constexpr int kControlCount = 11;
+    std::array<Rect, kControlCount> controls{};
     for (int i = 0; i < 2; ++i) controls[i] = {232, 118.f + i * 56, 560, 48};
     controls[2] = {232, 428, 272, 40};
     controls[3] = {512, 428, 168, 40};
@@ -35,7 +46,11 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
     controls[6] = {688, 506, 104, 44};
     controls[7] = {512, 506, 168, 44};  // SHADOWS toggle, between start and quit
     controls[8] = {512, 562, 168, 44};  // SOUND toggle, directly below shadows
-    int selected = 1, focus = 5, form = 0;
+    // MATCH MODE buttons: same shape as the terrain-mode buttons above,
+    // dropped into the empty gap between them (ending y=222) and the
+    // LANDFORM row (starting y=410).
+    for (int i = 0; i < 2; ++i) controls[9 + i] = {232, 250.f + i * 56, 560, 48};
+    int selected = 1, focus = 5, form = 0, matchModeSelected = matchEnabled ? 1 : 0;
     std::string seed = std::to_string(worldSeed_);
     bool selectSeed = false, mouseWasDown = false;
     std::array<bool, GLFW_KEY_LAST + 1> keys{};
@@ -59,7 +74,7 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
         if (key(GLFW_KEY_TAB) || key(GLFW_KEY_DOWN) || key(GLFW_KEY_UP)) {
             bool backwards = key(GLFW_KEY_UP) || (key(GLFW_KEY_TAB) &&
                 (glfwGetKey(window_, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS || glfwGetKey(window_, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS));
-            focus = (focus + (backwards ? 8 : 1)) % 9;
+            focus = (focus + (backwards ? kControlCount - 1 : 1)) % kControlCount;
             if (focus == 3) selectSeed = true;
         }
         if (focus == 2 && selected != 0 && (key(GLFW_KEY_LEFT) || key(GLFW_KEY_RIGHT)))
@@ -72,7 +87,7 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
         float x = (float(mx) - (windowWidth - width * scale) * .5f) / scale;
         float y = (float(my) - (windowHeight - height * scale) * .5f) / scale;
         int hovered = -1;
-        for (int i = 0; i < 9; ++i) if (controls[i].contains(x, y)) hovered = i;
+        for (int i = 0; i < kControlCount; ++i) if (controls[i].contains(x, y)) hovered = i;
         bool mouseDown = glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         int activated = -1;
         if (mouseDown && !mouseWasDown && hovered >= 0) {
@@ -84,6 +99,8 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
         if (activated == 2 && selected != 0) form = (form + 1) % 6;
         if (activated == 4) { seed = std::to_string(std::random_device{}()); selectSeed = false; }
         if (activated == 7) shadowsEnabled_ = !shadowsEnabled_;
+        if (activated == 9) matchModeSelected = 0;
+        if (activated == 10 && selected != 0) matchModeSelected = 1;
         if (activated == 8) {
             // Enabling can fail (no audio device), so read the actual state
             // back rather than assuming the flip took effect. The shot is an
@@ -116,6 +133,11 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
             refinementPasses = modes[selected].passes;
             landform = forms[form];
             worldSeed_ = parsedSeed;
+            // Safety net rather than trusting intermediate UI state: if the
+            // player picked 1v1 Match and then switched to legacy terrain
+            // (or vice versa), the final choice always wins, not whatever
+            // matchModeSelected happened to be left at.
+            matchEnabled = valleyTerrain && matchModeSelected == 1;
             glfwSetCharCallback(window_, nullptr);
             return true;
         }
@@ -139,8 +161,9 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
             const glm::vec3 accent(.38f,.79f,.76f), warn(.96f,.56f,.36f);
             text("SELECT TERRAIN", 232, 52, 2.2f, white);
             text("ORIGINAL IS FASTEST. ADVANCED SIMULATES EROSION AND WATER.", 232, 84, 1.2f, muted);
-            for (int i = 0; i < 9; ++i) {
-                bool disabled = (i == 2 && selected == 0) || (i == 5 && !validSeed);
+            text("MATCH MODE", 232, 232, 1.5f, white);
+            for (int i = 0; i < kControlCount; ++i) {
+                bool disabled = (i == 2 && selected == 0) || (i == 5 && !validSeed) || (i == 10 && selected == 0);
                 Rect r = controls[i];
                 glm::vec3 border = !disabled && focus == i ? accent : glm::vec3(.15f,.17f,.19f);
                 quad(r, border);
@@ -149,6 +172,13 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
                     if (selected == i) quad({r.x+1,r.y+1,4,r.h-2},accent);
                     text(modes[i].title,r.x+18,r.y+9,1.5f,selected == i ? accent : white);
                     text(modes[i].description,r.x+18,r.y+27,1.1f,muted);
+                }
+                if (i >= 9) {
+                    int m = i - 9;
+                    if (matchModeSelected == m) quad({r.x+1,r.y+1,4,r.h-2},accent);
+                    text(matchModes[m].title,r.x+18,r.y+9,1.5f,disabled ? muted : (matchModeSelected == m ? accent : white));
+                    text(m == 1 && disabled ? "REQUIRES ADVANCED TERRAIN" : matchModes[m].description,
+                         r.x+18,r.y+27,1.1f,muted);
                 }
             }
             text("LANDFORM",232,410,1.1f,muted);

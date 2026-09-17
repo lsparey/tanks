@@ -75,7 +75,8 @@ public:
                          bool animateTracks = true, bool weaponPreview = false,
                          bool valleyTerrain = false, uint32_t terrainAttempts = 1,
                          MacroTerrain::Landform landform = MacroTerrain::Landform::Mixed,
-                         int terrainResolution = 257, int refinementPasses = 0, bool showTerrainMenu = false);
+                         int terrainResolution = 257, int refinementPasses = 0, bool showTerrainMenu = false,
+                         bool matchEnabled = false);
     ~Application();
 
     Application(const Application&) = delete;
@@ -92,11 +93,6 @@ public:
     // ghosting/trails behind the moving tank -- in automated captures,
     // where desktop key injection is unavailable/unreliable.
     void setDrivePreview(bool enabled) { drivePreview_ = enabled; }
-    // Opt-in match rules (fuel-limited movement so far -- see MatchState).
-    // Off by default: turn-passing isn't wired yet (no opponent AI exists to
-    // ever hand a turn back), so this stays off the default interactive path
-    // until enough of the roadmap exists to make it a complete experience.
-    void setMatchEnabled(bool enabled) { matchEnabled_ = enabled; }
     // Higher is easier (less opponent aim error) -- see OpponentAI::aimErrorRadians.
     void setAiDifficulty(float difficulty) { aiDifficulty_ = difficulty; }
     // Deterministic full-match check in the style of setDrivePreview/
@@ -122,9 +118,9 @@ private:
 
     void initialize(bool originalTankModel, bool animateTracks, bool weaponPreview,
                     bool valleyTerrain, uint32_t terrainAttempts, MacroTerrain::Landform landform,
-                    int terrainResolution, int refinementPasses, bool showTerrainMenu);
+                    int terrainResolution, int refinementPasses, bool showTerrainMenu, bool matchEnabled);
     bool selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& landform,
-                       int& terrainResolution, int& refinementPasses);
+                       int& terrainResolution, int& refinementPasses, bool& matchEnabled);
     std::string menuTextInput_;
     void initWindow();
     void cleanup() noexcept;
@@ -354,12 +350,13 @@ private:
     // navigation result -- `--terrain legacy` has no playability/route
     // system to derive a second spawn from, so it gets no opponent.
     bool hasOpponent_ = false;
-    // Off by default; see setMatchEnabled. matchState_ itself is always
+    // Off by default; set via the constructor's matchEnabled parameter,
+    // itself either the CLI --match flag or the menu's MATCH MODE choice
+    // (see initialize()/selectTerrain). matchState_ itself is always
     // constructed (a plain value type, no Vulkan/heap resources) but only
     // consulted/advanced when matchEnabled_ is set.
     MatchState matchState_;
     bool matchEnabled_ = false;
-    bool prevEndMoveKeyDown_ = false;
     bool prevRestartKeyDown_ = false;
     // frameCounter_ this match (re)started on -- drives the brief
     // "MATCH START" HUD banner; see restartMatch().
@@ -374,14 +371,20 @@ private:
     // AI turn state (see driveTankWithAI/OpponentAI.h) -- one instance per
     // combatant so either tank can be AI-driven (the opponent always, the
     // player too under --match-preview). aiDifficulty_ is higher = easier
-    // (less aim error); see --ai-difficulty. The two "solved" flags make
-    // chooseMoveTarget/the fire solution get computed once per Move/AimFire
-    // phase entry, not re-rolled every frame, so the point a tank visibly
-    // steers/aims toward doesn't jitter.
+    // (less aim error); see --ai-difficulty. MatchState's Phase no longer
+    // distinguishes "still driving" from "ready to aim" (see PLAN.md's
+    // "fire at any time" design change), so `arrived` is what makes the AI
+    // keep behaving as drive-then-aim -- set once chooseMoveTarget's point
+    // is reached or fuel runs out, cleared only when this combatant's turn
+    // ends. `aimSolved` makes the fire solution get computed once per
+    // aiming attempt, not re-rolled every frame, so the point a tank
+    // visibly aims toward doesn't jitter; it resets between shots of a
+    // multi-shell turn so each shot gets its own aim-error roll.
     float aiDifficulty_ = 1.0f;
     struct AiTurnState {
         bool moveTargetSet = false;
         glm::vec2 moveTarget{0.0f};
+        bool arrived = false;
         bool aimSolved = false;
         float targetTurretYaw = 0.0f;
         float targetPower = 0.0f;
@@ -513,8 +516,9 @@ private:
     // Drives one tank for one frame with AI (see OpponentAI.h and PLAN.md's
     // "Opponent AI"/"Match flow and deterministic replay"): a no-op unless
     // matchEnabled_ && hasOpponent_. Calls self.update() exactly once
-    // regardless of phase -- with an AI-decided Tank::Controls during
-    // selfId's own Move/AimFire phases, or a neutral one otherwise so it
+    // regardless of phase -- with an AI-decided Tank::Controls while it's
+    // selfId's own turn (see AiTurnState for how it sequences driving then
+    // aiming/firing within that turn), or a neutral one otherwise so it
     // stays grounded/settled the same way a manually-driven tank always
     // does. Always used for the opponent; also used for the player under
     // --match-preview (see matchPreview_).

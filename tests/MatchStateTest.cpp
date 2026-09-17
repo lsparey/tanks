@@ -20,17 +20,16 @@ auto snapshot(const MatchState& m) {
     };
 }
 
-// Scripted helpers that drive a fresh match to the start of each phase via
-// only the public, legitimate transition sequence -- the same sequence
-// Application will eventually drive from real input.
-void toAimFire(MatchState& m) { m.endMovePhase(); }
-void toResolving(MatchState& m) { toAimFire(m); m.recordShotFired(); }
+// Scripted helper that fires the active combatant's shot, entering
+// Resolving -- firing needs no prior transition (see PLAN.md's "fire at
+// any time" design change), so this is now just a readability wrapper.
+void toResolving(MatchState& m) { m.recordShotFired(); }
 
 int main() {
     // 1. Constructor defaults.
     {
         MatchState m(20.0f, 15.0f);
-        require(m.phase() == Phase::Move, "Match starts in Move phase");
+        require(m.phase() == Phase::Turn, "Match starts in Turn phase");
         require(m.activeCombatant() == CombatantId::Player, "Player moves first");
         require(!m.isGameOver(), "Fresh match is not over");
         require(!m.winner().has_value(), "Fresh match has no winner");
@@ -43,21 +42,22 @@ int main() {
         require(opponent.alive && opponent.health == MatchState::kMaxHealth, "Opponent starts full health");
     }
 
-    // 2. Fuel auto-ends the move phase at exactly zero, not before, and
-    // clamps rather than going negative on an overshoot.
+    // 2. Fuel clamps at exactly zero, not before, never negative, and no
+    // longer changes phase on its own (firing stays available regardless
+    // of remaining fuel -- see PLAN.md's "fire at any time" design change).
     {
         MatchState m;
         m.spendFuel(19.5f);
-        require(m.phase() == Phase::Move, "Move phase persists while fuel remains");
+        require(m.phase() == Phase::Turn, "Turn phase persists while fuel remains");
         require(m.combatant(CombatantId::Player).fuelRemaining == 0.5f, "Partial fuel spend recorded");
         m.spendFuel(0.5f);
-        require(m.phase() == Phase::AimFire, "Fuel reaching exactly zero ends the move phase");
+        require(m.phase() == Phase::Turn, "Fuel reaching exactly zero does not change phase");
         require(m.combatant(CombatantId::Player).fuelRemaining == 0.0f, "Fuel settles at exactly zero");
     }
     {
         MatchState m(20.0f, 20.0f);
         m.spendFuel(50.0f); // overshoot in one call
-        require(m.phase() == Phase::AimFire, "Overshooting fuel still ends the move phase");
+        require(m.phase() == Phase::Turn, "Overshooting fuel still leaves phase unchanged");
         require(m.combatant(CombatantId::Player).fuelRemaining == 0.0f, "Fuel clamps at zero, never negative");
     }
     {
@@ -71,13 +71,7 @@ int main() {
 
     // 3. Every mutator is a no-op outside its valid phase.
     {
-        // spendFuel: valid only in Move.
-        MatchState m;
-        toAimFire(m);
-        auto atAimFire = snapshot(m);
-        m.spendFuel(5.0f);
-        require(snapshot(m) == atAimFire, "spendFuel is a no-op in AimFire");
-
+        // spendFuel: valid only in Turn.
         MatchState resolving;
         toResolving(resolving);
         auto atResolving = snapshot(resolving);
@@ -85,20 +79,8 @@ int main() {
         require(snapshot(resolving) == atResolving, "spendFuel is a no-op in Resolving");
     }
     {
-        // endMovePhase: valid only in Move.
-        MatchState m;
-        toResolving(m);
-        auto before = snapshot(m);
-        m.endMovePhase();
-        require(snapshot(m) == before, "endMovePhase is a no-op in Resolving");
-    }
-    {
-        // recordShotFired: valid only in AimFire.
-        MatchState moveState;
-        auto beforeMove = snapshot(moveState);
-        moveState.recordShotFired();
-        require(snapshot(moveState) == beforeMove, "recordShotFired is a no-op in Move");
-
+        // recordShotFired: valid only in Turn (already exercised landing in
+        // Resolving above; firing again while still Resolving must no-op).
         MatchState resolvingState;
         toResolving(resolvingState);
         auto beforeResolving = snapshot(resolvingState);
@@ -107,42 +89,29 @@ int main() {
     }
     {
         // notifyProjectilesSettled: valid only in Resolving.
-        MatchState moveState;
-        auto beforeMove = snapshot(moveState);
-        moveState.notifyProjectilesSettled();
-        require(snapshot(moveState) == beforeMove, "notifyProjectilesSettled is a no-op in Move");
-
-        MatchState aimState;
-        toAimFire(aimState);
-        auto beforeAim = snapshot(aimState);
-        aimState.notifyProjectilesSettled();
-        require(snapshot(aimState) == beforeAim, "notifyProjectilesSettled is a no-op in AimFire");
+        MatchState turnState;
+        auto beforeTurn = snapshot(turnState);
+        turnState.notifyProjectilesSettled();
+        require(snapshot(turnState) == beforeTurn, "notifyProjectilesSettled is a no-op in Turn");
     }
     {
         // applyDamage: valid only in Resolving.
-        MatchState moveState;
-        auto beforeMove = snapshot(moveState);
-        moveState.applyDamage(CombatantId::Opponent, 1.0f);
-        require(snapshot(moveState) == beforeMove, "applyDamage is a no-op in Move");
-
-        MatchState aimState;
-        toAimFire(aimState);
-        auto beforeAim = snapshot(aimState);
-        aimState.applyDamage(CombatantId::Opponent, 1.0f);
-        require(snapshot(aimState) == beforeAim, "applyDamage is a no-op in AimFire");
+        MatchState turnState;
+        auto beforeTurn = snapshot(turnState);
+        turnState.applyDamage(CombatantId::Opponent, 1.0f);
+        require(snapshot(turnState) == beforeTurn, "applyDamage is a no-op in Turn");
     }
 
     // 4. Shell-remaining / turn-refill correctness across a turn boundary.
     {
         MatchState m(20.0f, 30.0f);
         m.spendFuel(4.0f); // Player leaves 16 fuel unused this turn
-        toAimFire(m);
         m.recordShotFired();
         require(m.combatant(CombatantId::Player).shellsRemaining == 0, "Firing consumes the turn's shell");
         require(m.phase() == Phase::Resolving, "Firing enters Resolving");
         m.notifyProjectilesSettled();
         require(m.activeCombatant() == CombatantId::Opponent, "Turn passes to the opponent");
-        require(m.phase() == Phase::Move, "New turn starts in Move");
+        require(m.phase() == Phase::Turn, "New turn starts in Turn");
         auto& newActive = m.combatant(CombatantId::Opponent);
         require(newActive.shellsRemaining == newActive.shellsPerTurn, "Incoming combatant's shells refill");
         require(newActive.fuelRemaining == newActive.fuelCapacity, "Incoming combatant's fuel refills");
@@ -155,7 +124,6 @@ int main() {
     {
         MatchState m;
         auto shootAndPass = [](MatchState& s, CombatantId target, float damage) {
-            toAimFire(s);
             s.recordShotFired();
             s.applyDamage(target, damage);
             s.notifyProjectilesSettled();
@@ -205,40 +173,38 @@ int main() {
     {
         MatchState m(20.0f, 20.0f);
 
-        // Turn 1 -- Player: partial move, aim, fire, direct hit, resolve.
-        require(m.phase() == Phase::Move && m.activeCombatant() == CombatantId::Player, "Turn 1 is Player's Move phase");
+        // Turn 1 -- Player: partial move, fire immediately (no explicit
+        // phase transition needed -- see PLAN.md's "fire at any time"
+        // design change), direct hit, resolve.
+        require(m.phase() == Phase::Turn && m.activeCombatant() == CombatantId::Player, "Turn 1 is Player's turn");
         m.spendFuel(5.0f);
-        m.endMovePhase();
-        require(m.phase() == Phase::AimFire, "Player reaches AimFire");
         m.recordShotFired();
         require(m.phase() == Phase::Resolving, "Firing enters Resolving");
         m.applyDamage(CombatantId::Opponent, 1.0f);
         require(!m.isGameOver(), "One direct hit does not end the match");
         m.notifyProjectilesSettled();
-        require(m.activeCombatant() == CombatantId::Opponent && m.phase() == Phase::Move, "Turn passes to Opponent");
+        require(m.activeCombatant() == CombatantId::Opponent && m.phase() == Phase::Turn, "Turn passes to Opponent");
 
-        // Turn 2 -- Opponent: full-fuel move (auto-ends move phase), aim, fire, splash hit.
+        // Turn 2 -- Opponent: full-fuel move, fire, splash hit. Exhausting
+        // fuel no longer changes phase -- firing is always available in Turn.
         m.spendFuel(20.0f);
-        require(m.phase() == Phase::AimFire, "Exhausting fuel auto-advances Opponent to AimFire");
+        require(m.phase() == Phase::Turn, "Exhausting fuel does not change phase");
         m.recordShotFired();
         m.applyDamage(CombatantId::Player, 0.5f);
         m.notifyProjectilesSettled();
         require(m.activeCombatant() == CombatantId::Player, "Turn passes back to Player");
 
-        // Turn 3 -- Player: skip movement, aim, fire, splash hit.
-        m.endMovePhase();
+        // Turn 3 -- Player: fire immediately, no movement at all, splash hit.
         m.recordShotFired();
         m.applyDamage(CombatantId::Opponent, 1.5f); // Opponent: 2.0 -> 0.5
         m.notifyProjectilesSettled();
 
-        // Turn 4 -- Opponent: skip movement, aim, fire, splash hit.
-        m.endMovePhase();
+        // Turn 4 -- Opponent: fire immediately, no movement at all, splash hit.
         m.recordShotFired();
         m.applyDamage(CombatantId::Player, 0.5f); // Player: 2.5 -> 2.0
         m.notifyProjectilesSettled();
 
-        // Turn 5 -- Player: skip movement, aim, fire, finishing hit.
-        m.endMovePhase();
+        // Turn 5 -- Player: fire immediately, finishing hit.
         m.recordShotFired();
         m.applyDamage(CombatantId::Opponent, 0.5f); // Opponent: 0.5 -> 0.0, destroyed
 
@@ -254,7 +220,6 @@ int main() {
         auto finished = snapshot(m);
         m.notifyProjectilesSettled();
         m.recordShotFired();
-        m.endMovePhase();
         m.spendFuel(100.0f);
         m.applyDamage(CombatantId::Player, 1.0f);
         require(snapshot(m) == finished, "A finished match cannot be reopened by any mutator");
@@ -272,27 +237,28 @@ int main() {
 
     // 10. Scripted drive to empty: a constant-speed drive (as a real
     // Tank::update loop would produce, one movementFuelCost/spendFuel call
-    // per simulated frame) drains fuel deterministically and ends the move
-    // phase on exactly the frame the default 20-fuel tank is spent -- not
-    // one frame earlier or later -- matching this item's acceptance text.
+    // per simulated frame) drains fuel deterministically to exactly zero on
+    // the expected frame -- not one frame earlier or later -- and clamps
+    // there without changing phase (see PLAN.md's "fire at any time"
+    // design change: firing stays available regardless of fuel).
     {
         MatchState m(20.0f, 20.0f);
         constexpr float kSpeed = 6.0f, kDeltaTime = 1.0f / 60.0f;  // 0.1 fuel/frame
         int frame = 0;
-        while (m.phase() == Phase::Move) {
+        while (m.combatant(CombatantId::Player).fuelRemaining > 0.0f) {
             require(frame < 250, "scripted drive failed to exhaust fuel in a reasonable number of frames");
             m.spendFuel(MatchState::movementFuelCost(kSpeed, 0.0f, kDeltaTime));
             ++frame;
         }
         require(frame == 200, "scripted drive did not exhaust fuel on the expected frame");
-        require(m.phase() == Phase::AimFire, "move phase ended into AimFire");
+        require(m.phase() == Phase::Turn, "phase remains Turn regardless of fuel");
         require(m.combatant(CombatantId::Player).fuelRemaining == 0.0f, "fuel settles at exactly zero");
         // "The tank cannot move past zero": further spend calls are no-ops
         // (already proven generically in section 3; reasserted here in the
         // scripted-drive's own terms).
         auto before = snapshot(m);
         m.spendFuel(MatchState::movementFuelCost(kSpeed, 0.0f, kDeltaTime));
-        require(snapshot(m) == before, "fuel cannot be spent past the move phase ending");
+        require(snapshot(m) == before, "fuel cannot be spent past zero");
     }
 
     // 11. A pivot-only scripted drive drains fuel the same deterministic way.
@@ -300,7 +266,7 @@ int main() {
         MatchState m(20.0f, 20.0f);
         constexpr float kAngularSpeed = 6.0f, kDeltaTime = 1.0f / 60.0f;
         int frame = 0;
-        while (m.phase() == Phase::Move) {
+        while (m.combatant(CombatantId::Player).fuelRemaining > 0.0f) {
             require(frame < 250, "scripted pivot failed to exhaust fuel in a reasonable number of frames");
             m.spendFuel(MatchState::movementFuelCost(0.0f, kAngularSpeed, kDeltaTime));
             ++frame;

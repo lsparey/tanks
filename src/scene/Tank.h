@@ -175,14 +175,18 @@ public:
     // inspection after first seeing the model on screen.
     glm::mat4& modelCorrection() { return modelCorrection_; }
 
-private:
     // The oriented capsule simulateMovement resolves obstacle collision
     // against and distanceToHull() measures against -- one source of truth
     // for both. `position`/`axis` are XZ; `axis` is the hull's forward
-    // direction from yaw_.
+    // direction from yaw_. Public so callers needing that same forward
+    // axis for their own hit-geometry (e.g. front-armor's hit-angle check
+    // in Application.cpp) stay consistent with distanceToHull's own model
+    // instead of computing a second, potentially-diverging one from
+    // forward()'s tilted 3D vector.
     struct HullCapsule { glm::vec2 position, axis; float halfSegmentLength, radius; };
     HullCapsule hullCapsule() const;
 
+private:
     void load(VulkanContext& ctx, CommandContext& commands, const std::string& path, bool animateTracks);
     void simulateMovement(float throttle, float turn, float deltaTime, const Terrain& terrain,
                           const std::vector<CollisionSystem::CircleObstacle>& obstacles,

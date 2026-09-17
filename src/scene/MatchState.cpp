@@ -17,19 +17,13 @@ std::optional<CombatantId> MatchState::winner() const {
 }
 
 void MatchState::spendFuel(float amount) {
-    if (phase_ != Phase::Move) return;
+    if (phase_ != Phase::Turn) return;
     auto& active = combatants_[static_cast<size_t>(active_)];
     active.fuelRemaining = std::max(0.0f, active.fuelRemaining - std::max(0.0f, amount));
-    if (active.fuelRemaining <= 0.0f) endMovePhase();
-}
-
-void MatchState::endMovePhase() {
-    if (phase_ != Phase::Move) return;
-    phase_ = Phase::AimFire;
 }
 
 void MatchState::recordShotFired() {
-    if (phase_ != Phase::AimFire) return;
+    if (phase_ != Phase::Turn) return;
     auto& active = combatants_[static_cast<size_t>(active_)];
     if (active.shellsRemaining <= 0) return;
     --active.shellsRemaining;
@@ -49,7 +43,7 @@ void MatchState::applyDamage(CombatantId target, float damageInFullHits) {
 
 void MatchState::notifyProjectilesSettled() {
     if (phase_ != Phase::Resolving) return;
-    if (combatants_[static_cast<size_t>(active_)].shellsRemaining > 0) phase_ = Phase::AimFire;
+    if (combatants_[static_cast<size_t>(active_)].shellsRemaining > 0) phase_ = Phase::Turn;
     else endTurn();
 }
 
@@ -58,7 +52,7 @@ void MatchState::endTurn() {
     auto& next = combatants_[static_cast<size_t>(active_)];
     next.fuelRemaining = next.fuelCapacity;
     next.shellsRemaining = next.shellsPerTurn;
-    phase_ = Phase::Move;
+    phase_ = Phase::Turn;
 }
 
 void MatchState::collectPowerUp(CombatantId id, PowerUpType type) {

@@ -49,7 +49,15 @@ int main(int argc, char** argv) {
         // The advanced (drained-valley) generator is the game default; the
         // original quick heightmap remains available as --terrain legacy.
         bool valleyTerrain = true;
-        bool showTerrainMenu = false;
+        // Shown by default so simply running the built game is enough to
+        // play it (pick Freeroam or 1v1 Match from the MATCH MODE menu
+        // section) -- forced off below for any invocation that is clearly
+        // scripted/automated, since the menu blocks on real mouse/keyboard
+        // input via its own glfwPollEvents loop and would hang forever
+        // otherwise. --no-menu is an explicit escape hatch; --menu is kept
+        // (now redundant, but harmless) for anyone already typing it.
+        bool showTerrainMenu = true;
+        bool noMenu = false;
         std::optional<MacroTerrain::Landform> landform;
         uint32_t terrainAttempts = 1;
         std::optional<int> terrainResolution;
@@ -76,6 +84,7 @@ int main(int argc, char** argv) {
                 else throw std::runtime_error("--tree-shadows requires maps, soft, or rays");
             }
             if (std::strcmp(argv[i], "--menu") == 0) showTerrainMenu = true;
+            if (std::strcmp(argv[i], "--no-menu") == 0) noMenu = true;
             if (std::strcmp(argv[i], "--profile") == 0) profile = true;
             if (std::strcmp(argv[i], "--static-tracks") == 0) animateTracks = false;
             if (std::strcmp(argv[i], "--weapon-preview") == 0) weaponPreview = true;
@@ -141,6 +150,9 @@ int main(int argc, char** argv) {
                     throw std::runtime_error("unknown reference view");
             }
         }
+        bool automated = weaponPreview || drivePreview || shadowPreview || matchPreview ||
+                         treeLodBenchmark || !view.empty() || parseScreenshotRequest(argc, argv).has_value();
+        if (noMenu || automated) showTerrainMenu = false;
         if (!valleyTerrain && terrainAttempts != 1)
             throw std::runtime_error("--terrain-attempts above 1 requires --terrain advanced");
         if (!valleyTerrain && landform)
@@ -158,11 +170,11 @@ int main(int argc, char** argv) {
         if (treeLodBenchmark && view.empty()) view = "trees";
         if (!view.empty() && !seed) seed = 7331;
         Application app(parseScreenshotRequest(argc, argv), profile, seed, view, originalTankModel, animateTracks, weaponPreview, valleyTerrain, terrainAttempts,
-                        landform.value_or(MacroTerrain::Landform::Mixed), terrainResolution.value_or(257), *refinementPasses, showTerrainMenu);
+                        landform.value_or(MacroTerrain::Landform::Mixed), terrainResolution.value_or(257), *refinementPasses, showTerrainMenu,
+                        matchEnabled);
         app.setTreeShadowMode(treeShadowMode);
         app.setShadowPreview(shadowPreview,freezeWind);
         app.setDrivePreview(drivePreview);
-        app.setMatchEnabled(matchEnabled);
         app.setMatchPreview(matchPreview);
         app.setAiDifficulty(aiDifficulty);
         app.setTreeLodMode(treeLodMode);

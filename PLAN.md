@@ -222,6 +222,8 @@ as history, including terrain components this goal may replace.
 - [x] [Opponent AI](#opponent-ai)
 - [x] [Turn camera and match HUD](#turn-camera-and-match-hud)
 - [x] [Match flow and deterministic replay](#match-flow-and-deterministic-replay)
+- [x] [Menu-driven Freeroam / 1v1 Match selection](#menu-driven-freeroam--1v1-match-selection)
+- [x] [Front armor damage reduction](#front-armor-damage-reduction)
 
 ### Tank and physics candidates
 
@@ -550,6 +552,8 @@ Work is planned in this order; later items depend on earlier ones.
 - [x] [Opponent AI](#opponent-ai)
 - [x] [Turn camera and match HUD](#turn-camera-and-match-hud)
 - [x] [Match flow and deterministic replay](#match-flow-and-deterministic-replay)
+- [x] [Menu-driven Freeroam / 1v1 Match selection](#menu-driven-freeroam--1v1-match-selection)
+- [x] [Front armor damage reduction](#front-armor-damage-reduction)
 
 ### Match rules and turn state
 
@@ -1039,6 +1043,64 @@ no Vulkan/terrain needed) was extended to illustrate the new panel, which
 is how both layout bugs were actually found -- far faster than a full
 terrain-load screenshot cycle for pure layout iteration.
 
+**Follow-up fix (2026-09-17), found from real play after the menu made 1v1
+Match actually reachable:** `playerTurnActive` (this item's own gate) only
+checked *whose* turn it was, never *which phase* -- unlike driving, which
+already correctly narrows to `Phase::Move`. Firing had no equivalent
+`Phase::AimFire` restriction, and `fireProjectile` is deliberately
+unconditional at the physics level (item 4's design: the shot always
+physically fires even when it won't count) -- so a player could fire
+repeatedly during their own Move phase, and every shot would fly and could
+even visually hit, but do zero damage and consume no shell
+(`recordShotFired`/`applyDamage` both require `AimFire`/`Resolving`, never
+reached). From the player's side this read as "fuel and shells don't
+update" and "my shots do no damage" -- both true, but the actual cause was
+being allowed to fire before ever committing to AimFire, not a display
+bug. Fixed by adding a `fireEnabled` gate to the real fire-input site
+(`playerTurnActive && (!matchEnabled_ || phase() == Phase::AimFire)`),
+mirroring `driveEnabled`'s existing shape exactly. Live-verified in both
+directions on seed 7331: forcing repeated fire input during Move phase now
+produces no shell/state change at all; once fuel exhaustion pushes the
+phase to AimFire, firing works normally (shell fires, decrements, turn
+ends). `--weapon-preview`'s own diagnostic fire trigger is deliberately
+untouched (it's a testing hook, meant to fire unconditionally); free play
+is unaffected (`!matchEnabled_` short-circuits the new check exactly like
+it already does for `playerTurnActive`).
+
+**Design change (2026-09-17), superseding the fix above:** after playing a
+real match with that fix in place, Luke asked for something simpler --
+fire whenever you want during your turn, no explicit "commit to aiming"
+step at all; a turn ends purely by running out of shells. `MatchState`'s
+`Move`/`AimFire` split (the very thing the fix above required you to
+cross) is now merged into one `Phase::Turn`: driving (while fuel remains)
+and firing (while a shell remains) are both always available, in any
+order, any number of times, for as long as `Phase::Turn` persists.
+`endMovePhase()` and the Tab key are gone entirely -- there is nothing
+left to explicitly end early, since firing itself is how a turn now ends.
+Driving is gated directly on `fuelRemaining > 0` instead of on a phase
+that no longer distinguishes "still moving" from "ready to aim"; firing's
+gate drops the phase restriction from the fix above back down to just
+`Phase::Turn` (i.e. "is it your turn and is no shell of yours already in
+flight"), which is now the *entire* condition -- matching "fire at any
+time" literally. The opponent AI's own drive-then-aim sequencing (which
+used to read `phase() == Move` vs `AimFire` directly) moved into a new
+persisted `AiTurnState::arrived` flag instead, so the AI keeps behaving
+the same way (drive fully to its chosen spot, then aim and fire) even
+though `MatchState` no longer enforces that order -- fuel exhaustion
+mid-drive now sets `arrived` directly (replacing the old auto-phase-
+transition-on-exhaustion), and `aimSolved` still resets between the two
+shots of a multi-shell turn (e.g. `ExtraShell`) so each shot gets its own
+aim-error roll, while `arrived`/`moveTargetSet` stay put so the AI doesn't
+try to re-drive between shots. `tests/MatchStateTest.cpp` lost its
+`toAimFire`/`endMovePhase` scaffolding throughout (firing needs no prior
+transition to test) and gained a direct "fuel clamps at zero without
+changing phase" case in its place. Live-verified on seed 7331: firing
+immediately at turn start with zero movement now fires for real (shell
+decrements, turn passes) with fuel left completely untouched at 20/20;
+the opponent AI still drives to its target, exhausts fuel or arrives,
+aims, and fires correctly under the merged model. Free play is unaffected
+(none of this is reachable when `matchEnabled_` is false).
+
 ### Match flow and deterministic replay
 
 Add match start, win/lose presentation and restart, plus a `--match-preview`
@@ -1111,6 +1173,102 @@ the debug build; only the Release-specific timing measurement remains
 open, as a follow-up rather than blocking this item's completion.
 
 This closes all 9 gameplay roadmap items.
+
+### Menu-driven Freeroam / 1v1 Match selection
+
+Follow-on work requested after the 9-item roadmap above was already
+complete: both modes existed but were only reachable via the `--match` CLI
+flag, which no ordinary player would know to type. Add a MATCH MODE choice
+(Freeroam / 1v1 Match) to the existing pre-game menu (`Application::
+selectTerrain`, `src/core/TerrainMenu.cpp`), and show that menu by default
+so simply running the built game is enough to play it.
+
+- Dependency: all 9 gameplay items above (both modes must already work).
+- Acceptance: launching the game with no flags shows the menu and lets the
+  player pick Freeroam or 1v1 Match; every existing scripted/screenshot
+  invocation from the prior 9 items keeps working unchanged.
+
+Status: completed. `matchEnabled_` moved from a post-construction setter
+(`main.cpp`'s `app.setMatchEnabled(...)`, called *after* `Application app(...)`
+finished constructing) to a constructor parameter, because the menu itself
+runs *during* construction (`initialize()` calls `selectTerrain` before
+returning) -- the setter call would have silently overwritten whatever the
+menu had just chosen. `selectTerrain` gained a fifth by-reference out-param
+(`bool& matchEnabled`), following the exact same shape its existing
+`valleyTerrain`/`landform`/`terrainResolution`/`refinementPasses` params
+already use, and its initial value seeds the menu's own default toggle
+state (so `--match --menu` together still pre-selects 1V1 MATCH).
+
+Two new full-width buttons ("FREEROAM"/"1V1 MATCH") were added by literally
+duplicating the existing terrain-mode buttons' pattern (struct array,
+hit-test, draw code) rather than the SHADOWS/SOUND toggle style, since mode
+selection is a mutually-exclusive choice, not a boolean flag -- placed in
+the menu's own previously-empty vertical gap between the terrain buttons
+and the LANDFORM row. 1v1 Match is only selectable alongside advanced
+terrain (legacy terrain never produces the second spawn `hasOpponent_`
+needs, per its own header comment -- 1v1 Match would silently do nothing
+on it), mirroring the identical restriction LANDFORM already has one
+control below; a final safety net at START GAME time
+(`matchEnabled = valleyTerrain && matchModeSelected == 1;`) means switching
+terrain type after already picking 1v1 Match can't leave a stale, silently-
+broken selection, regardless of exact click order.
+
+`showTerrainMenu` now defaults to `true` (was `false`), forced back off
+for any invocation that's clearly scripted/automated -- `--weapon-preview`/
+`--drive-preview`/`--shadow-preview`/`--match-preview`/`--tree-lod-benchmark`,
+a non-empty `--view`, or a `--screenshot` request -- since the menu blocks
+on real mouse/keyboard input via its own `glfwPollEvents` loop and would
+hang every one of this session's existing scripted verification commands
+otherwise. A new `--no-menu` flag is an explicit escape hatch; `--menu`
+stays accepted (redundant now, harmless).
+
+Verified live: re-ran three of this session's own established screenshot
+scenarios (free play, `--match --weapon-preview`, `--match-preview` to
+game-over) unchanged apart from the constructor signature, confirming the
+automation-detection correctly skips the menu for every existing scripted
+path. The menu's own new wiring was proven end-to-end with a temporary
+environment-variable-gated auto-pilot inside `selectTerrain` (bypassing
+real mouse/keyboard after a few loop iterations, removed once verification
+was done -- the same "temporary hook, removed after" convention used
+throughout this session): selecting 1V1 MATCH produced a live game
+showing the full match HUD (turn label, both tanks' HP/FUEL/SHL panels,
+"MATCH START" banner); selecting FREEROAM produced the ordinary, panel-
+free free-play HUD. Confirmed a genuinely bare launch (no arguments at
+all) reaches "Terrain menu ready" and blocks there as expected, and that
+`--no-menu` skips straight to loading. All 31 tests pass.
+
+### Front armor damage reduction
+
+Follow-on request after playing a real match: tanks should take half
+damage when hit on their front armor, rewarding maneuvering to expose an
+enemy's side or rear rather than trading shots head-on.
+
+- Dependency: hits, accuracy-scaled damage and destruction (the existing
+  `MatchState::splashDamage`/`applyDamage` pipeline this plugs into).
+- Acceptance: a shot landing within the hull's forward arc deals half
+  damage; a shot landing outside it (side or rear) deals full damage,
+  for both a direct hit and nearby splash.
+
+Status: completed. Added to `Application.cpp`'s existing `triggerHit`/
+`splash` lambda (`updateProjectilesAndCollisions`) rather than
+`MatchState`, which stays deliberately Tank/glm-free -- the check needs
+the target's hull orientation, which only `Application` has access to.
+A hit counts as "front" when the impact point falls within a 60-degree
+half-angle cone of the hull's forward axis (`kFrontArmorCosine = 0.5`,
+i.e. `cos(60°)`), measured from `Tank::HullCapsule`'s own `position`/
+`axis` -- the exact same oriented-capsule model `distanceToHull` already
+uses, rather than a second, potentially-diverging basis computed from
+`forward()`'s tilted 3D vector. `HullCapsule` moved from `Tank`'s private
+section to public for this (a pure getter with no encapsulation risk).
+Applies identically to a direct hit and a nearby splash, using whatever
+point the shell actually struck. Live-verified on seed 7331 with two
+engineered, deterministic test hits (temporary hooks, removed after):
+forcing an impact point directly ahead of the opponent's hull dropped its
+health by exactly 0.5 (3.0 -> 2.5, half of a normal 1.0 direct hit);
+forcing one directly behind it dropped health by the full 1.0 (3.0 ->
+2.0) -- confirming the cone check engages correctly in both directions,
+not just that the code compiles. All 31 tests pass; free play is
+unaffected (the whole check lives inside `if (matchEnabled_)`).
 
 ### Gameplay recommendation
 

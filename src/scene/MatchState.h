@@ -19,13 +19,16 @@ enum class CombatantId { Player, Opponent };
 enum class PowerUpType { ExtraShell, IncreasedDamage, LargerSplash, AimAssist, TighterAccuracy, MoreFuel };
 inline constexpr size_t kPowerUpTypeCount = 6;
 
-// The state machine a turn moves through. Move and AimFire are driven by
-// player/opponent input (see MatchState::spendFuel/endMovePhase and
-// recordShotFired); Resolving is driven by whoever owns projectile
-// simulation, once per shell's damage application and once when every
-// shell fired this turn has landed and its effects have settled (see
-// MatchState::applyDamage/notifyProjectilesSettled). GameOver is terminal.
-enum class Phase { Move, AimFire, Resolving, GameOver };
+// The state machine a turn moves through. Turn covers the whole active
+// combatant's turn -- driving (while fuel remains) and firing (while a
+// shell remains) are both always available, in any order, driven by
+// player/opponent input (see MatchState::spendFuel/recordShotFired); there
+// is no separate "must stop moving before you may fire" step. Resolving is
+// driven by whoever owns projectile simulation, once per shell's damage
+// application and once when every shell fired this turn has landed and its
+// effects have settled (see MatchState::applyDamage/notifyProjectilesSettled).
+// GameOver is terminal.
+enum class Phase { Turn, Resolving, GameOver };
 
 // Owns the two combatants, whose turn it is, the phase within the turn and
 // the win condition -- the single source of truth the fixed-step
@@ -104,17 +107,17 @@ public:
     // Absent while in progress; the surviving combatant once the match ends.
     std::optional<CombatantId> winner() const;
 
-    // Valid only in Phase::Move, on the active combatant. Negative amounts
-    // are treated as zero. Reaching exactly zero remaining fuel ends the
-    // move phase immediately, same as calling endMovePhase() directly.
+    // Valid only in Phase::Turn, on the active combatant. Negative amounts
+    // are treated as zero, and fuel clamps at zero rather than going
+    // negative -- reaching zero no longer changes phase (see
+    // Application's own fuel-remaining check before it allows driving);
+    // firing remains available regardless of remaining fuel.
     void spendFuel(float amount);
 
-    // Valid only in Phase::Move: ends the active combatant's move phase
-    // early. Move -> AimFire.
-    void endMovePhase();
-
-    // Valid only in Phase::AimFire with a shell remaining: fires it.
-    // Decrements shellsRemaining. AimFire -> Resolving.
+    // Valid only in Phase::Turn with a shell remaining: fires it, at any
+    // point during the turn regardless of remaining fuel or whether
+    // driving has happened yet. Decrements shellsRemaining. Turn ->
+    // Resolving.
     void recordShotFired();
 
     // Valid only in Phase::Resolving, against a still-alive target: applies
@@ -124,8 +127,8 @@ public:
     void applyDamage(CombatantId target, float damageInFullHits);
 
     // Valid only in Phase::Resolving: every shell fired this turn has now
-    // landed and settled. Returns to AimFire if shells remain (future
-    // multi-shell turns), otherwise ends the turn.
+    // landed and settled. Returns to Turn if shells remain (e.g.
+    // ExtraShell), otherwise ends the turn.
     void notifyProjectilesSettled();
 
     // Adds one `type` to the active combatant's holdings. MoreFuel/
@@ -152,12 +155,12 @@ public:
 
 private:
     // Hands control to the other combatant: refills the new active
-    // combatant's fuel/shells and returns to Phase::Move. The combatant who
+    // combatant's fuel/shells and returns to Phase::Turn. The combatant who
     // just finished keeps whatever they were left with until their own next
     // turn. Alive/health persist untouched.
     void endTurn();
 
     std::array<CombatantState, 2> combatants_{};
     CombatantId active_ = CombatantId::Player;
-    Phase phase_ = Phase::Move;
+    Phase phase_ = Phase::Turn;
 };
