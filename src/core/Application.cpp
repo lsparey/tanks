@@ -47,6 +47,8 @@ constexpr uint32_t kWindowHeight = 720;
 // chronologically as 3 -> 8 (bark) -> 9 (depth) -> 10 (leaves) -> 4 (props).
 constexpr uint32_t kGpuTimestampsPerFrame = 12;
 constexpr float kAimProjectionDistance = 25.0f;
+// Roughly one hull length -- see MatchState::splashDamage and Tank::distanceToHull.
+constexpr float kSplashRadius = 4.5f;
 constexpr std::array<Application::TreeLodMode,8> kTreeLodBenchmarkModes = {
     Application::TreeLodMode::Previous, Application::TreeLodMode::Reduced,
     Application::TreeLodMode::Far, Application::TreeLodMode::Hidden,
@@ -374,7 +376,18 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
                                             foliageHistoryBuffer_->sampler());
     }
 
+    // Seeded (not std::random_device) so power-up type/dispersion under
+    // --match stay reproducible for a fixed --seed, unlike this codebase's
+    // purely-visual randomness elsewhere.
+    powerUpRng_.seed(worldSeed_ ^ 0x501u);
+
     tank_ = std::make_unique<Tank>(*context_, *commands_,
+                                    std::string(ASSET_ROOT) + (originalTankModel
+                                        ? "/assets/models/tank.x" : "/assets/models/challenger2.obj"), animateTracks);
+    // Same model/animation choice as the player -- only its camo scheme and
+    // (until later roadmap items give it AI/turn-driven input) staying put
+    // set it apart. See MatchState::CombatantId::Opponent.
+    opponentTank_ = std::make_unique<Tank>(*context_, *commands_,
                                     std::string(ASSET_ROOT) + (originalTankModel
                                         ? "/assets/models/tank.x" : "/assets/models/challenger2.obj"), animateTracks);
     TerrainGenerator::Settings terrainSettings;
@@ -514,6 +527,18 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
     std::vector<uint8_t> camoPixels = CamoTextureGenerator::generate(1024);
     camoTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 1024, 1024, camoPixels, /*repeat=*/true));
+    // Desert/OPFOR-leaning rather than another green scheme, so the
+    // opponent reads as distinctly "other" at range against this game's
+    // green countryside (see PLAN.md's "Opponent tank" item).
+    CamoTextureGenerator::Palette opponentPalette{
+        /*darkGreen slot, repurposed*/ {0.28f, 0.12f, 0.07f},  // dark reddish-brown
+        /*brown*/ {0.55f, 0.42f, 0.24f},                       // sand/tan
+        /*tan*/ {0.70f, 0.62f, 0.42f},                         // pale khaki
+        /*black*/ {0.05f, 0.04f, 0.03f},
+    };
+    std::vector<uint8_t> opponentCamoPixels = CamoTextureGenerator::generate(1024, opponentPalette);
+    opponentCamoTexture_ = std::make_unique<Texture>(
+        Texture::fromPixels(*context_, *commands_, 1024, 1024, opponentCamoPixels, /*repeat=*/true));
     std::vector<uint8_t> metalPixels = MetalTextureGenerator::generate(128);
     metalTexture_ = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 128, 128, metalPixels, /*repeat=*/true));
@@ -553,6 +578,8 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
                                                                   *whiteTexture_, *whiteTexture_);
     camoMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*camoTexture_, *camoTexture_,
                                                                  *camoTexture_, *camoTexture_);
+    opponentCamoMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(
+        *opponentCamoTexture_, *opponentCamoTexture_, *opponentCamoTexture_, *opponentCamoTexture_);
     metalMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*metalTexture_, *metalTexture_,
                                                                   *metalTexture_, *metalTexture_);
     boundaryLineMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(
@@ -574,9 +601,30 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
         waterMesh_ = WaterGenerator::buildMesh(*context_, *commands_, *water);
         const auto& spawn = *terrain_->state().navigation->spawn;
         spawnXZ_ = {spawn.position.x, spawn.position.z};
+        playerSpawnPosition_ = spawn.position;
+        playerSpawnForward_ = spawn.forward;
         tank_->placeAt(spawn.position, spawn.forward, *terrain_);
         std::cout << "Terrain spawn: " << spawn.position.x << ", " << spawn.position.y << ", " << spawn.position.z
                   << "; route " << terrain_->state().navigation->routeLength << " m\n";
+        // Reuses the same accepted route's far end (see
+        // TerrainPlayability::secondarySpawn) rather than a second
+        // independent search -- already guaranteed connected, dry,
+        // flat-enough and separated from the player by at least
+        // minimumRouteSpan, and already protected from scenery by the
+        // existing Reservation (which seeds its protected set from every
+        // route cell, not just the spawn). Throwing on nullopt matches
+        // this codebase's convention elsewhere (Reservation's constructor,
+        // TerrainSelection) of failing loud on an invalid accepted state
+        // rather than silently placing the opponent somewhere unsafe.
+        auto opponentSpawn = TerrainPlayability::secondarySpawn(*terrain_->state().navigation, terrain_->state().ground);
+        if (!opponentSpawn) throw std::runtime_error("accepted terrain route has no valid opponent spawn");
+        opponentSpawnXZ_ = {opponentSpawn->position.x, opponentSpawn->position.z};
+        opponentSpawnPosition_ = opponentSpawn->position;
+        opponentSpawnForward_ = opponentSpawn->forward;
+        opponentTank_->placeAt(opponentSpawn->position, opponentSpawn->forward, *terrain_);
+        hasOpponent_ = true;
+        std::cout << "Opponent spawn: " << opponentSpawn->position.x << ", " << opponentSpawn->position.y << ", "
+                  << opponentSpawn->position.z << "\n";
     } else {
         legacyWaterField_ = WaterGenerator::computeFloodField(*terrain_, kWaterThreshold, kWaterMaxDepth);
         waterMesh_ = WaterGenerator::buildMesh(*context_, *commands_, *terrain_, legacyWaterField_);
@@ -1105,6 +1153,7 @@ void Application::cleanup() noexcept {
     whiteTexture_.reset();
     metalTexture_.reset();
     camoTexture_.reset();
+    opponentCamoTexture_.reset();
     boundaryWallTexture_.reset();
     boundaryLineTexture_.reset();
     crateTexture_.reset();
@@ -1148,6 +1197,7 @@ void Application::cleanup() noexcept {
     shellMesh_.reset();
     boxMesh_.reset();
     tank_.reset();
+    opponentTank_.reset();
     terrain_.reset();
     pipeline_.reset();
     commands_.reset();
@@ -1246,7 +1296,7 @@ void Application::mainLoop() {
         }
 
         double now = glfwGetTime();
-        float deltaTime = (weaponPreview_ || shadowPreview_ || drivePreview_) ? 1.0f/60.0f : static_cast<float>(now - lastFrameTime_);
+        float deltaTime = (weaponPreview_ || shadowPreview_ || drivePreview_ || matchPreview_) ? 1.0f/60.0f : static_cast<float>(now - lastFrameTime_);
         lastFrameTime_ = now;
         // Bound float phase precision without a discontinuity: every wind
         // frequency completes an integer number of cycles in 128 seconds.
@@ -1376,7 +1426,7 @@ void Application::mainLoop() {
         // (ghosting/trail) inspection.
         if (drivePreview_ && frameCounter_ == 90) input_->holdKey(GLFW_KEY_W);
         if (drivePreview_ && frameCounter_ == 300) input_->releaseKey(GLFW_KEY_W);
-        if (weaponPreview_ && frameCounter_ == 90) fireProjectile();
+        if (weaponPreview_ && frameCounter_ == 90) fireProjectile(*tank_, CombatantId::Player);
         // Weapon preview aimed at the water reference view: stage a shell
         // splash at the deepest-water target the camera is already looking
         // at, so splash spray/foam/wave tuning is screenshot-iterable
@@ -1396,7 +1446,30 @@ void Application::mainLoop() {
             effect.position=point;
             impactEffects_.push_back(effect);
         }
-        if (!treeLodBenchmark_) {
+        if (matchPreview_) {
+            // --match-preview: the player's tank is AI-driven exactly like
+            // the opponent's, reusing the same self-contained turn logic
+            // (movement, fuel spend, phase transitions, aim, firing) --
+            // see driveTankWithAI. The manual input/fuel/fire-key handling
+            // below is entirely skipped, not just its inputs zeroed, since
+            // driveTankWithAI already does the equivalent internally and
+            // running both would double-spend fuel and could double-fire.
+            driveTankWithAI(*tank_, *opponentTank_, CombatantId::Player, deltaTime);
+        } else {
+            // Whether the player's own tank may act *at all* right now --
+            // covers turret/elevation/power/firing, not just driving.
+            // Always true in free play. In a match it additionally requires
+            // the camera to have finished blending back from an away view
+            // (see cameraTransitioning_ below), so control never returns
+            // mid-motion (item 8's own acceptance line): a player who could
+            // still traverse/fire while the camera was busy showing the
+            // opponent's turn would be a real, newly-visible fairness break
+            // now that the turn is actually rendered instead of
+            // instantaneous.
+            bool playerTurnActive = !matchEnabled_ ||
+                (!cameraTransitioning_ && matchState_.activeCombatant() == CombatantId::Player &&
+                 !matchState_.isGameOver());
+            if (!treeLodBenchmark_) {
             // Standing-water depth at the hull centre -- wading drag inside
             // Tank::update, wake placement in updateTrackMarks.
             glm::vec3 hullPosition = tank_->position();
@@ -1405,9 +1478,89 @@ void Application::mainLoop() {
                 wadeDepth = std::max(
                     0.0f, *level - terrain_->heightAt(hullPosition.x, hullPosition.z));
             }
-            tank_->update(*input_, deltaTime, *terrain_, obstacles_, boundaryHalfExtent_,
-                          wadeDepth);
+            // Driving further narrows to the player's own Move phase (item 5
+            // fix: this originally checked phase alone, harmless while
+            // nothing ever changed the active combatant -- now that a turn
+            // can pass, driving must stop once it's the opponent's, not just
+            // reset to Move).
+            bool driveEnabled = playerTurnActive &&
+                (!matchEnabled_ || matchState_.phase() == Phase::Move);
+            // The opponent is a moving obstacle once item 7 gives it real
+            // driving -- appended fresh each frame (unlike the static
+            // trees/rocks in obstacles_) rather than folded into it.
+            std::vector<CollisionSystem::CircleObstacle> playerObstacles = obstacles_;
+            if (hasOpponent_) {
+                playerObstacles.push_back({{opponentTank_->position().x, opponentTank_->position().z},
+                                            float(terrain_->state().navigation->footprintRadius)});
+            }
+            Tank::Controls playerControls = Tank::Controls::fromInput(*input_, driveEnabled);
+            if (!playerTurnActive) {
+                playerControls.turretLeft = playerControls.turretRight = false;
+                playerControls.elevateUp = playerControls.elevateDown = false;
+                playerControls.powerUp = playerControls.powerDown = false;
+            }
+            tank_->update(playerControls, deltaTime, *terrain_,
+                          playerObstacles, boundaryHalfExtent_, wadeDepth);
         }
+
+        if (matchEnabled_) {
+            Phase beforeSpend = matchState_.phase();
+            matchState_.spendFuel(MatchState::movementFuelCost(
+                tank_->signedSpeed(), tank_->angularSpeed(), deltaTime));
+            if (beforeSpend == Phase::Move && matchState_.phase() != Phase::Move)
+                std::cout << "Fuel exhausted -- move phase ended\n";
+            // "The move phase can also be ended early by the player" (PLAN.md).
+            bool endMoveKeyDown = glfwGetKey(window_, GLFW_KEY_TAB) == GLFW_PRESS;
+            if (endMoveKeyDown && !prevEndMoveKeyDown_ && matchState_.phase() == Phase::Move) {
+                matchState_.endMovePhase();
+                std::cout << "Move phase ended (Tab), "
+                          << matchState_.combatant(CombatantId::Player).fuelRemaining << " fuel remaining\n";
+            }
+            prevEndMoveKeyDown_ = endMoveKeyDown;
+
+            // Cycle which held power-up is armed for the next shot (see
+            // PLAN.md's "Power-up crates"), skipping types not currently
+            // held. TighterAccuracy/MoreFuel are never armed -- they apply
+            // immediately on collection (see MatchState::collectPowerUp).
+            bool armKeyDown = glfwGetKey(window_, GLFW_KEY_V) == GLFW_PRESS;
+            if (armKeyDown && !prevArmPowerUpKeyDown_) {
+                static constexpr std::array<PowerUpType, 4> kArmableTypes = {
+                    PowerUpType::ExtraShell, PowerUpType::IncreasedDamage,
+                    PowerUpType::LargerSplash, PowerUpType::AimAssist,
+                };
+                const auto& player = matchState_.combatant(CombatantId::Player);
+                size_t startIndex = 0;
+                if (player.armedPowerUp) {
+                    for (size_t i = 0; i < kArmableTypes.size(); ++i)
+                        if (kArmableTypes[i] == *player.armedPowerUp) { startIndex = (i + 1) % kArmableTypes.size(); break; }
+                }
+                for (size_t offset = 0; offset < kArmableTypes.size(); ++offset) {
+                    PowerUpType candidate = kArmableTypes[(startIndex + offset) % kArmableTypes.size()];
+                    if (player.powerUps[static_cast<size_t>(candidate)] > 0) {
+                        matchState_.armPowerUp(candidate);
+                        break;
+                    }
+                }
+            }
+            prevArmPowerUpKeyDown_ = armKeyDown;
+        }
+
+        bool fireDown = !treeLodBenchmark_ && (glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS ||
+                        glfwGetKey(window_, GLFW_KEY_SPACE) == GLFW_PRESS);
+        if (fireDown && !prevFireDown_ && playerTurnActive) fireProjectile(*tank_, CombatantId::Player);
+        prevFireDown_ = fireDown;
+        }
+
+        // Restart (see PLAN.md's "Match flow and deterministic replay"):
+        // only reachable once the match has actually ended, checked
+        // unconditionally of matchPreview_ (interactive restart is
+        // meaningful either way, even if a preview run wouldn't normally
+        // have a real key press to receive).
+        bool restartKeyDown = glfwGetKey(window_, GLFW_KEY_N) == GLFW_PRESS;
+        if (restartKeyDown && !prevRestartKeyDown_ && matchEnabled_ && hasOpponent_ && matchState_.isGameOver())
+            restartMatch();
+        prevRestartKeyDown_ = restartKeyDown;
+
         updateTrackMarks(deltaTime);
 
         // Engine drone follows whichever is stronger: hull speed or a pivot
@@ -1417,26 +1570,101 @@ void Application::mainLoop() {
         float turnAmount = glm::clamp(tank_->angularSpeed() / 0.9f, 0.0f, 1.0f);
         audio_->updateEngineSound(std::max(driveAmount, turnAmount), deltaTime);
 
-        bool fireDown = !treeLodBenchmark_ && (glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS ||
-                        glfwGetKey(window_, GLFW_KEY_SPACE) == GLFW_PRESS);
-        if (fireDown && !prevFireDown_) fireProjectile();
-        prevFireDown_ = fireDown;
+        driveTankWithAI(*opponentTank_, *tank_, CombatantId::Opponent, deltaTime);
 
         updateProjectilesAndCollisions(deltaTime);
 
-        switch (cameraMode_) {
-            case CameraMode::HullFollow:
-                camera_.followTarget(tank_->position(), tank_->forward());
+        // A destroyed tank keeps smoldering -- reuses the existing puff
+        // system rather than a new effect type; throttled to roughly every
+        // 0.6s rather than every frame.
+        if (matchEnabled_ && frameCounter_ % 36 == 0) {
+            // Above the hull deck, not at the tank's ground-reference
+            // position -- spawning at the base put the puff low enough to
+            // read as occluded by the tilted hull itself from most camera
+            // angles.
+            if (!matchState_.combatant(CombatantId::Player).alive)
+                spawnSmokePuff(tank_->position() + glm::vec3(0.0f, tank_->height() * 0.8f, 0.0f),
+                               glm::vec3(0.0f, 0.6f, 0.0f), 0.3f, 0.9f, 1.2f);
+            if (hasOpponent_ && !matchState_.combatant(CombatantId::Opponent).alive)
+                spawnSmokePuff(opponentTank_->position() + glm::vec3(0.0f, opponentTank_->height() * 0.8f, 0.0f),
+                               glm::vec3(0.0f, 0.6f, 0.0f), 0.3f, 0.9f, 1.2f);
+        }
+
+        // Turn camera: during the opponent's turn, override cameraMode_'s
+        // own view to follow the opponent tank, then its fired shell, and
+        // blend (rather than cut) both into and out of that view so the
+        // camera is never instantaneously somewhere new -- playerTurnActive
+        // above already keeps input inert while cameraTransitioning_ is
+        // true, so "control never changes hands while the camera is moving"
+        // holds regardless of which direction the blend is running.
+        AwayCameraTarget desiredCameraTarget = AwayCameraTarget::None;
+        if (matchEnabled_ && hasOpponent_ && !matchState_.isGameOver() &&
+            matchState_.activeCombatant() == CombatantId::Opponent) {
+            desiredCameraTarget = (matchState_.phase() == Phase::Resolving && !projectiles_.empty())
+                                       ? AwayCameraTarget::Shell
+                                       : AwayCameraTarget::OpponentTank;
+        }
+        if (desiredCameraTarget != awayCameraTarget_) {
+            // Free camera has no fixed "home" pose to blend back to (it's
+            // wherever live input last left it, not a scripted target) --
+            // resume live free-fly immediately instead of locking input
+            // against a blend that would otherwise never reach anywhere
+            // (see PLAN.md's item 8 out-of-scope note on this).
+            if (desiredCameraTarget == AwayCameraTarget::None && cameraMode_ == CameraMode::Free) {
+                cameraTransitioning_ = false;
+            } else {
+                blendFromEye_ = camera_.position();
+                blendFromFront_ = camera_.front();
+                cameraBlend_ = 0.0f;
+                cameraTransitioning_ = true;
+            }
+            awayCameraTarget_ = desiredCameraTarget;
+        }
+
+        glm::vec3 rawDesiredEye, rawDesiredFront;
+        switch (desiredCameraTarget) {
+            case AwayCameraTarget::OpponentTank:
+                camera_.followTarget(opponentTank_->position(), opponentTank_->forward());
+                rawDesiredEye = camera_.position();
+                rawDesiredFront = camera_.front();
                 break;
-            case CameraMode::TurretAim: {
-                glm::vec3 aimPoint = tank_->muzzleWorldPosition() +
-                                     tank_->aimDirection() * kAimProjectionDistance;
-                camera_.followAimTarget(tank_->position(), aimPoint);
+            case AwayCameraTarget::Shell: {
+                const Projectile& shell = projectiles_.front();
+                glm::vec3 travelDirection = glm::length(shell.velocity) > 1e-4f
+                                                 ? glm::normalize(shell.velocity)
+                                                 : opponentTank_->forward();
+                camera_.followTarget(shell.position, travelDirection);
+                rawDesiredEye = camera_.position();
+                rawDesiredFront = camera_.front();
                 break;
             }
-            case CameraMode::Free:
-                camera_.update(*input_, deltaTime);
+            case AwayCameraTarget::None:
+                switch (cameraMode_) {
+                    case CameraMode::HullFollow:
+                        camera_.followTarget(tank_->position(), tank_->forward());
+                        break;
+                    case CameraMode::TurretAim: {
+                        glm::vec3 aimPoint = tank_->muzzleWorldPosition() +
+                                             tank_->aimDirection() * kAimProjectionDistance;
+                        camera_.followAimTarget(tank_->position(), aimPoint);
+                        break;
+                    }
+                    case CameraMode::Free:
+                        if (!cameraTransitioning_) camera_.update(*input_, deltaTime);
+                        break;
+                }
+                rawDesiredEye = camera_.position();
+                rawDesiredFront = camera_.front();
                 break;
+        }
+
+        if (cameraTransitioning_) {
+            constexpr float kCameraBlendDuration = 0.6f;
+            cameraBlend_ = std::min(1.0f, cameraBlend_ + deltaTime / kCameraBlendDuration);
+            glm::vec3 blendedEye = glm::mix(blendFromEye_, rawDesiredEye, cameraBlend_);
+            glm::vec3 blendedFront = glm::normalize(glm::mix(blendFromFront_, rawDesiredFront, cameraBlend_));
+            camera_.setPose(blendedEye, blendedFront);
+            if (cameraBlend_ >= 1.0f) cameraTransitioning_ = false;
         }
 
         if (!referenceView_.empty()) applyReferenceCamera();
@@ -1541,6 +1769,13 @@ void Application::applyReferenceCamera() {
         target = tank_->position() + glm::vec3(0.0f, 0.8f, 0.4f);
         // Tiny horizontal offset avoids a singular world-up/look direction.
         offset = {0.01f, 5.0f, 0.0f};
+    } else if (referenceView_ == "opponent" && hasOpponent_) {
+        // Same close-up 3/4 framing as "tank", aimed at the opponent instead
+        // -- verifies its distinct camo scheme and that it renders/shadows
+        // consistently with the player tank (see PLAN.md's "Opponent tank"
+        // item acceptance).
+        target = opponentTank_->position() + glm::vec3(0.0f, 1.1f, 0.0f);
+        offset = {6.2f, 2.8f, -7.5f};
     } else if (referenceView_ == "terrain") {
         // Fixed world pose for comparing generation settings. Spawn and water
         // selection can move between resolutions, so neither anchors this view.
@@ -1618,35 +1853,62 @@ bool Application::allowsScenery(glm::vec2 center, float radius) const {
     return terrain_->state().allowsScenery(center, radius);
 }
 
+bool Application::sameComponentAsSpawn(glm::vec2 xz) const {
+    const auto& navigation = terrain_->state().navigation;
+    if (!navigation) return true;  // --terrain legacy has no route/component data at all
+    int q = navigation->resolution;
+    float worldSize = terrain_->worldSize();
+    // Same clamp-then-index conversion TerrainSurface::sampleAt uses for
+    // world-to-cell lookups, applied to navigation's matching quad grid.
+    auto axis = [&](float world) {
+        float p = glm::clamp(world, -worldSize * 0.5f, worldSize * 0.5f);
+        return std::min(static_cast<int>((p / worldSize + 0.5f) * q), q - 1);
+    };
+    int32_t component = navigation->component[static_cast<size_t>(axis(xz.y)) * q + axis(xz.x)];
+    return component >= 0 && component == static_cast<int32_t>(navigation->spawn->component);
+}
+
+glm::vec2 Application::findScenerySpot(std::mt19937& rng, const std::vector<glm::vec2>& placed,
+                                        float minDistanceFromSpawns, float minDistanceBetween,
+                                        float allowsSceneryRadius, int maxAttempts, bool* found) {
+    constexpr float kEdgeMargin = 6.0f;  // keep off the play-area boundary's wall of light
+    float half = boundaryHalfExtent_ - kEdgeMargin;
+    std::uniform_real_distribution<float> coordDist(-half, half);
+    glm::vec2 pos{0.0f, 0.0f};
+    *found = false;
+    for (int attempt = 0; attempt < maxAttempts; ++attempt) {
+        glm::vec2 candidate(coordDist(rng), coordDist(rng));
+        pos = candidate;
+        bool tooCloseToSpawn = glm::length(candidate - spawnXZ_) < minDistanceFromSpawns ||
+            (hasOpponent_ && glm::length(candidate - opponentSpawnXZ_) < minDistanceFromSpawns);
+        bool tooCloseToOther =
+            std::any_of(placed.begin(), placed.end(), [&](glm::vec2 p) {
+                return glm::length(p - candidate) < minDistanceBetween;
+            });
+        if (tooCloseToSpawn || tooCloseToOther || !allowsScenery(candidate, allowsSceneryRadius) ||
+            !sameComponentAsSpawn(candidate))
+            continue;
+        *found = true;
+        break;
+    }
+    return pos;
+}
+
 void Application::spawnBoxes() {
     constexpr int kBoxCount = 8;
-    constexpr float kEdgeMargin = 6.0f;  // keep boxes off the play-area boundary's wall of light
     constexpr float kMinDistanceFromSpawn = 10.0f;
     constexpr float kMinDistanceBetweenBoxes = 6.0f;
+    constexpr float kAllowsSceneryRadius = 1.732052f;
     constexpr int kMaxAttemptsPerBox = 50;
 
     std::mt19937 rng(worldSeed_ ^ 0x201u);
-    float half = boundaryHalfExtent_ - kEdgeMargin;
-    std::uniform_real_distribution<float> coordDist(-half, half);
     std::uniform_real_distribution<float> yawDist(0.0f, 6.2831853f);
 
     std::vector<glm::vec2> placed;
     for (int i = 0; i < kBoxCount; ++i) {
-        glm::vec2 pos{0.0f, 0.0f};
         bool found = false;
-        for (int attempt = 0; attempt < kMaxAttemptsPerBox; ++attempt) {
-            glm::vec2 candidate(coordDist(rng), coordDist(rng));
-            bool tooCloseToSpawn = glm::length(candidate - spawnXZ_) < kMinDistanceFromSpawn;
-            bool tooCloseToOther =
-                std::any_of(placed.begin(), placed.end(), [&](glm::vec2 p) {
-                    return glm::length(p - candidate) < kMinDistanceBetweenBoxes;
-                });
-            pos = candidate;
-            if (!tooCloseToSpawn && !tooCloseToOther && allowsScenery(candidate, 1.732052f)) {
-                found = true;
-                break;
-            }
-        }
+        glm::vec2 pos = findScenerySpot(rng, placed, kMinDistanceFromSpawn, kMinDistanceBetweenBoxes,
+                                         kAllowsSceneryRadius, kMaxAttemptsPerBox, &found);
         if (!found && terrain_->state().reservation) throw std::runtime_error("no safe box placement for selected terrain");
         placed.push_back(pos);
 
@@ -2296,6 +2558,32 @@ void Application::destroyBox(Box& box) {
     spawnExplosion(box.position);
 }
 
+void Application::collectBox(Box& box, CombatantId collector) {
+    static constexpr std::array<PowerUpType, kPowerUpTypeCount> kAllTypes = {
+        PowerUpType::ExtraShell,      PowerUpType::IncreasedDamage, PowerUpType::LargerSplash,
+        PowerUpType::AimAssist,       PowerUpType::TighterAccuracy, PowerUpType::MoreFuel,
+    };
+    std::uniform_int_distribution<size_t> typeDist(0, kAllTypes.size() - 1);
+    matchState_.collectPowerUp(collector, kAllTypes[typeDist(powerUpRng_)]);
+
+    // Top up: same crate, relocated to a fresh valid spot -- immediately
+    // collectible again, rather than staying gone. Every other current
+    // crate (this one's own old position included -- harmless, it's about
+    // to move away from it anyway) counts as "placed" so the new spot
+    // isn't right next to another crate.
+    std::vector<glm::vec2> placed;
+    placed.reserve(boxes_.size());
+    for (const auto& other : boxes_) placed.push_back({other.position.x, other.position.z});
+    bool found = false;
+    glm::vec2 pos = findScenerySpot(powerUpRng_, placed, 10.0f, 6.0f, 1.732052f, 50, &found);
+    if (found) {
+        box.position = glm::vec3(pos.x, terrain_->heightAt(pos.x, pos.y) + box.size * 0.5f, pos.y);
+        box.up = terrain_->normalAt(pos.x, pos.y);
+    }
+    // If no valid spot turns up this attempt, the crate just stays put --
+    // it gets another chance to relocate next time it's collected.
+}
+
 void Application::updateTrackMarks(float deltaTime) {
     constexpr float kTrackMarkSpacing = 0.34f;
     constexpr float kDustSpacing = 0.72f;
@@ -2423,6 +2711,130 @@ void Application::updateTrackMarks(float deltaTime) {
     }
 }
 
+void Application::driveTankWithAI(Tank& self, Tank& opponent, CombatantId selfId, float deltaTime) {
+    if (!matchEnabled_ || !hasOpponent_) return;
+    AiTurnState& turnState = aiTurnState_[static_cast<size_t>(selfId)];
+
+    if (matchState_.activeCombatant() != selfId || matchState_.isGameOver()) {
+        // Not this combatant's turn right now -- still give it a neutral
+        // update() each frame so it stays grounded/settled the same way
+        // a manually-driven tank always does, and clear both "solved once
+        // per phase" flags so its next real turn starts fresh.
+        self.update(Tank::Controls{}, deltaTime, *terrain_, obstacles_, boundaryHalfExtent_, 0.0f);
+        turnState.moveTargetSet = false;
+        turnState.aimSolved = false;
+        return;
+    }
+
+    glm::vec2 selfXZ(self.position().x, self.position().z);
+    glm::vec2 opponentXZ(opponent.position().x, opponent.position().z);
+    Tank::Controls controls;
+    bool arrivedAtMoveTarget = false;
+    bool turretAligned = false, elevationAligned = false, powerAligned = false;
+    constexpr float kTwoPi = 6.2831853f;
+
+    if (matchState_.phase() == Phase::Move) {
+        if (!turnState.moveTargetSet) {
+            std::vector<glm::vec2> aliveCrates;
+            aliveCrates.reserve(boxes_.size());
+            for (const auto& box : boxes_)
+                if (box.alive) aliveCrates.push_back({box.position.x, box.position.z});
+            turnState.moveTarget = OpponentAI::chooseMoveTarget(selfXZ, opponentXZ, aliveCrates);
+            turnState.moveTargetSet = true;
+        }
+        glm::vec2 toTarget = turnState.moveTarget - selfXZ;
+        float distanceToTarget = glm::length(toTarget);
+        constexpr float kArriveThreshold = 3.0f;
+        if (distanceToTarget > kArriveThreshold) {
+            glm::vec2 desiredHeading = toTarget / distanceToTarget;
+            glm::vec2 hullForward(self.forward().x, self.forward().z);
+            float currentYaw = std::atan2(hullForward.x, hullForward.y);
+            float desiredYaw = std::atan2(desiredHeading.x, desiredHeading.y);
+            float yawError = std::remainder(desiredYaw - currentYaw, kTwoPi);
+            constexpr float kYawTolerance = 0.05f;
+            if (yawError > kYawTolerance) controls.turn = 1.0f;
+            else if (yawError < -kYawTolerance) controls.turn = -1.0f;
+            controls.throttle = 1.0f;
+        } else {
+            arrivedAtMoveTarget = true;
+        }
+    } else {
+        turnState.moveTargetSet = false;
+    }
+
+    if (matchState_.phase() == Phase::AimFire) {
+        if (!turnState.aimSolved) {
+            float horizontalDistance = glm::length(opponentXZ - selfXZ);
+            float muzzleHeight = self.muzzleWorldPosition().y - self.position().y;
+            turnState.targetPower = OpponentAI::solvePowerForDistance(
+                horizontalDistance, muzzleHeight, Projectile::kGravity, Tank::kMinShotSpeed, Tank::kMaxShotSpeed);
+            float error = OpponentAI::aimErrorRadians(
+                aiDifficulty_, matchState_.combatant(selfId).accuracyBonus);
+            std::uniform_real_distribution<float> errorDist(-error, error);
+            glm::vec2 toOpponent = opponentXZ - selfXZ;
+            float desiredWorldYaw = std::atan2(toOpponent.x, toOpponent.y) + errorDist(powerUpRng_);
+            glm::vec2 hullForward(self.forward().x, self.forward().z);
+            float hullYaw = std::atan2(hullForward.x, hullForward.y);
+            turnState.targetTurretYaw = std::remainder(desiredWorldYaw - hullYaw, kTwoPi);
+            turnState.aimSolved = true;
+        }
+        // A small fixed elevation (not aimed/solved) clears minor terrain
+        // right in front of the muzzle -- this game's design already
+        // commits range to shot power, not elevation (see PLAN.md's design
+        // decisions and item 4's landing-distance table), so this is a
+        // terrain-clearance margin, not a second aimed axis.
+        constexpr float kAiElevationTarget = 0.0523599f;  // ~3 degrees
+
+        float yawError = std::remainder(turnState.targetTurretYaw - self.turretYaw(), kTwoPi);
+        constexpr float kYawTolerance = 0.02f;
+        turretAligned = std::abs(yawError) <= kYawTolerance;
+        if (!turretAligned) { if (yawError > 0.0f) controls.turretLeft = true; else controls.turretRight = true; }
+
+        float elevationError = kAiElevationTarget - self.gunElevation();
+        constexpr float kElevationTolerance = 0.01f;
+        elevationAligned = std::abs(elevationError) <= kElevationTolerance;
+        if (!elevationAligned) { if (elevationError > 0.0f) controls.elevateUp = true; else controls.elevateDown = true; }
+
+        float powerError = turnState.targetPower - self.shotPower();
+        constexpr float kPowerTolerance = 0.02f;
+        powerAligned = std::abs(powerError) <= kPowerTolerance;
+        if (!powerAligned) { if (powerError > 0.0f) controls.powerUp = true; else controls.powerDown = true; }
+    } else {
+        turnState.aimSolved = false;
+    }
+
+    glm::vec3 selfHullPosition = self.position();
+    float selfWadeDepth = 0.0f;
+    if (auto level = waterLevelAt(selfHullPosition.x, selfHullPosition.z)) {
+        selfWadeDepth = std::max(0.0f, *level - terrain_->heightAt(selfHullPosition.x, selfHullPosition.z));
+    }
+    // The other tank is a moving obstacle too (see the symmetric addition
+    // to the player's own obstacle list in mainLoop for the manual path).
+    std::vector<CollisionSystem::CircleObstacle> selfObstacles = obstacles_;
+    selfObstacles.push_back({opponentXZ, float(terrain_->state().navigation->footprintRadius)});
+    self.update(controls, deltaTime, *terrain_, selfObstacles, boundaryHalfExtent_, selfWadeDepth);
+
+    if (matchState_.phase() == Phase::Move) {
+        matchState_.spendFuel(MatchState::movementFuelCost(
+            self.signedSpeed(), self.angularSpeed(), deltaTime));
+        if (arrivedAtMoveTarget && matchState_.phase() == Phase::Move) matchState_.endMovePhase();
+    } else if (matchState_.phase() == Phase::AimFire && turretAligned && elevationAligned && powerAligned) {
+        fireProjectile(self, selfId);
+        turnState.aimSolved = false;
+    }
+}
+
+void Application::restartMatch() {
+    matchState_ = MatchState();
+    tank_->placeAt(playerSpawnPosition_, playerSpawnForward_, *terrain_);
+    if (hasOpponent_) opponentTank_->placeAt(opponentSpawnPosition_, opponentSpawnForward_, *terrain_);
+    aiTurnState_ = {};
+    projectiles_.clear();
+    boxes_.clear();
+    spawnBoxes();
+    matchStartFrame_ = frameCounter_;
+}
+
 void Application::buildAccelerationStructures() {
     boxBLAS_ = std::make_unique<AccelerationStructure>(
         AccelerationStructure::buildBLAS(*context_, *commands_, *boxMesh_));
@@ -2464,6 +2876,20 @@ void Application::buildAccelerationStructures() {
     std::cout << "Ray tracing scene ready: " << initialInstances.size()
               << " initial instances (capacity " << SceneAccelerationStructure::kMaxInstances << ")"
               << std::endl;
+}
+
+// Shared by gatherRayTracingInstances() for both the player and opponent
+// tank -- kept as one function rather than duplicated inline so the two
+// call sites can't silently drift (each tank's static BLAS + gear batches
+// contribute the same fixed small instance set).
+void Application::appendTankRayInstances(const Tank& tank, std::vector<AccelerationStructure::Instance>& instances) {
+    for (const auto& part : tank.drawParts()) {
+        instances.push_back({part.blasAddress, part.worldMatrix});
+    }
+    const auto gearTransforms = tank.gearTransforms();
+    for (size_t i = 0; i < gearTransforms.size(); ++i)
+        for (const auto& transform : gearTransforms[i])
+            instances.push_back({tank.gearBatches()[i].blas->deviceAddress(), transform});
 }
 
 std::vector<AccelerationStructure::Instance> Application::gatherRayTracingInstances() {
@@ -2515,13 +2941,8 @@ std::vector<AccelerationStructure::Instance> Application::gatherRayTracingInstan
     for (const auto& rock : rocks_) {
         instances.push_back({rockBLAS_[rock.meshVariant]->deviceAddress(), rock.worldMatrix()});
     }
-    for (const auto& part : tank_->drawParts()) {
-        instances.push_back({part.blasAddress, part.worldMatrix});
-    }
-    const auto gearTransforms = tank_->gearTransforms();
-    for (size_t i=0;i<gearTransforms.size();++i)
-        for (const auto& transform : gearTransforms[i])
-            instances.push_back({tank_->gearBatches()[i].blas->deviceAddress(),transform});
+    appendTankRayInstances(*tank_, instances);
+    if (hasOpponent_) appendTankRayInstances(*opponentTank_, instances);
     for (const auto& box : boxes_) {
         if (!box.alive) continue;
         instances.push_back({boxBLAS_->deviceAddress(), box.worldMatrix()});
@@ -2574,15 +2995,50 @@ void Application::recreateSwapchainDependentResources() {
     }
 }
 
-void Application::fireProjectile() {
-    constexpr float kShellSpeed = 25.0f;
+void Application::fireProjectile(Tank& firingTank, CombatantId firer) {
+    // Only feeds MatchState's bookkeeping when it's actually firer's turn
+    // to fire -- real firing below stays unconditional (item 4), so a shot
+    // during a stale/locked turn still visibly happens without corrupting
+    // a turn that isn't firer's. Consumed before the shell's velocity is
+    // computed: an armed IncreasedDamage/LargerSplash needs to be reflected
+    // in MatchState::combatant(firer) before this shot resolves (see
+    // triggerHit), and dispersion below reads this turn's now-settled
+    // accuracyBonus.
+    bool feedsMatchState = matchEnabled_ && matchState_.activeCombatant() == firer &&
+                           matchState_.phase() == Phase::AimFire;
+    if (feedsMatchState) matchState_.consumeArmedPowerUp();
 
     audio_->playShot();
 
+    // Shot dispersion (see MatchState::dispersionDegrees) -- zero outside
+    // --match, so free play's exact aim (and existing --weapon-preview
+    // baselines) are unaffected. Perturbed around two axes perpendicular to
+    // the aim direction for a small cone of spread, not a single plane;
+    // angles are small enough that adding radians directly (rather than
+    // tan(angle)) before renormalizing is an adequate approximation. The
+    // opponent's own aim error (see OpponentAI::aimErrorRadians) is baked
+    // into its solved aim direction before this is ever called, so this
+    // dispersion term applies equally on top of that, same as the player.
+    glm::vec3 aimDirection = firingTank.aimDirection();
+    if (matchEnabled_) {
+        float maxDispersion = glm::radians(
+            MatchState::dispersionDegrees(matchState_.combatant(firer).accuracyBonus));
+        if (maxDispersion > 0.0f) {
+            std::uniform_real_distribution<float> angleDist(-maxDispersion, maxDispersion);
+            glm::vec3 worldUp = std::abs(aimDirection.y) < 0.999f ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
+            glm::vec3 right = glm::normalize(glm::cross(worldUp, aimDirection));
+            glm::vec3 up = glm::cross(aimDirection, right);
+            aimDirection = glm::normalize(aimDirection + right * angleDist(powerUpRng_) + up * angleDist(powerUpRng_));
+        }
+    }
+
     Projectile shell;
-    shell.position = tank_->muzzleWorldPosition();
+    shell.position = firingTank.muzzleWorldPosition();
     shell.previousPosition = shell.position;
-    shell.velocity = tank_->aimDirection() * kShellSpeed;
+    // Muzzle-velocity control (see Tank::shotPower/shotSpeed): power sets
+    // range, elevation shapes the arc. See tests/ProjectileTest.cpp for the
+    // (elevation, power) -> landing distance table this is tuned against.
+    shell.velocity = aimDirection * firingTank.shotSpeed();
     projectiles_.push_back(shell);
 
     // Warm, small, very short-lived flash at the muzzle -- see
@@ -2591,7 +3047,7 @@ void Application::fireProjectile() {
     spawnDynamicLight(shell.position, glm::vec3(1.0f, 0.85f, 0.5f), /*radius=*/5.0f, /*intensity=*/25.0f,
                        /*lifetime=*/0.08f);
 
-    const glm::vec3 direction = tank_->aimDirection();
+    const glm::vec3 direction = aimDirection;
     WeaponEffects::addBounded(muzzleFlashes_, WeaponEffects::Flash{shell.position,direction},
                               WeaponEffects::kMaxFlashes);
     const auto basis = WeaponEffects::card(shell.position,direction,glm::vec3(1,0,0),1,1);
@@ -2610,7 +3066,9 @@ void Application::fireProjectile() {
     // Spawn the shell and blast at the barrel's pre-recoil muzzle first,
     // then kick the weapon/body for this rendered frame. The camera remains
     // stable; moving it backward read as a zoom rather than firing impact.
-    tank_->applyGunRecoil();
+    firingTank.applyGunRecoil(firingTank.shotPower());
+
+    if (feedsMatchState) matchState_.recordShotFired();
 }
 
 void Application::spawnGroundScorch(glm::vec3 point) {
@@ -2645,23 +3103,79 @@ void Application::updateProjectilesAndCollisions(float deltaTime) {
         // Shared by every hit case below: drop the shell, spawn the flash +
         // explosion at the actual entry point along the segment (not just
         // the shell's post-move position, which can already be well past
-        // the surface it hit for a fast-moving shell).
+        // the surface it hit for a fast-moving shell). Also the single
+        // place accuracy-scaled tank damage is applied -- whatever the
+        // shell actually hit, both tanks' distance to that point feeds the
+        // same MatchState::splashDamage curve, so a direct hit on a tank
+        // (distance 0, see the dedicated check below) and splash from a
+        // nearby terrain/box/tree/rock hit are the same code path, not two.
         auto triggerHit = [&](glm::vec3 hitPoint) {
             shell.alive = false;
             ImpactEffect effect;
             effect.position = hitPoint;
             impactEffects_.push_back(effect);
             spawnExplosion(hitPoint);
+            if (matchEnabled_) {
+                glm::vec2 hitXZ(hitPoint.x, hitPoint.z);
+                // Only one shot can ever be pending resolution at a time
+                // (recordShotFired only works in AimFire, which is only
+                // reached again once every prior shell has settled), so
+                // activeCombatant() here is still whoever fired this exact
+                // shell -- safe to read their IncreasedDamage/LargerSplash
+                // multipliers (see MatchState::consumeArmedPowerUp) without
+                // stashing per-shell metadata on the lean Projectile struct.
+                const auto& firer = matchState_.combatant(matchState_.activeCombatant());
+                float effectiveSplashRadius = kSplashRadius * firer.splashRadiusMultiplier;
+                auto splash = [&](Tank* target, CombatantId id) {
+                    if (!target) return;
+                    float damage = MatchState::splashDamage(target->distanceToHull(hitXZ), effectiveSplashRadius) *
+                                   firer.damageMultiplier;
+                    if (damage <= 0.0f) return;
+                    bool wasOver = matchState_.isGameOver();
+                    matchState_.applyDamage(id, damage);
+                    if (!wasOver && matchState_.isGameOver()) {
+                        std::cout << (matchState_.winner() == CombatantId::Player ? "Player" : "Opponent")
+                                  << " wins! Match over.\n";
+                    }
+                };
+                splash(tank_.get(), CombatantId::Player);
+                splash(hasOpponent_ ? opponentTank_.get() : nullptr, CombatantId::Opponent);
+            }
         };
 
-        for (auto& box : boxes_) {
-            if (!box.alive) continue;
-            float t = 0.0f;
-            if (CollisionSystem::segmentIntersectsAABB(shell.previousPosition, shell.position,
-                                                         box.aabbMin(), box.aabbMax(), &t)) {
-                box.alive = false;
-                triggerHit(glm::mix(shell.previousPosition, shell.position, t));
-                break;
+        // Direct tank hit: nothing else below knows about tanks, so a shot
+        // flying straight at one (not near the ground/a tree/rock/box)
+        // would otherwise pass through untouched. A plain per-frame point
+        // check (not a swept one, unlike the box/tree/rock cases below) --
+        // an occasional tunnel-through at typical shell speeds degrades to
+        // a close splash hit instead of a clean miss, which is an accepted
+        // tradeoff for not adding a new swept-segment-vs-capsule primitive.
+        if (shell.alive && matchEnabled_) {
+            struct HullTarget { Tank* tank; CombatantId id; };
+            for (HullTarget target : {HullTarget{tank_.get(), CombatantId::Player},
+                                       HullTarget{hasOpponent_ ? opponentTank_.get() : nullptr, CombatantId::Opponent}}) {
+                if (!target.tank) continue;
+                float low = target.tank->position().y - 0.3f;
+                float high = target.tank->position().y + target.tank->height() + 0.3f;
+                if (shell.position.y < low || shell.position.y > high) continue;
+                glm::vec2 shellXZ(shell.position.x, shell.position.z);
+                if (target.tank->distanceToHull(shellXZ) <= 1e-3f) {
+                    triggerHit(shell.position);
+                    break;
+                }
+            }
+        }
+
+        if (shell.alive) {
+            for (auto& box : boxes_) {
+                if (!box.alive) continue;
+                float t = 0.0f;
+                if (CollisionSystem::segmentIntersectsAABB(shell.previousPosition, shell.position,
+                                                             box.aabbMin(), box.aabbMax(), &t)) {
+                    box.alive = false;
+                    triggerHit(glm::mix(shell.previousPosition, shell.position, t));
+                    break;
+                }
             }
         }
 
@@ -2744,25 +3258,44 @@ void Application::updateProjectilesAndCollisions(float deltaTime) {
                         [](const Projectile& p) { return !p.alive; }),
         projectiles_.end());
 
-    // The tank drives through crates rather than being blocked by them
-    // (unlike trees/rocks, boxes are never added to obstacles_) -- instead,
-    // getting close enough destroys them, same explosion as a shell hit.
-    // Circle (tank, XZ only)-vs-AABB overlap: clamp the tank's position to
-    // the box's AABB to find the nearest point on it, then check the
-    // distance to that point against the tank's own collision radius
-    // (matches the radius Tank::update uses for tree/rock collision).
-    float tankCollisionRadius = tank_->hullWidth() * 0.6f;
-    glm::vec3 tankPos = tank_->position();
-    for (auto& box : boxes_) {
-        if (!box.alive) continue;
-        glm::vec3 aabbMin = box.aabbMin();
-        glm::vec3 aabbMax = box.aabbMax();
-        float closestX = glm::clamp(tankPos.x, aabbMin.x, aabbMax.x);
-        float closestZ = glm::clamp(tankPos.z, aabbMin.z, aabbMax.z);
-        float dx = tankPos.x - closestX;
-        float dz = tankPos.z - closestZ;
-        if (dx * dx + dz * dz < tankCollisionRadius * tankCollisionRadius) {
-            destroyBox(box);
+    // Once every shell fired this turn has landed and settled, hand the
+    // turn back to MatchState -- to the opponent AI if it just became
+    // their turn (see driveTankWithAI), or to the player otherwise.
+    if (matchEnabled_ && matchState_.phase() == Phase::Resolving && projectiles_.empty()) {
+        matchState_.notifyProjectilesSettled();
+    }
+
+    // Tanks drive through crates rather than being blocked by them (unlike
+    // trees/rocks, boxes are never added to obstacles_) -- instead, getting
+    // close enough destroys them, same explosion as a shell hit. Circle
+    // (tank, XZ only)-vs-AABB overlap: clamp the tank's position to the
+    // box's AABB to find the nearest point on it, then check the distance
+    // to that point against the tank's own collision radius (matches the
+    // radius Tank::update uses for tree/rock collision).
+    struct BoxCollector { Tank* tank; CombatantId id; };
+    std::array<BoxCollector, 2> boxCollectors = {
+        BoxCollector{tank_.get(), CombatantId::Player},
+        BoxCollector{(matchEnabled_ && hasOpponent_) ? opponentTank_.get() : nullptr, CombatantId::Opponent},
+    };
+    for (const auto& collector : boxCollectors) {
+        if (!collector.tank) continue;
+        float tankCollisionRadius = collector.tank->hullWidth() * 0.6f;
+        glm::vec3 tankPos = collector.tank->position();
+        for (auto& box : boxes_) {
+            if (!box.alive) continue;
+            glm::vec3 aabbMin = box.aabbMin();
+            glm::vec3 aabbMax = box.aabbMax();
+            float closestX = glm::clamp(tankPos.x, aabbMin.x, aabbMax.x);
+            float closestZ = glm::clamp(tankPos.z, aabbMin.z, aabbMax.z);
+            float dx = tankPos.x - closestX;
+            float dz = tankPos.z - closestZ;
+            if (dx * dx + dz * dz < tankCollisionRadius * tankCollisionRadius) {
+                // Free play keeps crates purely destructible; --match turns
+                // driving over one into collecting a power-up instead (see
+                // collectBox). Shells still destroy crates either way -- the
+                // box loop in updateProjectilesAndCollisions is untouched.
+                if (matchEnabled_) collectBox(box, collector.id); else destroyBox(box);
+            }
         }
     }
 
@@ -2925,9 +3458,14 @@ void Application::drawFrame() {
     // show a brief, harmless spurious velocity in the debug view (see
     // TonemapPass) while the tank settles onto the terrain; nothing else
     // consumes this data yet.
-    ubo.prevTankHullModel = tank_->prevHullWorldMatrix();
-    ubo.prevTankTurretModel = tank_->prevTurretWorldMatrix();
-    ubo.prevTankBarrelModel = tank_->prevBarrelWorldMatrix();
+    ubo.prevTankHullModel[0] = tank_->prevHullWorldMatrix();
+    ubo.prevTankTurretModel[0] = tank_->prevTurretWorldMatrix();
+    ubo.prevTankBarrelModel[0] = tank_->prevBarrelWorldMatrix();
+    if (hasOpponent_) {
+        ubo.prevTankHullModel[1] = opponentTank_->prevHullWorldMatrix();
+        ubo.prevTankTurretModel[1] = opponentTank_->prevTurretWorldMatrix();
+        ubo.prevTankBarrelModel[1] = opponentTank_->prevBarrelWorldMatrix();
+    }
     ubo.windTime = glm::vec4(static_cast<float>(windTime_), prevWindTime_,
                              shadowsEnabled_ ? 1.0f : 0.0f, reflectionRaysEnabled_ ? 1.0f : 0.0f);
     ubo.lightDir = glm::vec4(glm::normalize(glm::vec3(-0.45f, -0.55f, -0.8f)), 0.0f);
@@ -3165,6 +3703,43 @@ void Application::drawFrame() {
     std::vector<InstanceBatch> grassBatches = appendGroups(grassGroups, true);
     performanceSample_.visibleProps = static_cast<double>(rasterInstances.size());
     auto gearBatches = appendGroups(tank_->gearTransforms());
+    // hasOpponent_ is false only for `--terrain legacy`, which never places
+    // opponentTank_ (see initialize()) -- skip it rather than draw a second
+    // tank sitting at whatever default pose an unplaced Tank happens to have.
+    std::vector<InstanceBatch> opponentGearBatches;
+    if (hasOpponent_) opponentGearBatches = appendGroups(opponentTank_->gearTransforms());
+
+    // Destroyed (see MatchState::combatant(id).alive): tilt the wreck as if
+    // it settled/keeled over -- a rigid world-space rotation about the
+    // hull's own position, applied uniformly to every part (hull/turret/
+    // barrel below in drawTankParts, and the instanced running gear right
+    // here, since gear's actual world transforms are these baked instances,
+    // not anything drawTankParts itself passes as pc.model) so the whole
+    // tank stays visually rigid instead of the hull floating apart from its
+    // own wheels/tracks. A geometry change reads unmistakably as "wrecked"
+    // without needing a new material/shader tint field (PushConstants has
+    // no room for one; a specularStrength-only version was tried first and
+    // confirmed by screenshot to be imperceptible under this scene's mostly
+    // diffuse lighting).
+    auto wreckTilt = [](const Tank& tank) {
+        glm::vec3 pivot = tank.position();
+        return glm::translate(glm::mat4(1.0f), pivot) *
+               glm::rotate(glm::mat4(1.0f), glm::radians(10.0f), glm::vec3(1.0f, 0.0f, 0.3f)) *
+               glm::translate(glm::mat4(1.0f), -pivot);
+    };
+    auto tiltGearInstances = [&](const std::vector<InstanceBatch>& batches, const glm::mat4& tilt) {
+        for (const auto& batch : batches)
+            for (uint32_t i = batch.first; i < batch.first + batch.count; ++i) {
+                rasterInstances[i].model = tilt * rasterInstances[i].model;
+                rasterInstances[i].previousModel = tilt * rasterInstances[i].previousModel;
+            }
+    };
+    bool playerDestroyed = matchEnabled_ && !matchState_.combatant(CombatantId::Player).alive;
+    bool opponentDestroyed = matchEnabled_ && !matchState_.combatant(CombatantId::Opponent).alive;
+    glm::mat4 playerTilt = playerDestroyed ? wreckTilt(*tank_) : glm::mat4(1.0f);
+    glm::mat4 opponentTilt = opponentDestroyed && hasOpponent_ ? wreckTilt(*opponentTank_) : glm::mat4(1.0f);
+    if (playerDestroyed) tiltGearInstances(gearBatches, playerTilt);
+    if (opponentDestroyed && hasOpponent_) tiltGearInstances(opponentGearBatches, opponentTilt);
     std::vector<VkDrawIndexedIndirectCommand> foliageDraws;
     std::vector<InstanceBatch> foliageBatches(treeVariantCount);
     for (size_t variant=0;variant<treeVariantCount;++variant) {
@@ -3574,7 +4149,7 @@ void Application::drawFrame() {
         waterMesh_->bindAndDraw(frame.commandBuffer);
     }
 
-    // Tank: painted parts (hull, turret) get the camo texture; bare-metal
+    // Tank: painted parts (hull, turret) get a camo texture; bare-metal
     // parts (tracks, barrel) get a plain gunmetal texture instead -- see
     // CamoTextureGenerator/MetalTextureGenerator and Tank::DrawPart::
     // surface. Tank vertices carry edge-distance masks in their otherwise
@@ -3583,47 +4158,74 @@ void Application::drawFrame() {
     // analytic environment sheen. F0 already sets the paint/steel response,
     // so use unit specular strength rather than attenuating it a second time
     // with the old Blinn-Phong strength. No extra reflection rays are needed.
-    for (const auto& part : tank_->drawParts()) {
-        VkDescriptorSet materialSet = part.surface == Tank::Surface::Armour ? camoMaterialSet_ : metalMaterialSet_;
-        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(),
-                                 1, 1, &materialSet, 0, nullptr);
-        Pipeline::PushConstants tankPc{};
-        tankPc.model = part.worldMatrix;
-        tankPc.specularStrength = 1.0f;
-        tankPc.materialType = static_cast<float>(part.surface);
-        tankPc.tankSurface = tank_->surfaceBounds();
-        tankPc.reflectivity = 0.0f;
-        // See Pipeline::PushConstants::isDynamicObject -- specularStrength
-        // alone no longer uniquely identifies the tank now that its own
-        // parts use different values. The exact value (still >0.5, so every
-        // existing boolean check on this field is unaffected) also tells
-        // basic.vert which of FrameUBO's prevTankHullModel/Turret/Barrel
-        // matrices this non-instanced part's motion vector should use --
-        // see Tank::DrawPart::poseGroup, since Surface alone can't
-        // disambiguate (Tracks covers both a hull- and a turret-attached mesh).
-        tankPc.isDynamicObject = 1.0f + static_cast<float>(part.poseGroup);
-        vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
-                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                            sizeof(tankPc), &tankPc);
-        part.mesh->bindAndDraw(frame.commandBuffer);
-    }
-
-    for (size_t i=0;i<gearBatches.size();++i) {
-        const auto& part = tank_->gearBatches()[i];
-        VkDescriptorSet material = part.surface == Tank::Surface::Armour ? camoMaterialSet_ : metalMaterialSet_;
-        vkCmdBindDescriptorSets(frame.commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                pipeline_->layout(),1,1,&material,0,nullptr);
-        Pipeline::PushConstants pc{};
-        pc.model = tank_->worldToHull(); // instanced tank shading recovers hull-space dust coordinates
-        pc.isInstanced = 1;
-        pc.isDynamicObject = 1;
-        pc.materialType = static_cast<float>(part.surface);
-        pc.specularStrength = 1.0f;
-        pc.tankSurface = tank_->surfaceBounds();
-        vkCmdPushConstants(frame.commandBuffer,pipeline_->layout(),
-                            VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(pc),&pc);
-        part.mesh->bindAndDrawInstanced(frame.commandBuffer,gearBatches[i].count,gearBatches[i].first);
-    }
+    //
+    // Shared by both tanks so their draws can't silently drift apart (see
+    // the isDynamicObject comment below for why they deliberately differ in
+    // exactly one respect). `tankIndex` (0=player, 1=opponent) selects
+    // which of FrameUBO's per-tank prevTankHullModel/Turret/Barrel slots
+    // (see Pipeline.h) this tank's motion vectors read, via
+    // isDynamicObject = 1+poseGroup+3*tankIndex (see Tank::DrawPart::
+    // poseGroup and basic.vert's matching branch). Both tanks are
+    // unconditionally "dynamic" now that item 7 gives the opponent real
+    // AI-driven movement too (the player already was, even while parked --
+    // see basic.frag's isTank comment for why that's the right tradeoff for
+    // a genuinely controllable rigid body) -- except a destroyed tank,
+    // which reverts to isDynamicObject 0: it's stationary again, and
+    // basic.frag's smoothed temporal shadow path is strictly better
+    // quality for something that provably never moves.
+    auto drawTankParts = [&](const Tank& tank, VkDescriptorSet armourMaterialSet,
+                              const std::vector<InstanceBatch>& tankGearBatches, int tankIndex,
+                              bool destroyed, const glm::mat4& tilt) {
+        // Destroyed (see MatchState::combatant(id).alive, and wreckTilt
+        // above): tested a pure specularStrength-only "darkened wreck"
+        // first (no shader/material change) and confirmed by direct
+        // screenshot comparison that a reduced specular highlight is
+        // visually imperceptible under this scene's mostly-diffuse cloudy
+        // lighting -- there's usually no strong highlight on the hull to
+        // dim in the first place. `tilt` (identity when not destroyed) is
+        // the geometry change that reads unmistakably instead; also lowers
+        // specularStrength (cheap, harmless, helps in the lighting angles
+        // where it does register). Combined with periodic wreck smoke (see
+        // mainLoop) and the matching gear tilt above, not a new texture.
+        float specularStrength = destroyed ? 0.15f : 1.0f;
+        for (const auto& part : tank.drawParts()) {
+            VkDescriptorSet materialSet = part.surface == Tank::Surface::Armour ? armourMaterialSet : metalMaterialSet_;
+            vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(),
+                                     1, 1, &materialSet, 0, nullptr);
+            Pipeline::PushConstants tankPc{};
+            tankPc.model = tilt * part.worldMatrix;
+            tankPc.specularStrength = specularStrength;
+            tankPc.materialType = static_cast<float>(part.surface);
+            tankPc.tankSurface = tank.surfaceBounds();
+            tankPc.reflectivity = 0.0f;
+            tankPc.isDynamicObject = destroyed ? 0.0f
+                : 1.0f + static_cast<float>(part.poseGroup) + 3.0f * static_cast<float>(tankIndex);
+            vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
+                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                                sizeof(tankPc), &tankPc);
+            part.mesh->bindAndDraw(frame.commandBuffer);
+        }
+        for (size_t i = 0; i < tankGearBatches.size(); ++i) {
+            const auto& part = tank.gearBatches()[i];
+            VkDescriptorSet material = part.surface == Tank::Surface::Armour ? armourMaterialSet : metalMaterialSet_;
+            vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    pipeline_->layout(), 1, 1, &material, 0, nullptr);
+            Pipeline::PushConstants pc{};
+            pc.model = tank.worldToHull(); // instanced tank shading recovers hull-space dust coordinates
+            pc.isInstanced = 1;
+            pc.isDynamicObject = destroyed ? 0.0f : 1.0f + 3.0f * static_cast<float>(tankIndex);
+            pc.materialType = static_cast<float>(part.surface);
+            pc.specularStrength = specularStrength;
+            pc.tankSurface = tank.surfaceBounds();
+            vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
+                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+            part.mesh->bindAndDrawInstanced(frame.commandBuffer, tankGearBatches[i].count, tankGearBatches[i].first);
+        }
+    };
+    drawTankParts(*tank_, camoMaterialSet_, gearBatches, /*tankIndex=*/0, playerDestroyed, playerTilt);
+    if (hasOpponent_)
+        drawTankParts(*opponentTank_, opponentCamoMaterialSet_, opponentGearBatches, /*tankIndex=*/1,
+                      opponentDestroyed, opponentTilt);
 
     vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                              pipeline_->layout(), 1, 1, &crateMaterialSet_, 0, nullptr);
@@ -3904,6 +4506,7 @@ void Application::drawFrame() {
     hudState.speed = tank_->signedSpeed();
     hudState.turretYaw = tank_->turretYaw();
     hudState.gunElevation = tank_->gunElevation();
+    hudState.shotPower = tank_->shotPower();
     hudState.boundaryHalfExtent = boundaryHalfExtent_;
     hudState.targets = boxes_;
     hudState.camera = !referenceView_.empty() ? "INSPECTION" :
@@ -3915,6 +4518,86 @@ void Application::drawFrame() {
     hudState.gpuMs = gpuTimingInitialized_ ? gpuTotalMs_ : 0.0f;
     hudState.treeLod = treeLodMode_ != TreeLodMode::Full;
     hudState.reflectionRays = reflectionRaysEnabled_;
+
+    // Power-up inventory text, turn-state label, and aim-assist trajectory
+    // (see PLAN.md's "Power-up crates"/"Turn camera and match HUD") --
+    // match-only; both stay empty/default otherwise. Declared in this scope
+    // (not a member) since hudState only borrows them as a string_view/span
+    // for the immediate draw call below.
+    std::string inventoryTextStorage;
+    std::string turnLabelStorage;
+    std::vector<glm::vec4> trajectoryPoints;
+    if (matchEnabled_) {
+        hudState.matchActive = true;
+        hudState.opponentPresent = hasOpponent_;
+        if (matchState_.isGameOver()) {
+            turnLabelStorage = matchState_.winner() == CombatantId::Player ? "YOU WIN" : "OPPONENT WINS";
+        } else if (matchState_.activeCombatant() == CombatantId::Player) {
+            turnLabelStorage = matchState_.phase() == Phase::Move ? "YOUR TURN - MOVE" :
+                matchState_.phase() == Phase::AimFire ? "YOUR TURN - AIM/FIRE" : "RESOLVING";
+        } else {
+            turnLabelStorage = matchState_.phase() == Phase::Resolving ? "RESOLVING" : "OPPONENT TURN";
+        }
+        // Big center-screen banner (see PLAN.md's "Match flow and
+        // deterministic replay"): briefly at match start/after a restart,
+        // persistently once the match ends.
+        constexpr uint32_t kMatchBannerFrames = 120;  // ~2s at 60fps
+        hudState.showMatchStartBanner = !matchState_.isGameOver() &&
+            frameCounter_ - matchStartFrame_ < kMatchBannerFrames;
+        hudState.showMatchOverBanner = matchState_.isGameOver();
+        hudState.matchOverText = turnLabelStorage;
+        const auto& playerCombatState = matchState_.combatant(CombatantId::Player);
+        hudState.playerCombat = {playerCombatState.alive, playerCombatState.health, MatchState::kMaxHealth,
+                                  playerCombatState.fuelRemaining, playerCombatState.fuelCapacity,
+                                  playerCombatState.shellsRemaining, playerCombatState.shellsPerTurn};
+        if (hasOpponent_) {
+            const auto& opponentCombatState = matchState_.combatant(CombatantId::Opponent);
+            hudState.opponentCombat = {opponentCombatState.alive, opponentCombatState.health, MatchState::kMaxHealth,
+                                        opponentCombatState.fuelRemaining, opponentCombatState.fuelCapacity,
+                                        opponentCombatState.shellsRemaining, opponentCombatState.shellsPerTurn};
+        }
+        static constexpr std::array<std::pair<PowerUpType, const char*>, 4> kArmableLabels = {{
+            {PowerUpType::ExtraShell, "SHL"}, {PowerUpType::IncreasedDamage, "DMG"},
+            {PowerUpType::LargerSplash, "SPL"}, {PowerUpType::AimAssist, "AIM"},
+        }};
+        const auto& player = matchState_.combatant(CombatantId::Player);
+        for (auto [type, label] : kArmableLabels) {
+            int count = player.powerUps[static_cast<size_t>(type)];
+            if (count <= 0) continue;
+            if (!inventoryTextStorage.empty()) inventoryTextStorage += ' ';
+            inventoryTextStorage += std::string(label) + ":" + std::to_string(count);
+        }
+        if (player.armedPowerUp) {
+            for (auto [type, label] : kArmableLabels) {
+                if (type != *player.armedPowerUp) continue;
+                inventoryTextStorage += std::string(" [ARMED ") + label + "]";
+                break;
+            }
+        }
+
+        // Predicted ballistic arc while AimAssist is armed -- same
+        // step-integration Projectile::update uses, stepped here rather
+        // than spawning a real Projectile. A loose "well below the tank's
+        // own level" stop is an adequate preview cutoff; the real landing
+        // point is already covered precisely by tests/ProjectileTest.cpp.
+        if (player.armedPowerUp == PowerUpType::AimAssist) {
+            constexpr int kTrajectorySamples = 12;
+            constexpr float kTrajectoryStep = 0.15f;
+            glm::vec3 point = tank_->muzzleWorldPosition();
+            glm::vec3 velocity = tank_->aimDirection() * tank_->shotSpeed();
+            trajectoryPoints.reserve(kTrajectorySamples);
+            for (int i = 0; i < kTrajectorySamples; ++i) {
+                trajectoryPoints.push_back(unjitteredProj * ubo.view * glm::vec4(point, 1.0f));
+                velocity.y -= Projectile::kGravity * kTrajectoryStep;
+                point += velocity * kTrajectoryStep;
+                if (point.y < tank_->position().y - 5.0f) break;
+            }
+        }
+    }
+    hudState.inventoryText = inventoryTextStorage;
+    hudState.turnLabel = turnLabelStorage;
+    hudState.trajectoryClip = trajectoryPoints;
+
     CombatHud::draw(*hud_, {extent.width, extent.height}, hudState);
 
     vkCmdEndRendering(frame.commandBuffer);

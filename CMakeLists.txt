@@ -52,6 +52,13 @@ if(BUILD_TESTING)
     target_include_directories(projectile_test PRIVATE src)
     target_link_libraries(projectile_test PRIVATE glm::glm)
     add_test(NAME projectile COMMAND projectile_test)
+    add_executable(match_state_test tests/MatchStateTest.cpp src/scene/MatchState.cpp)
+    target_include_directories(match_state_test PRIVATE src)
+    add_test(NAME match_state COMMAND match_state_test)
+    add_executable(opponent_ai_test tests/OpponentAITest.cpp src/scene/OpponentAI.cpp)
+    target_include_directories(opponent_ai_test PRIVATE src)
+    target_link_libraries(opponent_ai_test PRIVATE glm::glm)
+    add_test(NAME opponent_ai COMMAND opponent_ai_test)
     add_executable(combat_hud_test tests/CombatHudTest.cpp)
     target_link_libraries(combat_hud_test PRIVATE combat_hud)
     add_test(NAME combat_hud COMMAND combat_hud_test)
@@ -163,6 +170,8 @@ add_executable(tanks
     src/scene/Tank.cpp
     src/scene/RunningGear.cpp
     src/scene/CollisionSystem.cpp
+    src/scene/MatchState.cpp
+    src/scene/OpponentAI.cpp
     src/io/ModelLoader.cpp
 )
 

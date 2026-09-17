@@ -59,17 +59,45 @@ public:
     Tank(VulkanContext& ctx, CommandContext& commands, const std::string& modelPath,
          bool animateTracks = true);
 
-    // Track-driven movement (W/S throttle, A/D differential steering) plus
-    // turret traverse (Q/E, independent of hull yaw). Movement is simulated
-    // in fixed-size substeps with acceleration, braking, traction, slope
-    // gravity, and velocity-aware collision response. The hull uses an
-    // oriented capsule against the circular tree/rock proxies in `obstacles`
-    // (see Application::obstacles_). `boundaryHalfExtent` likewise keeps the
+    // Muzzle velocity range for shotPower() = 0..1 (see shotSpeed()). Tuned
+    // against Projectile::kGravity so a level shot at minimum power lands
+    // within a few hull lengths and at maximum power reaches across the
+    // boundary -- see tests/ProjectileTest.cpp's (elevation, power) table.
+    static constexpr float kMinShotSpeed = 4.5f;
+    static constexpr float kMaxShotSpeed = 45.0f;
+
+    // Held-key-equivalent snapshot for one update() call -- decouples Tank
+    // from InputManager/GLFW entirely, so anything (a real player or the
+    // opponent's AI, see OpponentAI.h) can drive it the same way. throttle/
+    // turn are continuous (-1..1); turret/elevation/power stay boolean,
+    // matching actual key-hold semantics, since that's what both a keyboard
+    // and a bang-bang AI controller naturally produce.
+    struct Controls {
+        float throttle = 0.0f;
+        float turn = 0.0f;
+        bool turretLeft = false, turretRight = false;
+        bool elevateUp = false, elevateDown = false;
+        bool powerUp = false, powerDown = false;
+
+        // Reads the current W/S/A/D/Q/E/R/F/T/G key state.
+        // `driveEnabled=false` zeroes throttle/turn only (chassis coasts to
+        // rest under the same braking a released throttle already produces
+        // -- see MatchState's fuel-limited movement: driving stops when a
+        // turn's fuel is spent, but aiming/firing do not) -- turret,
+        // elevation and power stay live either way.
+        static Controls fromInput(const InputManager& input, bool driveEnabled);
+    };
+
+    // Movement is simulated in fixed-size substeps with acceleration,
+    // braking, traction, slope gravity, and velocity-aware collision
+    // response. The hull uses an oriented capsule against the circular
+    // tree/rock/other-tank proxies in `obstacles` (see
+    // Application::obstacles_). `boundaryHalfExtent` likewise keeps the
     // complete oriented hull behind the play-area boundary's wall of light.
     // `wadeDepth` is the standing-water depth at the hull (0 on dry ground,
     // see Application::waterLevelAt): wading saps engine power and adds
     // speed-dependent water drag, maxing out at a fraction of hull height.
-    void update(const InputManager& input, float deltaTime, const Terrain& terrain,
+    void update(const Controls& controls, float deltaTime, const Terrain& terrain,
                 const std::vector<CollisionSystem::CircleObstacle>& obstacles,
                 float boundaryHalfExtent, float wadeDepth = 0.0f);
 
@@ -79,9 +107,21 @@ public:
 
     glm::vec3 position() const { return position_; }
     glm::vec3 forward() const { return forward_; }
+    // Distance in the XZ plane from a point to the hull's own movement-
+    // collision capsule surface -- 0 if the point is inside it (a direct
+    // hit), growing outward otherwise. Reuses simulateMovement's exact
+    // capsule shape (see hullCapsule()) so a shell's hit/splash distance
+    // can never disagree with the hull the tank itself drives and collides
+    // with. See MatchState::splashDamage for how this becomes damage.
+    float distanceToHull(glm::vec2 pointXZ) const;
     float signedSpeed() const { return glm::dot(velocity_, glm::vec2(forward_.x, forward_.z)); }
     float turretYaw() const { return turretYaw_; }
     float gunElevation() const { return gunElevation_; }
+    // Normalized 0..1, adjusted by held T (up)/G (down) keys in update().
+    // Alongside turret yaw and gun elevation as the third manual-aiming
+    // axis: elevation shapes the arc, power sets how far it flies.
+    float shotPower() const { return shotPower_; }
+    float shotSpeed() const { return glm::mix(kMinShotSpeed, kMaxShotSpeed, shotPower_); }
     // Hull's local-space X extent (outer edge to outer edge) -- see load().
     float hullWidth() const { return hullWidth_; }
     float hullLength() const { return hullLength_; }
@@ -124,8 +164,11 @@ public:
     // Start a firing response: snap the barrel rearward into its return
     // spring and add a small opposite impulse to the planar hull velocity.
     // Projectile/muzzle effects should be spawned before calling this so
-    // they originate at the muzzle's pre-recoil position.
-    void applyGunRecoil();
+    // they originate at the muzzle's pre-recoil position. `powerFraction`
+    // (0..1, see shotPower()) scales both the kick and the hull impulse --
+    // "recoil scales visibly with power" -- while the barrel's authored
+    // maximum travel stays fixed regardless of power.
+    void applyGunRecoil(float powerFraction);
 
     // Baked-in correction for the source model's own axes/scale/pivot,
     // applied before the computed world orientation. Tuned once by
@@ -133,6 +176,13 @@ public:
     glm::mat4& modelCorrection() { return modelCorrection_; }
 
 private:
+    // The oriented capsule simulateMovement resolves obstacle collision
+    // against and distanceToHull() measures against -- one source of truth
+    // for both. `position`/`axis` are XZ; `axis` is the hull's forward
+    // direction from yaw_.
+    struct HullCapsule { glm::vec2 position, axis; float halfSegmentLength, radius; };
+    HullCapsule hullCapsule() const;
+
     void load(VulkanContext& ctx, CommandContext& commands, const std::string& path, bool animateTracks);
     void simulateMovement(float throttle, float turn, float deltaTime, const Terrain& terrain,
                           const std::vector<CollisionSystem::CircleObstacle>& obstacles,
@@ -211,6 +261,7 @@ private:
 
     float turretYaw_ = 0.0f;  // radians, relative to the hull, about local +Y
     float gunElevation_ = 0.0f;  // radians; positive raises the muzzle
+    float shotPower_ = 0.5f;     // normalized 0..1; see shotPower()/shotSpeed()
 
     // Positive distance moves the barrel backward along its local -Z axis.
     // Firing changes this immediately; a damped spring returns it to rest.

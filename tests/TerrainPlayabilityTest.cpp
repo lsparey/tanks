@@ -81,6 +81,17 @@ void check(const TerrainWater::Surface& water, const TerrainPlayability::Result&
             "route length/span is inconsistent");
     require(r.spawn->forward == glm::vec2(glm::normalize(centre(r.route[1]) - centre(r.route[0]))),
             "spawn does not face its first route step");
+
+    auto second = secondarySpawn(r, ground);
+    require(second.has_value(), "no route cell qualified as a second spawn");
+    require(second->cell != r.spawn->cell && second->component == r.spawn->component,
+            "second spawn reused the primary spawn or left its component");
+    require(r.flags[second->cell] == 0, "second spawn cell is not fully clear");
+    require(std::find(r.route.begin(), r.route.end(), second->cell) != r.route.end(),
+            "second spawn is not on the certified route");
+    require(second->position.y == ground.heightAt(second->position.x, second->position.z) &&
+            !water.sampleAt(second->position.x, second->position.z), "second spawn uses stale/wet ground");
+    require(std::abs(glm::length(second->forward) - 1.0f) < 1e-5f, "second spawn forward is not a unit vector");
 }
 }
 
@@ -181,5 +192,39 @@ int main() {
                 control.combinedWater->streamLevels == a.combinedWater->streamLevels &&
                 control.combinedWater->surface.mesh().indices == a.combinedWater->surface.mesh().indices,
                 "playability analysis changed ground/water");
+    }
+
+    // secondarySpawn() only reads flags/route/spawn->cell, not the component
+    // array, so a hand-built Result exercises its walk-back/failure paths
+    // directly without needing a real terrain sculpted to produce them.
+    // route.back() (cell 2) carries SpawnSteep -- excluded from
+    // kRouteBlocked, so it's a legal route cell but not spawn-safe -- while
+    // cell 1 is fully clear: the walk should land on cell 1, not cell 2.
+    {
+        const auto& groundGrid = flat.surface.ground();
+        Result r;
+        r.resolution = 8;
+        r.status = Status::Ready;
+        r.flags.assign(size_t(8) * 8, 0);
+        r.flags[2] = SpawnSteep;
+        r.route = {0, 1, 2};
+        r.spawn = Spawn{0, 0, {}, {}};
+        auto second = secondarySpawn(r, groundGrid);
+        require(second.has_value() && second->cell == 1, "walk-back did not skip a SpawnSteep route end");
+    }
+    // Every non-spawn route cell blocked: no distinct clear cell exists, so
+    // the walk must reach the primary spawn cell and report nullopt rather
+    // than degenerately returning the primary spawn's own cell.
+    {
+        const auto& groundGrid = flat.surface.ground();
+        Result r;
+        r.resolution = 8;
+        r.status = Status::Ready;
+        r.flags.assign(size_t(8) * 8, 0);
+        r.flags[1] = Water;
+        r.flags[2] = Steep | SpawnSteep;
+        r.route = {0, 1, 2};
+        r.spawn = Spawn{0, 0, {}, {}};
+        require(!secondarySpawn(r, groundGrid).has_value(), "fully blocked route did not report failure");
     }
 }

@@ -67,6 +67,7 @@ constexpr float kWaterAngularDrag = 2.5f;       // extra yaw damping at full wad
 constexpr float kGunElevationSpeedRadians = 0.1745329f;  // 10 degrees/s
 constexpr float kMinimumGunElevation = -0.1745329f;      // -10 degrees
 constexpr float kMaximumGunElevation = 0.3490659f;       // +20 degrees
+constexpr float kShotPowerAdjustSpeed = 0.5f;  // full 0..1 range in 2 seconds held
 
 float moveTowards(float value, float target, float maxDelta) {
     if (value < target) return std::min(value + maxDelta, target);
@@ -257,7 +258,38 @@ void Tank::load(VulkanContext& ctx, CommandContext& commands, const std::string&
     }
 }
 
-void Tank::update(const InputManager& input, float deltaTime, const Terrain& terrain,
+Tank::HullCapsule Tank::hullCapsule() const {
+    float radius = hullWidth_ * kHullCollisionRadiusScale + kHullCollisionMargin;
+    float halfSegment = std::max(hullLength_ * 0.5f - radius, 0.0f);
+    return {glm::vec2(position_.x, position_.z), glm::vec2(std::sin(yaw_), std::cos(yaw_)), halfSegment, radius};
+}
+
+float Tank::distanceToHull(glm::vec2 pointXZ) const {
+    HullCapsule capsule = hullCapsule();
+    float alongSpine = glm::clamp(glm::dot(pointXZ - capsule.position, capsule.axis),
+                                   -capsule.halfSegmentLength, capsule.halfSegmentLength);
+    glm::vec2 closestPoint = capsule.position + capsule.axis * alongSpine;
+    return std::max(0.0f, glm::length(pointXZ - closestPoint) - capsule.radius);
+}
+
+Tank::Controls Tank::Controls::fromInput(const InputManager& input, bool driveEnabled) {
+    Controls controls;
+    if (driveEnabled) {
+        if (input.isKeyDown(GLFW_KEY_W)) controls.throttle += 1.0f;
+        if (input.isKeyDown(GLFW_KEY_S)) controls.throttle -= 1.0f;
+        if (input.isKeyDown(GLFW_KEY_A)) controls.turn += 1.0f;
+        if (input.isKeyDown(GLFW_KEY_D)) controls.turn -= 1.0f;
+    }
+    controls.turretLeft = input.isKeyDown(GLFW_KEY_Q);
+    controls.turretRight = input.isKeyDown(GLFW_KEY_E);
+    controls.elevateUp = input.isKeyDown(GLFW_KEY_R);
+    controls.elevateDown = input.isKeyDown(GLFW_KEY_F);
+    controls.powerUp = input.isKeyDown(GLFW_KEY_T);
+    controls.powerDown = input.isKeyDown(GLFW_KEY_G);
+    return controls;
+}
+
+void Tank::update(const Controls& controls, float deltaTime, const Terrain& terrain,
                    const std::vector<CollisionSystem::CircleObstacle>& obstacles,
                    float boundaryHalfExtent, float wadeDepth) {
     // Capture last frame's final pose before anything below mutates it --
@@ -267,20 +299,15 @@ void Tank::update(const InputManager& input, float deltaTime, const Terrain& ter
     prevTurretMatrix_ = turretWorldMatrix();
     prevBarrelMatrix_ = barrelWorldMatrix();
 
-    float throttle = 0.0f;
-    if (input.isKeyDown(GLFW_KEY_W)) throttle += 1.0f;
-    if (input.isKeyDown(GLFW_KEY_S)) throttle -= 1.0f;
-
-    float turn = 0.0f;
-    if (input.isKeyDown(GLFW_KEY_A)) turn += 1.0f;
-    if (input.isKeyDown(GLFW_KEY_D)) turn -= 1.0f;
-
-    if (input.isKeyDown(GLFW_KEY_Q)) turretYaw_ += turretTurnSpeedRadians_ * deltaTime;
-    if (input.isKeyDown(GLFW_KEY_E)) turretYaw_ -= turretTurnSpeedRadians_ * deltaTime;
-    if (input.isKeyDown(GLFW_KEY_R)) gunElevation_ += kGunElevationSpeedRadians * deltaTime;
-    if (input.isKeyDown(GLFW_KEY_F)) gunElevation_ -= kGunElevationSpeedRadians * deltaTime;
+    if (controls.turretLeft) turretYaw_ += turretTurnSpeedRadians_ * deltaTime;
+    if (controls.turretRight) turretYaw_ -= turretTurnSpeedRadians_ * deltaTime;
+    if (controls.elevateUp) gunElevation_ += kGunElevationSpeedRadians * deltaTime;
+    if (controls.elevateDown) gunElevation_ -= kGunElevationSpeedRadians * deltaTime;
     gunElevation_ =
         glm::clamp(gunElevation_, kMinimumGunElevation, kMaximumGunElevation);
+    if (controls.powerUp) shotPower_ += kShotPowerAdjustSpeed * deltaTime;
+    if (controls.powerDown) shotPower_ -= kShotPowerAdjustSpeed * deltaTime;
+    shotPower_ = glm::clamp(shotPower_, 0.0f, 1.0f);
 
     updateGunRecoil(deltaTime);
 
@@ -294,7 +321,7 @@ void Tank::update(const InputManager& input, float deltaTime, const Terrain& ter
                      ? glm::clamp(wadeDepth / (height_ * kMaxFordingDepthScale), 0.0f, 1.0f)
                      : 0.0f;
     while (movementAccumulator_ >= kFixedMovementStep) {
-        simulateMovement(throttle, turn, kFixedMovementStep, terrain, obstacles,
+        simulateMovement(controls.throttle, controls.turn, kFixedMovementStep, terrain, obstacles,
                          boundaryHalfExtent, wade);
         movementAccumulator_ -= kFixedMovementStep;
     }
@@ -305,12 +332,18 @@ void Tank::update(const InputManager& input, float deltaTime, const Terrain& ter
     if (!suspensionInitialized_) updateSuspensionPose(terrain, 0.0f, 0.0f, 0.0f);
 }
 
-void Tank::applyGunRecoil() {
+void Tank::applyGunRecoil(float powerFraction) {
+    // Scales the kick and hull impulse so recoil visibly grows with shot
+    // power; the barrel's authored maximum travel (kMaximumBarrelRecoilDistance)
+    // stays fixed regardless -- it's a physical travel limit, not part of
+    // the response being scaled.
+    float kickScale = glm::mix(0.5f, 1.5f, glm::clamp(powerFraction, 0.0f, 1.0f));
+
     // Displace immediately so even a single rendered frame communicates
     // the shot, while repeated shots can accumulate a little without ever
     // pulling the barrel implausibly far into the turret.
     barrelRecoilDistance_ =
-        std::min(barrelRecoilDistance_ + kBarrelRecoilKickDistance,
+        std::min(barrelRecoilDistance_ + kBarrelRecoilKickDistance * kickScale,
                  kMaximumBarrelRecoilDistance);
     barrelRecoilVelocity_ = std::max(barrelRecoilVelocity_, 0.0f);
 
@@ -321,7 +354,7 @@ void Tank::applyGunRecoil() {
     glm::vec2 planarShotDirection(shotDirection.x, shotDirection.z);
     float planarLength = glm::length(planarShotDirection);
     if (planarLength > 1e-5f) {
-        velocity_ -= (planarShotDirection / planarLength) * kHullRecoilImpulseSpeed;
+        velocity_ -= (planarShotDirection / planarLength) * kHullRecoilImpulseSpeed * kickScale;
     }
 }
 
@@ -421,13 +454,13 @@ void Tank::simulateMovement(
     // old width-derived circle. Its radius spans half the hull width plus a
     // small clearance margin; shortening the center segment by that radius
     // keeps the rounded nose/tail at the model's actual longitudinal ends.
-    float collisionRadius = hullWidth_ * kHullCollisionRadiusScale + kHullCollisionMargin;
-    float collisionHalfSegment = std::max(hullLength_ * 0.5f - collisionRadius, 0.0f);
-    glm::vec2 collisionForward(std::sin(yaw_), std::cos(yaw_));
+    // See hullCapsule() -- also used by distanceToHull() for shell hit/
+    // splash detection, so that can never disagree with this shape.
+    HullCapsule capsule = hullCapsule();
     CollisionSystem::CapsuleCollisionResult collision =
         CollisionSystem::resolveCapsuleCircleCollisions(
-            glm::vec2(position_.x, position_.z), velocity_, collisionForward,
-            collisionHalfSegment, collisionRadius, obstacles);
+            capsule.position, velocity_, capsule.axis,
+            capsule.halfSegmentLength, capsule.radius, obstacles);
     position_.x = collision.position.x;
     position_.z = collision.position.y;
     velocity_ = collision.velocity;
@@ -436,8 +469,8 @@ void Tank::simulateMovement(
     // BoundaryGenerator). A capsule's axis-aligned extent changes with hull
     // yaw, so compute it from the oriented center segment plus its radius;
     // this keeps nose, tail, and track sides behind the wall in every pose.
-    float collisionExtentX = std::abs(collisionForward.x) * collisionHalfSegment + collisionRadius;
-    float collisionExtentZ = std::abs(collisionForward.y) * collisionHalfSegment + collisionRadius;
+    float collisionExtentX = std::abs(capsule.axis.x) * capsule.halfSegmentLength + capsule.radius;
+    float collisionExtentZ = std::abs(capsule.axis.y) * capsule.halfSegmentLength + capsule.radius;
     float clampExtentX = boundaryHalfExtent - collisionExtentX;
     float clampExtentZ = boundaryHalfExtent - collisionExtentZ;
     if (position_.x < -clampExtentX) {

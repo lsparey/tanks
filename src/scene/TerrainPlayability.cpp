@@ -10,6 +10,25 @@
 #include <stdexcept>
 
 namespace TerrainPlayability {
+namespace {
+// Cell-centre X world coordinates for a q x q navigation grid derived from
+// ground's (q+1) x (q+1) sample grid -- used by secondarySpawn(). analyze()
+// computes its own copy inline alongside the full per-sample `coordinates`
+// its hazard-rectangle range queries also need, so this isn't shared with
+// it; the float() round-trip on each centre matches analyze()'s exactly,
+// for bit-identical results between the two.
+std::vector<double> quadCentres(const TerrainSurface& ground, int q) {
+    std::vector<double> coordinates(static_cast<size_t>(q) + 1);
+    std::vector<double> centres(static_cast<size_t>(q));
+    for (int x = 0; x <= q; ++x) {
+        coordinates[x] = ground.position(x, 0).x;
+        if (x && coordinates[x] <= coordinates[x - 1]) throw std::invalid_argument("unrepresentable playability grid");
+        if (x) centres[x - 1] = float((coordinates[x - 1] + coordinates[x]) * .5);
+    }
+    return centres;
+}
+} // namespace
+
 const char* statusName(Status status) {
     switch (status) {
         case Status::Ready: return "ready";
@@ -195,5 +214,30 @@ Result analyze(const TerrainWater::Surface& water, const Settings& s,
         (queue.capacity() + candidates.capacity() + order.capacity()) * sizeof(uint32_t);
     r.elapsedMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     return r;
+}
+
+std::optional<Spawn> secondarySpawn(const Result& result, const TerrainSurface& ground) {
+    if (result.status != Status::Ready || !result.spawn || result.route.size() < 2)
+        throw std::invalid_argument("secondarySpawn requires an accepted route");
+    int q = result.resolution;
+    auto centres = quadCentres(ground, q);
+    auto centre = [&](uint32_t cell) { return glm::dvec2(centres[cell % q], centres[cell / q]); };
+    // Walk backward from the route's far end (route.back()); route.front()
+    // is always the primary spawn cell, so reaching it here means no other
+    // route cell was fully clear -- stop rather than degenerately reusing
+    // the primary spawn's own cell.
+    for (size_t i = result.route.size(); i-- > 0;) {
+        uint32_t cell = result.route[i];
+        if (cell == result.spawn->cell) break;
+        if (result.flags.at(cell)) continue;
+        auto at = centre(cell);
+        // Faces back down the route toward the primary spawn -- the two
+        // combatants end up facing roughly toward each other, mirroring how
+        // the primary spawn faces toward route[1] (into the corridor).
+        glm::vec2 forward(glm::normalize(centre(result.route[i - 1]) - at));
+        return Spawn{cell, result.spawn->component,
+                     {float(at.x), ground.heightAt(float(at.x), float(at.y)), float(at.y)}, forward};
+    }
+    return std::nullopt;
 }
 } // namespace TerrainPlayability

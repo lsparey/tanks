@@ -95,17 +95,20 @@ public:
         glm::vec4 treeShadowWidths{36.f,100.f,300.f,600.f};
         glm::vec4 treeShadowParams{2.f,2048.f,1.f,1.f};
         // Last frame's tank world matrices, for the motion-vector buffer
-        // (see basic.vert/frag). The tank's pose is a stateful spring/
+        // (see basic.vert/frag). Each tank's pose is a stateful spring/
         // rigid-body simulation, not a pure function of time, so this can't
         // be recomputed the way wind bending's previousWind can -- Tank
         // snapshots it once per frame (see Tank::prevHullWorldMatrix()).
         // Lives here, not in PushConstants (already at Vulkan's guaranteed
-        // 128-byte minimum with no room) or RasterInstance (these 3 parts
-        // aren't instanced): there's only one tank, so this is scene-wide
-        // per-frame state exactly like prevViewProj/prevCameraPos above.
-        glm::mat4 prevTankHullModel{1.0f};
-        glm::mat4 prevTankTurretModel{1.0f};
-        glm::mat4 prevTankBarrelModel{1.0f};
+        // 128-byte minimum with no room) or RasterInstance (these parts
+        // aren't instanced): this is scene-wide per-frame state exactly
+        // like prevViewProj/prevCameraPos above. Indexed [0]=player,
+        // [1]=opponent (see basic.vert's isDynamicObject encoding) --
+        // arrays since item 7 made a second tank move too; [1] stays
+        // identity when there's no opponent.
+        std::array<glm::mat4, 2> prevTankHullModel{glm::mat4(1.0f), glm::mat4(1.0f)};
+        std::array<glm::mat4, 2> prevTankTurretModel{glm::mat4(1.0f), glm::mat4(1.0f)};
+        std::array<glm::mat4, 2> prevTankBarrelModel{glm::mat4(1.0f), glm::mat4(1.0f)};
         // Current frame's view-proj WITHOUT the TAA sub-pixel jitter (proj
         // above carries the jitter for rasterization). The motion-vector
         // math must use jitter-free matrices on both ends (prevViewProj is
@@ -130,9 +133,9 @@ public:
     static_assert(offsetof(FrameUBO, treeShadowMatrices) == 1008);
     static_assert(offsetof(FrameUBO, treeShadowParams) == 1216);
     static_assert(offsetof(FrameUBO, prevTankHullModel) == 1232);
-    static_assert(offsetof(FrameUBO, viewProjUnjittered) == 1424);
-    static_assert(offsetof(FrameUBO, waterWaves) == 1488);
-    static_assert(sizeof(FrameUBO) == 1744);
+    static_assert(offsetof(FrameUBO, viewProjUnjittered) == 1616);
+    static_assert(offsetof(FrameUBO, waterWaves) == 1680);
+    static_assert(sizeof(FrameUBO) == 1936);
 
     struct PushConstants {
         glm::mat4 model;

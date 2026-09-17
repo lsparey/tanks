@@ -4,6 +4,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string>
 
 #include <vector>
@@ -32,6 +33,8 @@
 #include "../scene/DynamicLight.h"
 #include "../scene/ImpactEffect.h"
 #include "../scene/InputManager.h"
+#include "../scene/MatchState.h"
+#include "../scene/OpponentAI.h"
 #include "../scene/Projectile.h"
 #include "../scene/RockInstance.h"
 #include "../scene/GrassClumpInstance.h"
@@ -89,6 +92,17 @@ public:
     // ghosting/trails behind the moving tank -- in automated captures,
     // where desktop key injection is unavailable/unreliable.
     void setDrivePreview(bool enabled) { drivePreview_ = enabled; }
+    // Opt-in match rules (fuel-limited movement so far -- see MatchState).
+    // Off by default: turn-passing isn't wired yet (no opponent AI exists to
+    // ever hand a turn back), so this stays off the default interactive path
+    // until enough of the roadmap exists to make it a complete experience.
+    void setMatchEnabled(bool enabled) { matchEnabled_ = enabled; }
+    // Higher is easier (less opponent aim error) -- see OpponentAI::aimErrorRadians.
+    void setAiDifficulty(float difficulty) { aiDifficulty_ = difficulty; }
+    // Deterministic full-match check in the style of setDrivePreview/
+    // weaponPreview_: both tanks are AI-driven (see driveTankWithAI) with a
+    // fixed timestep, for scripted regression/reproducibility captures.
+    void setMatchPreview(bool enabled) { matchPreview_ = enabled; }
     void setShadowPreview(bool enabled, bool freezeWind) {
         shadowPreview_ = enabled; freezeWind_ = freezeWind;
     }
@@ -144,6 +158,19 @@ private:
     CameraMode cameraMode_ = CameraMode::HullFollow;
     bool prevCameraToggleKeyDown_ = false;
     bool prevFireDown_ = false;
+    // Turn camera (see mainLoop): during the opponent's turn the normal
+    // cameraMode_ view is overridden to follow the opponent tank, then its
+    // fired shell, blending smoothly rather than cutting so the player
+    // never regains control mid-motion (cameraTransitioning_ feeds
+    // playerTurnActive). AwayCameraTarget::None means "show cameraMode_'s
+    // own view" -- the normal, in-turn behavior, unchanged from before this
+    // item.
+    enum class AwayCameraTarget { None, OpponentTank, Shell };
+    AwayCameraTarget awayCameraTarget_ = AwayCameraTarget::None;
+    bool cameraTransitioning_ = false;
+    float cameraBlend_ = 1.0f;
+    glm::vec3 blendFromEye_{0.0f};
+    glm::vec3 blendFromFront_{0.0f, 0.0f, -1.0f};
     bool showHudHelp_ = false;
     bool prevHudHelpKeyDown_ = false;
     bool prevScreenshotKeyDown_ = false;
@@ -166,6 +193,7 @@ private:
     bool shadowPreview_ = false;
     bool freezeWind_ = false;
     bool drivePreview_ = false;
+    bool matchPreview_ = false;
     bool prevShadowsKeyDown_ = false;
     std::optional<ScreenshotRequest> screenshotRequest_;
     int screenshotCounter_ = 0;  // suffixes F12-triggered screenshot filenames
@@ -201,6 +229,13 @@ private:
     std::unique_ptr<Pipeline> pipeline_;
     std::unique_ptr<Terrain> terrain_;
     std::unique_ptr<Tank> tank_;
+    // The opponent combatant (see MatchState::CombatantId::Opponent). Placed
+    // once at a valid, separated TerrainPlayability::secondarySpawn and
+    // never updated -- it does not move until AI/turn-driven input exists
+    // (later roadmap items), so it uses the static-object motion-vector
+    // path (see drawTankParts's `dynamic` parameter) rather than the
+    // player's moving-rigid-body one.
+    std::unique_ptr<Tank> opponentTank_;
     std::unique_ptr<InputManager> input_;
     std::unique_ptr<AudioEngine> audio_;
     Camera camera_;
@@ -220,6 +255,7 @@ private:
     std::unique_ptr<Texture> crateTexture_;
     std::unique_ptr<Texture> whiteTexture_;
     std::unique_ptr<Texture> camoTexture_;
+    std::unique_ptr<Texture> opponentCamoTexture_;
     std::unique_ptr<Texture> metalTexture_;
     std::unique_ptr<Texture> boundaryLineTexture_;
     std::unique_ptr<Texture> boundaryWallTexture_;
@@ -236,6 +272,7 @@ private:
     VkDescriptorSet crateMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet whiteMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet camoMaterialSet_ = VK_NULL_HANDLE;
+    VkDescriptorSet opponentCamoMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet metalMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet boundaryLineMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet boundaryWallMaterialSet_ = VK_NULL_HANDLE;
@@ -303,6 +340,53 @@ private:
     std::vector<WeaponEffects::Scorch> scorches_;
     WaterGenerator::FloodField legacyWaterField_;
     glm::vec2 spawnXZ_{0.0f};
+    glm::vec2 opponentSpawnXZ_{0.0f};
+    // Full spawn pose (position+forward), cached alongside the XZ-only
+    // fields above -- restartMatch() re-places both tanks here without
+    // needing to regenerate terrain (see PLAN.md's "Match flow and
+    // deterministic replay").
+    glm::vec3 playerSpawnPosition_{0.0f};
+    glm::vec2 playerSpawnForward_{0.0f, 1.0f};
+    glm::vec3 opponentSpawnPosition_{0.0f};
+    glm::vec2 opponentSpawnForward_{0.0f, 1.0f};
+    // opponentTank_ is always constructed (see initialize()) but only
+    // placed/drawn/collided when the advanced terrain generator produced a
+    // navigation result -- `--terrain legacy` has no playability/route
+    // system to derive a second spawn from, so it gets no opponent.
+    bool hasOpponent_ = false;
+    // Off by default; see setMatchEnabled. matchState_ itself is always
+    // constructed (a plain value type, no Vulkan/heap resources) but only
+    // consulted/advanced when matchEnabled_ is set.
+    MatchState matchState_;
+    bool matchEnabled_ = false;
+    bool prevEndMoveKeyDown_ = false;
+    bool prevRestartKeyDown_ = false;
+    // frameCounter_ this match (re)started on -- drives the brief
+    // "MATCH START" HUD banner; see restartMatch().
+    uint32_t matchStartFrame_ = 0;
+    bool prevArmPowerUpKeyDown_ = false;
+    // Power-up type on crate collection, and shot dispersion (see
+    // MatchState::dispersionDegrees) -- seeded from worldSeed_ once in
+    // initialize() so a fixed seed stays reproducible under --match,
+    // unlike this codebase's purely-visual randomness (std::random_device
+    // elsewhere) which doesn't need to be.
+    std::mt19937 powerUpRng_;
+    // AI turn state (see driveTankWithAI/OpponentAI.h) -- one instance per
+    // combatant so either tank can be AI-driven (the opponent always, the
+    // player too under --match-preview). aiDifficulty_ is higher = easier
+    // (less aim error); see --ai-difficulty. The two "solved" flags make
+    // chooseMoveTarget/the fire solution get computed once per Move/AimFire
+    // phase entry, not re-rolled every frame, so the point a tank visibly
+    // steers/aims toward doesn't jitter.
+    float aiDifficulty_ = 1.0f;
+    struct AiTurnState {
+        bool moveTargetSet = false;
+        glm::vec2 moveTarget{0.0f};
+        bool aimSolved = false;
+        float targetTurretYaw = 0.0f;
+        float targetPower = 0.0f;
+    };
+    std::array<AiTurnState, 2> aiTurnState_;
     bool weaponPreview_ = false;
     std::vector<TrackMark> trackMarks_;
     struct TrackTrailState {
@@ -386,6 +470,23 @@ private:
     // splashes, tank wading drag, and track wash/wake placement.
     std::optional<float> waterLevelAt(float x, float z) const;
     bool allowsScenery(glm::vec2 center, float radius) const;
+    // True when (x, z)'s navigation cell is in the same connected component
+    // as the accepted spawn -- i.e. actually reachable by driving, not just
+    // clear of hazards. Always true when there's no navigation data
+    // (`--terrain legacy`), matching allowsScenery's own no-op-when-absent
+    // convention.
+    bool sameComponentAsSpawn(glm::vec2 xz) const;
+    // Rejection-samples one candidate position: clear of both spawns
+    // (`minDistanceFromSpawns`), clear of `placed`'s existing points
+    // (`minDistanceBetween`), passing `allowsScenery(., allowsSceneryRadius)`,
+    // and (when navigation data exists) in the spawns' connected component.
+    // Shared by spawnBoxes' initial placement and Application::collectBox's
+    // top-up so the two can't drift apart. Always returns a position (the
+    // last attempted candidate on failure, matching spawnBoxes' original
+    // fallback-to-legacy-terrain behavior) and reports success via `found`.
+    glm::vec2 findScenerySpot(std::mt19937& rng, const std::vector<glm::vec2>& placed,
+                               float minDistanceFromSpawns, float minDistanceBetween,
+                               float allowsSceneryRadius, int maxAttempts, bool* found);
     void spawnBoxes();
     void spawnTrees();
     void spawnRocks();
@@ -402,11 +503,34 @@ private:
     void spawnWaterRipple(glm::vec3 position, float initialRadius, float growthRate, float lifetime,
                           float waveAmplitude);
     void destroyBox(Box& box);
+    // --match only (see the tank-vs-box overlap check in
+    // updateProjectilesAndCollisions): grants the player a random power-up
+    // (see MatchState::collectPowerUp) and relocates this same Box to a
+    // fresh valid spot instead of destroying it -- "top up as they are
+    // collected" (PLAN.md). Free play keeps destroyBox unchanged.
+    void collectBox(Box& box, CombatantId collector);
     void updateTrackMarks(float deltaTime);
-    void fireProjectile();
+    // Drives one tank for one frame with AI (see OpponentAI.h and PLAN.md's
+    // "Opponent AI"/"Match flow and deterministic replay"): a no-op unless
+    // matchEnabled_ && hasOpponent_. Calls self.update() exactly once
+    // regardless of phase -- with an AI-decided Tank::Controls during
+    // selfId's own Move/AimFire phases, or a neutral one otherwise so it
+    // stays grounded/settled the same way a manually-driven tank always
+    // does. Always used for the opponent; also used for the player under
+    // --match-preview (see matchPreview_).
+    void driveTankWithAI(Tank& self, Tank& opponent, CombatantId selfId, float deltaTime);
+    // Resets matchState_, re-places both tanks at their cached spawn poses
+    // and gives them a fresh crate layout -- no terrain regeneration needed
+    // (see PLAN.md's "Match flow and deterministic replay"). Only reachable
+    // once matchState_.isGameOver(), via the N key in mainLoop.
+    void restartMatch();
+    // Player call site is fireProjectile(*tank_, CombatantId::Player);
+    // opponent AI calls fireProjectile(*opponentTank_, CombatantId::Opponent).
+    void fireProjectile(Tank& firingTank, CombatantId firer);
     void spawnGroundScorch(glm::vec3 point);
     void updateProjectilesAndCollisions(float deltaTime);
     void buildAccelerationStructures();
+    void appendTankRayInstances(const Tank& tank, std::vector<AccelerationStructure::Instance>& instances);
     std::vector<AccelerationStructure::Instance> gatherRayTracingInstances();
     void recreateSwapchainDependentResources();
     std::string nextScreenshotPath();

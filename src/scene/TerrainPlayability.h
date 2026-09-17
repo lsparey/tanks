@@ -50,4 +50,15 @@ struct Result {
 Result analyze(const TerrainWater::Surface&, const Settings& = {},
                std::span<const CollisionSystem::CircleObstacle> obstacles = {});
 void validate(const Settings&);
+
+// Derives a second combatant's spawn from an already-Ready result's route:
+// the route's far end is already guaranteed connected, dry, flat-enough and
+// >= Settings::minimumRouteSpan from the primary spawn (see routeSpan), but
+// kRouteBlocked doesn't exclude SpawnSteep the way the primary spawn
+// candidate's flags==0 check does, so it isn't automatically spawn-safe.
+// Walks the route backward from its far end to the first fully-clear
+// (flags==0) cell distinct from the primary spawn. Returns nullopt only if
+// no such cell exists. Throws if `result` isn't an accepted route (the same
+// precondition Reservation's constructor enforces).
+std::optional<Spawn> secondarySpawn(const Result& result, const TerrainSurface& ground);
 } // namespace TerrainPlayability

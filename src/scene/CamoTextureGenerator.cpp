@@ -63,13 +63,13 @@ float fbm(float x, float y, int octaves, float basePeriod) {
 
 }  // namespace
 
-std::vector<uint8_t> CamoTextureGenerator::generate(uint32_t size) {
+std::vector<uint8_t> CamoTextureGenerator::generate(uint32_t size, const Palette& palette) {
     std::vector<uint8_t> pixels(static_cast<size_t>(size) * size * 4);
 
-    const glm::vec3 darkGreen(0.07f, 0.10f, 0.05f);
-    const glm::vec3 brown(0.15f, 0.10f, 0.05f);
-    const glm::vec3 tan(0.30f, 0.25f, 0.15f);
-    const glm::vec3 black(0.03f, 0.03f, 0.03f);
+    const glm::vec3& darkGreen = palette.darkGreen;
+    const glm::vec3& brown = palette.brown;
+    const glm::vec3& tan = palette.tan;
+    const glm::vec3& black = palette.black;
 
     // Blotch coordinates live in a fixed 256-unit pattern space regardless
     // of the actual texture resolution: every frequency below was tuned in

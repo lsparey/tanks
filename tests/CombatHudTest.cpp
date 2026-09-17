@@ -50,12 +50,92 @@ int main() {
             }
         }
     }
+    // Power-up inventory text and the aim-assist trajectory line (see
+    // PLAN.md's "Power-up crates"): structural checks only, matching this
+    // file's existing style -- not a golden-pixel test.
+    state.inventoryText="SHL:1 SPL:2 [ARMED DMG]";
+    std::vector<glm::vec4> trajectory={
+        {0,0,.5f,1}, {.1f,.05f,.6f,1}, {.2f,-.1f,.7f,1},
+        {0,0,-.2f,-1},  // behind the camera -- must break the line, not draw a garbage segment
+        {-.1f,.2f,.4f,1}, {-.2f,.3f,.5f,1},
+    };
+    state.trajectoryClip=trajectory;
+    hud.begin();
+    CombatHud::draw(hud,{1280,720},state);
+    require(!hud.vertices().empty() && hud.vertices().size()%3==0,"Trajectory geometry stays in complete triangles");
+    for (auto& v:hud.vertices()) {
+        require(std::isfinite(v.position.x) && std::isfinite(v.position.y),"Finite trajectory geometry");
+        require(std::abs(v.position.x)<=1.001f && std::abs(v.position.y)<=1.001f,"Trajectory stays in viewport");
+    }
+    state.inventoryText={};
+    state.trajectoryClip={};
+
     state.help=false;
     state.diagnostics=false;
     state.aimClip={0,0,0,1};
     hud.begin();
     CombatHud::draw(hud,{1280,720},state);
     auto aliveVertices=hud.vertices().size();
+
+    // Turn/health/fuel/shells panel (see PLAN.md's "Turn camera and match
+    // HUD"): gated entirely behind matchActive, same pattern as
+    // inventoryText, so free play's HUD must be byte-identical whether or
+    // not these fields happen to hold stale values.
+    require(!state.matchActive,"matchActive defaults to false");
+    std::vector<HudGeometry::Vertex> baselineVertices(hud.vertices().begin(),hud.vertices().end());
+    state.matchActive=true;
+    state.opponentPresent=true;
+    state.turnLabel="OPPONENT TURN";
+    state.playerCombat={true,2.0f,3.0f,14.0f,20.0f,1,1};
+    state.opponentCombat={false,0.0f,3.0f,0.0f,20.0f,0,1};
+    // Both an armed inventory line and the match line at once is the
+    // panel's tallest case (regression check for the anchor fix that keeps
+    // its bottom edge from pushing past the canvas).
+    state.inventoryText="SHL:1 DMG:1 SPL:2 AIM:1 [ARMED AIM]";
+    hud.begin();
+    CombatHud::draw(hud,{1280,720},state);
+    require(hud.vertices().size()>aliveVertices,"Match panel adds geometry when active");
+    for (auto& v:hud.vertices()) {
+        require(std::isfinite(v.position.x) && std::isfinite(v.position.y),"Finite match-panel geometry");
+        require(std::abs(v.position.x)<=1.001f && std::abs(v.position.y)<=1.001f,"Match panel stays in viewport");
+    }
+    // Match start/over banners (see PLAN.md's "Match flow and deterministic
+    // replay"): bigger, separate from turnLabel, shown briefly at match
+    // start or persistently once isGameOver() -- same structural checks.
+    state.showMatchStartBanner=true;
+    hud.begin();
+    CombatHud::draw(hud,{1280,720},state);
+    require(hud.vertices().size()>aliveVertices,"Match-start banner adds geometry when active");
+    for (auto& v:hud.vertices()) {
+        require(std::isfinite(v.position.x) && std::isfinite(v.position.y),"Finite match-start banner geometry");
+        require(std::abs(v.position.x)<=1.001f && std::abs(v.position.y)<=1.001f,"Match-start banner stays in viewport");
+    }
+    state.showMatchStartBanner=false;
+    state.showMatchOverBanner=true;
+    state.matchOverText="OPPONENT WINS";
+    hud.begin();
+    CombatHud::draw(hud,{1280,720},state);
+    require(hud.vertices().size()>aliveVertices,"Match-over banner adds geometry when active");
+    for (auto& v:hud.vertices()) {
+        require(std::isfinite(v.position.x) && std::isfinite(v.position.y),"Finite match-over banner geometry");
+        require(std::abs(v.position.x)<=1.001f && std::abs(v.position.y)<=1.001f,"Match-over banner stays in viewport");
+    }
+
+    state.matchActive=false;
+    state.opponentPresent=false;
+    state.turnLabel={};
+    state.inventoryText={};
+    state.showMatchStartBanner=false;
+    state.showMatchOverBanner=false;
+    state.matchOverText={};
+    hud.begin();
+    CombatHud::draw(hud,{1280,720},state);
+    require(hud.vertices().size()==baselineVertices.size(),"Free play vertex count unaffected by match fields");
+    for (size_t i=0;i<baselineVertices.size();++i) {
+        require(baselineVertices[i].position==hud.vertices()[i].position &&
+                baselineVertices[i].color==hud.vertices()[i].color,
+                "Free play HUD geometry byte-identical with match fields present but inactive");
+    }
     for (auto& b:targets) b.alive=false;
     hud.begin();
     CombatHud::draw(hud,{1280,720},state);

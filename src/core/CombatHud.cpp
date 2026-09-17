@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <optional>
 #include <string>
 
 namespace CombatHud {
@@ -52,7 +53,9 @@ std::string fixed(float value, int decimals=0) {
 
 glm::vec2 mapPosition(glm::vec3 position, float boundaryHalfExtent) {
     float half=std::max(boundaryHalfExtent,.001f);
-    return glm::clamp(glm::vec2(-position.x,-position.z)/half,-1.f,1.f)*.5f+glm::vec2(.5f);
+    // +X (east) -> right (u=1); +Z (north) -> up/top of the panel (v=0), so
+    // only z flips sign against the texture's top-down v axis.
+    return glm::clamp(glm::vec2(position.x,-position.z)/half,-1.f,1.f)*.5f+glm::vec2(.5f);
 }
 
 float headingDegrees(glm::vec3 direction) {
@@ -85,6 +88,42 @@ void draw(HudGeometry& hud, glm::vec2 viewportPixels, const State& s) {
     c.text(s.camera,34,26,1.4f);
     c.text(s.help ? "H  HIDE" : "H  CONTROLS",34,44,1.1f,grey);
 
+    // Whose turn it is, plus both tanks' health/fuel/shells -- absent
+    // entirely outside --match, same gating every other match-only element
+    // here already uses. Placed below the reticle/"GUN OUT OF VIEW" status
+    // rather than beside it (both centered at w/2) -- during the away
+    // camera the player's own aim point is essentially never on screen, so
+    // that message is showing almost the entire time this label needs to.
+    if (s.matchActive && !s.turnLabel.empty()) {
+        float labelW=std::max((s.turnLabel.size()*6-1)*1.3f,60.f)+28;
+        c.chip(w/2-labelW/2,96,labelW,26);
+        c.centered(s.turnLabel,w/2,102,1.3f,accent);
+    }
+    if (s.matchActive && s.opponentPresent) {
+        const auto& o=s.opponentCombat;
+        float ox=w-228,oy=100;
+        c.chip(ox,oy,208,62);
+        c.text("OPPONENT",ox+14,oy+7,1.3f,grey);
+        c.text("HP "+fixed(o.health,1)+"/"+fixed(o.healthMax,1),ox+14,oy+26,1.1f,o.alive?white:warn);
+        c.text("FUEL "+fixed(o.fuelRemaining)+"/"+fixed(o.fuelCapacity),ox+14,oy+42,1.1f,grey);
+        c.text("SHL "+std::to_string(o.shellsRemaining)+"/"+std::to_string(o.shellsPerTurn),ox+14,oy+58,1.1f,grey);
+    }
+
+    // Big center-screen banner (match start / match over) -- placed well
+    // above the reticle/turn-label cluster (which occupies roughly y 14 to
+    // 122) so it never overlaps those fixed-position elements; a dynamic
+    // aim reticle happening to land nearby is an accepted, pre-existing
+    // tolerance in this HUD (it can already overlap other panels too).
+    if (s.matchActive && (s.showMatchStartBanner || s.showMatchOverBanner)) {
+        std::string_view caption = s.showMatchStartBanner ? "MATCH START" : s.matchOverText;
+        float by=h*0.32f;
+        float captionW=std::max((caption.size()*6-1)*2.2f,60.f)+32;
+        float bannerH = s.showMatchStartBanner ? 44.f : 68.f;
+        c.chip(w/2-captionW/2,by,captionW,bannerH,.55f);
+        c.centered(caption,w/2,by+13,2.2f,accent);
+        if (s.showMatchOverBanner) c.centered("PRESS N TO RESTART",w/2,by+42,1.2f,grey);
+    }
+
     // Split reticle leaves the target visible. The point is the existing
     // unjittered gun-ray projection, not a hit/penetration prediction.
     bool onScreen=s.aimClip.w>.01f;
@@ -106,14 +145,47 @@ void draw(HudGeometry& hud, glm::vec2 viewportPixels, const State& s) {
         c.centered("GUN OUT OF VIEW",w/2,71,1.1f,warn);
     }
 
+    // Aim-assist predicted trajectory (see PLAN.md's "Power-up crates"):
+    // connect consecutive projected points that are actually in front of
+    // the camera, same clip-space-to-screen conversion the reticle above
+    // uses. A point behind the camera (w <= 0) breaks the line rather than
+    // producing a garbage segment across the screen.
+    std::optional<glm::vec2> previousTrajectoryPoint;
+    for (const auto& clip : s.trajectoryClip) {
+        if (clip.w <= .01f) { previousTrajectoryPoint.reset(); continue; }
+        glm::vec2 ndcPoint = glm::vec2(clip) / clip.w;
+        glm::vec2 screenPoint((ndcPoint.x+1)*w/2,(1-ndcPoint.y)*h/2);
+        if (previousTrajectoryPoint) c.line(*previousTrajectoryPoint, screenPoint, 1.6f, accent);
+        previousTrajectoryPoint = screenPoint;
+    }
+
     // Speed plus gun angles in one compact cluster; turret state also shows
-    // on the minimap aim line, so no vehicle diagram is needed.
-    float y=h-64;
+    // on the minimap aim line, so no vehicle diagram is needed. y stays
+    // h-80 (unchanged) for 0 or 1 extra lines -- the original two cases,
+    // preserved exactly so free play's HUD position never moves. A second
+    // extra line (match stats *and* inventory both showing) shifts the top
+    // up by one line's height instead, keeping the same bottom margin the
+    // single-extra-line case already had rather than growing past it.
     std::string speed=fixed(std::abs(s.speed),1);
-    c.chip(20,y,168,46);
+    int extraLines=(s.inventoryText.empty()?0:1)+(s.matchActive?1:0);
+    float y=h-80-16.f*std::max(0,extraLines-1);
+    c.chip(20,y,208,62.f+16.f*extraLines);
     c.text(speed,34,y+7,2.6f,s.speed<-.05f ? warn : white);
     c.text("M/S",34+speed.size()*6*2.6f+4,y+7+7*(2.6f-1.2f),1.2f,grey);
     c.text("EL "+fixed(glm::degrees(s.gunElevation))+"  TRV "+fixed(std::remainder(glm::degrees(s.turretYaw),360.f)),34,y+32,1.1f,grey);
+    c.text("PWR "+fixed(s.shotPower*100.f)+"%",34,y+48,1.1f,grey);
+    float nextLineY=y+64;
+    if (s.matchActive) {
+        const auto& p=s.playerCombat;
+        c.text("HP "+fixed(p.health,1)+"/"+fixed(p.healthMax,1)+"  FUEL "+fixed(p.fuelRemaining)+"/"+fixed(p.fuelCapacity)+
+                   "  SHL "+std::to_string(p.shellsRemaining)+"/"+std::to_string(p.shellsPerTurn),
+               34,nextLineY,0.95f,p.alive?white:warn);
+        nextLineY+=16;
+    }
+    // Power-up inventory (see PLAN.md's "Power-up crates") -- only present
+    // under --match with something held; pre-formatted by the caller so
+    // this stays a dumb renderer with no MatchState/PowerUpType dependency.
+    if (!s.inventoryText.empty()) c.text(std::string(s.inventoryText),34,nextLineY,0.95f,accent);
 
     // Entire playable area, independent of camera position. The map shows
     // known static crate objectives, not invented enemy/spotting systems.
@@ -128,7 +200,7 @@ void draw(HudGeometry& hud, glm::vec2 viewportPixels, const State& s) {
     auto point=[&](glm::vec3 p){return glm::vec2(mapX+5,mapY+5)+mapPosition(p,s.boundaryHalfExtent)*(mapSize-10);};
     for (const auto& target:s.targets) if (target.alive) c.diamond(point(target.position),2.5f,warn);
     glm::vec2 player=point(s.position);
-    glm::vec2 direction(-s.forward.x,-s.forward.z);
+    glm::vec2 direction(s.forward.x,-s.forward.z);
     direction/=std::max(glm::length(direction),.001f);
     glm::vec2 right(-direction.y,direction.x);
     c.hud.addTriangle(c.ndc(player+direction*6.f),c.ndc(player-direction*4.f-right*4.f),
@@ -155,12 +227,12 @@ void draw(HudGeometry& hud, glm::vec2 viewportPixels, const State& s) {
         c.text("FPS "+fixed(s.fps),w-104,25,1.2f,grey);
     }
     if (s.help) {
-        c.chip(20,68,300,224,.55f);
+        c.chip(20,68,300,254,.55f);
         c.text("CONTROLS",34,80,1.5f);
         const char* lines[]={"W/S       DRIVE / REVERSE","A/D       STEER","Q/E       TRAVERSE TURRET",
-            "R/F       GUN UP / DOWN","LMB/SPACE FIRE SINGLE SHOT","C         CYCLE CAMERA",
+            "R/F       GUN UP / DOWN","T/G       SHOT POWER +/-","LMB/SPACE FIRE SINGLE SHOT","C         CYCLE CAMERA",
             "ARROWS    MOVE FREE CAMERA","SPACE/CTRL CAMERA UP / DOWN","MOUSE     LOOK IN FREE CAMERA",
-            "F3        DIAGNOSTICS","F12       SCREENSHOT","ESC       QUIT"};
+            "F3        DIAGNOSTICS","F12       SCREENSHOT","N         RESTART MATCH (WHEN OVER)","ESC       QUIT"};
         for (size_t i=0;i<std::size(lines);++i) c.text(lines[i],34,104+i*15,1.2f,grey);
     }
 }

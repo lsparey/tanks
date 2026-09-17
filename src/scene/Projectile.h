@@ -16,7 +16,16 @@ struct Projectile {
     glm::vec3 position;
     glm::vec3 previousPosition;
     glm::vec3 velocity;
-    float lifetimeRemaining = 3.0f;
+    // Covers the longest flight this game's power/elevation range actually
+    // needs: a level shot at Tank::kMaxShotSpeed lands well within this, and
+    // moderate elevation at moderate-to-high power still lands before it
+    // expires. Under this game's weak kGravity, elevation combined with
+    // near-maximum power produces a flight time that grows sharply and can
+    // exceed even a generous lifetime -- see tests/ProjectileTest.cpp's
+    // (elevation, power) table, which documents this rather than hiding it:
+    // an extreme shot expiring mid-flight rather than visibly landing is an
+    // accepted limitation, not a bug.
+    float lifetimeRemaining = 12.0f;
     bool alive = true;
     // Distance travelled since the last smoke-trail puff was dropped --
     // reset by whoever spawns a puff (see Application::updateProjectilesAndCollisions),

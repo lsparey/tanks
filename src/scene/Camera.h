@@ -27,9 +27,17 @@ public:
     void followAimTarget(glm::vec3 targetPosition, glm::vec3 aimPoint, float distance = 5.8f,
                          float height = 2.8f);
 
+    // Directly places the camera at an already-computed pose (e.g. a blend
+    // between two follow targets) without going through follow*/update()'s
+    // own math. Also resyncs yaw/pitch from the given front vector, so a
+    // later update() (free-fly) doesn't snap back to whatever angle was
+    // last set by arrow-key/mouse input before this pose was applied.
+    void setPose(glm::vec3 position, glm::vec3 front);
+
     glm::mat4 viewMatrix() const;
     glm::mat4 projMatrix(float aspect) const;
     glm::vec3 position() const { return position_; }
+    glm::vec3 front() const { return front_; }
 
 private:
     void updateBasisVectors();

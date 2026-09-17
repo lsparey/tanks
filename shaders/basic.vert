@@ -58,23 +58,31 @@ void main() {
     // Previous-frame model matrix for the motion-vector buffer (see
     // basic.frag). Instanced draws carry their own previousModel (static
     // placements pass the same matrix for both -- see RasterInstance.h for
-    // why gear/track batches currently do too). The tank's non-instanced
+    // why gear/track batches currently do too). Each tank's non-instanced
     // hull/turret/barrel parts select one of FrameUBO's snapshotted
     // matrices via isDynamicObject, which Application encodes as
-    // 1/2/3 = hull/turret/barrel for exactly this purpose (see
-    // Tank::DrawPart::poseGroup) -- materialType alone can't tell them
+    // 1/2/3 = hull/turret/barrel for tank index 0 (the player) and 4/5/6
+    // for tank index 1 (the opponent, see Tank::DrawPart::poseGroup and
+    // Application's drawTankParts) -- materialType alone can't tell them
     // apart, since e.g. materialType 6 (Tracks) covers both a hull-attached
-    // and a turret-attached mesh. Everything else non-instanced is static,
-    // so its previousModel is just its own (unchanging) model.
+    // and a turret-attached mesh. A destroyed tank (genuinely stationary
+    // again) goes back to isDynamicObject 0. Everything else non-instanced
+    // is static, so its previousModel is just its own (unchanging) model.
     mat4 previousModel;
     if (pc.isInstanced > 0.5) {
         previousModel = instanceData.instances[gl_InstanceIndex].previousModel;
     } else if (pc.isDynamicObject > 0.5 && pc.isDynamicObject < 1.5) {
-        previousModel = frame.prevTankHullModel;
+        previousModel = frame.prevTankHullModel[0];
     } else if (pc.isDynamicObject > 1.5 && pc.isDynamicObject < 2.5) {
-        previousModel = frame.prevTankTurretModel;
-    } else if (pc.isDynamicObject > 2.5) {
-        previousModel = frame.prevTankBarrelModel;
+        previousModel = frame.prevTankTurretModel[0];
+    } else if (pc.isDynamicObject > 2.5 && pc.isDynamicObject < 3.5) {
+        previousModel = frame.prevTankBarrelModel[0];
+    } else if (pc.isDynamicObject > 3.5 && pc.isDynamicObject < 4.5) {
+        previousModel = frame.prevTankHullModel[1];
+    } else if (pc.isDynamicObject > 4.5 && pc.isDynamicObject < 5.5) {
+        previousModel = frame.prevTankTurretModel[1];
+    } else if (pc.isDynamicObject > 5.5) {
+        previousModel = frame.prevTankBarrelModel[1];
     } else {
         previousModel = pc.model;
     }

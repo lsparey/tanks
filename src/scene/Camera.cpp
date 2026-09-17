@@ -56,6 +56,16 @@ void Camera::followAimTarget(glm::vec3 targetPosition, glm::vec3 aimPoint, float
     up_ = glm::normalize(glm::cross(right_, front_));
 }
 
+void Camera::setPose(glm::vec3 position, glm::vec3 front) {
+    position_ = position;
+    front_ = glm::normalize(front);
+    glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
+    right_ = glm::normalize(glm::cross(front_, worldUp));
+    up_ = glm::normalize(glm::cross(right_, front_));
+    pitchDegrees_ = glm::degrees(std::asin(glm::clamp(front_.y, -1.0f, 1.0f)));
+    yawDegrees_ = glm::degrees(std::atan2(front_.z, front_.x));
+}
+
 glm::mat4 Camera::viewMatrix() const {
     return glm::lookAt(position_, position_ + front_, up_);
 }

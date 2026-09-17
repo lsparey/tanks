@@ -2,6 +2,7 @@
 #include "core/CombatHud.h"
 #include <fstream>
 #include <iostream>
+#include <string>
 #include <vector>
 
 int main(int argc,char** argv) {
@@ -29,6 +30,17 @@ int main(int argc,char** argv) {
     state.gpuMs=7.3f;
     state.help=argc>4;
     state.diagnostics=state.help;
+    // Illustrative --match state (see PLAN.md's "Turn camera and match
+    // HUD") so this preview also covers the turn/health/fuel/shells panel.
+    state.matchActive=true;
+    state.opponentPresent=true;
+    state.turnLabel="OPPONENT TURN";
+    state.playerCombat={true,2.0f,3.0f,14.0f,20.0f,1,1};
+    state.opponentCombat={true,3.0f,3.0f,20.0f,20.0f,1,1};
+    state.inventoryText="SHL:1 DMG:1 SPL:2 AIM:1 [ARMED AIM]";
+    std::string banner=argc>5 ? argv[5] : "";
+    if (banner=="start") state.showMatchStartBanner=true;
+    if (banner=="over") { state.showMatchOverBanner=true; state.matchOverText="YOU WIN"; }
     HudGeometry hud;
     CombatHud::draw(hud,{width,height},state);
     std::ofstream out(argv[1]);

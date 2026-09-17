@@ -43,6 +43,9 @@ int main(int argc, char** argv) {
         bool originalTankModel = false;
         bool animateTracks = true;
         bool weaponPreview = false;
+        bool matchEnabled = false;
+        bool matchPreview = false;
+        float aiDifficulty = 1.0f;
         // The advanced (drained-valley) generator is the game default; the
         // original quick heightmap remains available as --terrain legacy.
         bool valleyTerrain = true;
@@ -76,6 +79,18 @@ int main(int argc, char** argv) {
             if (std::strcmp(argv[i], "--profile") == 0) profile = true;
             if (std::strcmp(argv[i], "--static-tracks") == 0) animateTracks = false;
             if (std::strcmp(argv[i], "--weapon-preview") == 0) weaponPreview = true;
+            if (std::strcmp(argv[i], "--match") == 0) matchEnabled = true;
+            // Deterministic full-match check, in the style of
+            // --weapon-preview/--drive-preview: both tanks are AI-driven
+            // with a fixed timestep. Inherently needs the rules engine.
+            if (std::strcmp(argv[i], "--match-preview") == 0) { matchPreview = true; matchEnabled = true; }
+            if (std::strcmp(argv[i], "--ai-difficulty") == 0) {
+                if (++i >= argc) throw std::runtime_error("--ai-difficulty requires a positive number (higher is easier)");
+                char* end = nullptr;
+                aiDifficulty = std::strtof(argv[i], &end);
+                if (end == argv[i] || aiDifficulty <= 0.0f)
+                    throw std::runtime_error("--ai-difficulty requires a positive number (higher is easier)");
+            }
             if (std::strcmp(argv[i], "--seed") == 0) {
                 if (++i >= argc) throw std::runtime_error("--seed requires an unsigned integer");
                 uint32_t value;
@@ -117,10 +132,10 @@ int main(int argc, char** argv) {
                     throw std::runtime_error("--model requires original or refined");
                 originalTankModel = std::strcmp(argv[i], "original") == 0;
             } else if (std::strcmp(argv[i], "--view") == 0) {
-                if (++i >= argc) throw std::runtime_error("--view requires tank, tank-side, tank-front, tank-rear, tank-top, landscape, terrain, trees, props, rocks, or water");
+                if (++i >= argc) throw std::runtime_error("--view requires tank, tank-side, tank-front, tank-rear, tank-top, opponent, landscape, terrain, trees, props, rocks, or water");
                 view = argv[i];
                 if (view != "tank" && view != "tank-side" && view != "tank-front" &&
-                    view != "tank-rear" && view != "tank-top" &&
+                    view != "tank-rear" && view != "tank-top" && view != "opponent" &&
                     view != "landscape" && view != "terrain" && view != "trees" &&
                     view != "props" && view != "rocks" && view != "water")
                     throw std::runtime_error("unknown reference view");
@@ -147,6 +162,9 @@ int main(int argc, char** argv) {
         app.setTreeShadowMode(treeShadowMode);
         app.setShadowPreview(shadowPreview,freezeWind);
         app.setDrivePreview(drivePreview);
+        app.setMatchEnabled(matchEnabled);
+        app.setMatchPreview(matchPreview);
+        app.setAiDifficulty(aiDifficulty);
         app.setTreeLodMode(treeLodMode);
         if (treeLodBenchmark) app.beginTreeLodBenchmark();
         app.run();
