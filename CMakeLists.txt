@@ -9,7 +9,8 @@ option(TANKS_BUILD_GAME "Build the Vulkan game and its renderer/gameplay tests" 
 find_package(glm CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 
-add_library(combat_hud STATIC src/core/CombatHud.cpp src/render/HudGeometry.cpp)
+add_library(combat_hud STATIC src/core/CombatHud.cpp src/core/PauseMenu.cpp src/render/HudGeometry.cpp
+    src/scene/CrateTextureGenerator.cpp)
 target_include_directories(combat_hud PUBLIC src)
 target_link_libraries(combat_hud PUBLIC glm::glm)
 add_executable(hud_preview tools/HudPreview.cpp)
@@ -163,7 +164,6 @@ add_executable(tanks
     src/scene/BarkTextureGenerator.cpp
     src/scene/TreeGenerator.cpp
     src/scene/LeafTextureGenerator.cpp
-    src/scene/CrateTextureGenerator.cpp
     src/scene/CamoTextureGenerator.cpp
     src/scene/MetalTextureGenerator.cpp
     src/scene/Terrain.cpp

@@ -1,4 +1,6 @@
 #include "Application.h"
+
+#include "HudCanvas.h"
 #include "CombatHud.h"
 
 #include <algorithm>
@@ -526,8 +528,15 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
     // meaningful part of the frame.
     std::vector<uint8_t> cratePixels = CrateTextureGenerator::generate(256);
     // Mapped exactly once per cube face (see Mesh::cube's UV), not tiled,
-    // so CLAMP rather than REPEAT.
-    crateTexture_ = std::make_unique<Texture>(
+    // so CLAMP rather than REPEAT. The wood is generated once and each
+    // power-up's icon is stamped onto a copy, so every variant shares the
+    // exact same boards -- only the stencil differs.
+    for (PowerUpType type : kAllPowerUpTypes) {
+        crateTextures_[static_cast<size_t>(type)] = std::make_unique<Texture>(Texture::fromPixels(
+            *context_, *commands_, 256, 256, CrateTextureGenerator::stampIcon(cratePixels, 256, type),
+            /*repeat=*/false));
+    }
+    crateTextures_[kPlainCrateMaterial] = std::make_unique<Texture>(
         Texture::fromPixels(*context_, *commands_, 256, 256, cratePixels, /*repeat=*/false));
     std::vector<uint8_t> whitePixel = {255, 255, 255, 255};
     whiteTexture_ = std::make_unique<Texture>(
@@ -587,8 +596,10 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
     // variant instead, alongside their textures -- see the tree/rock mesh
     // construction loops below (barkMaterialSets_/leafMaterialSets_/
     // rockMaterialSets_).
-    crateMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*crateTexture_, *crateTexture_,
-                                                                  *crateTexture_, *crateTexture_);
+    for (size_t i = 0; i < crateTextures_.size(); ++i) {
+        const Texture& crate = *crateTextures_[i];
+        crateMaterialSets_[i] = pipeline_->allocateMaterialDescriptorSet(crate, crate, crate, crate);
+    }
     whiteMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*whiteTexture_, *whiteTexture_,
                                                                   *whiteTexture_, *whiteTexture_);
     camoMaterialSet_ = pipeline_->allocateMaterialDescriptorSet(*camoTexture_, *camoTexture_,
@@ -1171,7 +1182,7 @@ void Application::cleanup() noexcept {
     opponentCamoTexture_.reset();
     boundaryWallTexture_.reset();
     boundaryLineTexture_.reset();
-    crateTexture_.reset();
+    for (auto& texture : crateTextures_) texture.reset();
     leafTextures_.clear();
     barkTextures_.clear();
     rockStandaloneTextures_.clear();
@@ -1306,20 +1317,26 @@ void Application::mainLoop() {
         performanceFrameValid_ = false;
         glfwPollEvents();
 
-        if (glfwGetKey(window_, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
-            glfwSetWindowShouldClose(window_, GLFW_TRUE);
+        bool escapeKeyDown = glfwGetKey(window_, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+        if (escapeKeyDown && !prevEscapeKeyDown_) {
+            if (!pauseMenuOpen_) openPauseMenu();
+            else if (pauseMenu_.page != PauseMenu::Page::Root) { pauseMenu_.page = PauseMenu::Page::Root; pauseMenu_.focus = 0; }
+            else closePauseMenu();
         }
+        prevEscapeKeyDown_ = escapeKeyDown;
 
         double now = glfwGetTime();
         float deltaTime = (weaponPreview_ || shadowPreview_ || drivePreview_ || matchPreview_) ? 1.0f/60.0f : static_cast<float>(now - lastFrameTime_);
         lastFrameTime_ = now;
+        if (pauseMenuOpen_) deltaTime = 0.0f;
         // Bound float phase precision without a discontinuity: every wind
         // frequency completes an integer number of cycles in 128 seconds.
         if (!freezeWind_) windTime_ = std::fmod(windTime_ + static_cast<double>(deltaTime), 128.0);
 
         input_->update();
+        if (pauseMenuOpen_) updatePauseMenu();
 
-        if (!treeLodBenchmark_) {
+        if (!treeLodBenchmark_ && !pauseMenuOpen_) {
             bool helpKeyDown = glfwGetKey(window_, GLFW_KEY_H) == GLFW_PRESS;
             if (helpKeyDown && !prevHudHelpKeyDown_) showHudHelp_ = !showHudHelp_;
             prevHudHelpKeyDown_ = helpKeyDown;
@@ -1346,54 +1363,21 @@ void Application::mainLoop() {
             prevPerformanceResetKeyDown_ = resetKeyDown;
 
             bool shadowsKeyDown = glfwGetKey(window_, GLFW_KEY_F5) == GLFW_PRESS;
-            if (shadowsKeyDown && !prevShadowsKeyDown_) {
-                shadowsEnabled_ = !shadowsEnabled_;
-                shadowHistoryReset_ = true;
-                std::cout << "Shadows " << (shadowsEnabled_ ? "on" : "off") << " (F5 toggles)\n";
-            }
+            if (shadowsKeyDown && !prevShadowsKeyDown_) toggleShadows();
             prevShadowsKeyDown_ = shadowsKeyDown;
             bool treeShadowKey = glfwGetKey(window_, GLFW_KEY_F6) == GLFW_PRESS;
-            if (treeShadowKey && !prevTreeShadowKeyDown_) {
-                setTreeShadowMode((treeShadowMode_ + 1) % 3);
-                const char* names[] = {"legacy rays", "stable maps (PCF)", "soft maps (PCSS)"};
-                std::cout << "Tree shadows: " << names[treeShadowMode_] << " (F6 cycles)\n";
-                profiler_.clear();
-                performanceWarmup_ = 60;
-                gpuTimingInitialized_ = false;
-                gpuTimestampsReady_.fill(false);
-            }
+            if (treeShadowKey && !prevTreeShadowKeyDown_) cycleTreeShadows();
             prevTreeShadowKeyDown_ = treeShadowKey;
             bool aoKey = glfwGetKey(window_, GLFW_KEY_F7) == GLFW_PRESS;
-            if (aoKey && !prevAoKeyDown_) {
-                aoEnabled_ = !aoEnabled_;
-                shadowHistoryReset_ = true;
-                std::cout << "Ambient occlusion " << (aoEnabled_ ? "on" : "off") << " (F7 toggles)\n";
-            }
+            if (aoKey && !prevAoKeyDown_) toggleAmbientOcclusion();
             prevAoKeyDown_ = aoKey;
 
             bool treeLodKey = glfwGetKey(window_, GLFW_KEY_F8) == GLFW_PRESS;
-            if (treeLodKey && !prevTreeLodKeyDown_) {
-                if (treeLodMode_ == TreeLodMode::Full) {
-                    setTreeLodMode(treeLodResumeMode_);
-                } else {
-                    treeLodResumeMode_ = treeLodMode_;
-                    setTreeLodMode(TreeLodMode::Full);
-                }
-            }
+            if (treeLodKey && !prevTreeLodKeyDown_) toggleTreeDetail();
             prevTreeLodKeyDown_ = treeLodKey;
 
             bool reflectionKey = glfwGetKey(window_, GLFW_KEY_F9) == GLFW_PRESS;
-            if (reflectionKey && !prevReflectionKeyDown_) {
-                reflectionRaysEnabled_ = !reflectionRaysEnabled_;
-                profiler_.clear();
-                performanceWarmup_ = 60;
-                gpuTimingInitialized_ = false;
-                gpuTimestampsReady_.fill(false);
-                fpsWindowStart_ = glfwGetTime();
-                fpsWindowFrames_ = 0;
-                std::cout << "Reflection rays " << (reflectionRaysEnabled_ ? "on" : "off")
-                          << " (F9 toggles; sky reflection retained)\n" << std::flush;
-            }
+            if (reflectionKey && !prevReflectionKeyDown_) toggleReflections();
             prevReflectionKeyDown_ = reflectionKey;
 
             bool velocityDebugKey = glfwGetKey(window_, GLFW_KEY_F10) == GLFW_PRESS;
@@ -1405,17 +1389,19 @@ void Application::mainLoop() {
             prevVelocityDebugKeyDown_ = velocityDebugKey;
 
             bool taaKey = glfwGetKey(window_, GLFW_KEY_F11) == GLFW_PRESS;
-            if (taaKey && !prevTaaKeyDown_) {
-                taaEnabled_ = !taaEnabled_;
-                std::cout << "TAA " << (taaEnabled_ ? "on" : "off") << " (F11 toggles)\n";
-            }
+            if (taaKey && !prevTaaKeyDown_) toggleAntiAliasing();
             prevTaaKeyDown_ = taaKey;
 
             bool cameraToggleDown = glfwGetKey(window_, GLFW_KEY_C) == GLFW_PRESS;
             if (cameraToggleDown && !prevCameraToggleKeyDown_) {
+                // 1v1 Match has no free camera: it would let a player scout
+                // the opponent's position (and break the turn-camera
+                // choreography), so C cycles hull <-> gun only there.
                 switch (cameraMode_) {
                     case CameraMode::HullFollow: cameraMode_ = CameraMode::TurretAim; break;
-                    case CameraMode::TurretAim: cameraMode_ = CameraMode::Free; break;
+                    case CameraMode::TurretAim:
+                        cameraMode_ = matchEnabled_ ? CameraMode::HullFollow : CameraMode::Free;
+                        break;
                     case CameraMode::Free: cameraMode_ = CameraMode::HullFollow; break;
                 }
             }
@@ -1469,7 +1455,7 @@ void Application::mainLoop() {
             // below is entirely skipped, not just its inputs zeroed, since
             // driveTankWithAI already does the equivalent internally and
             // running both would double-spend fuel and could double-fire.
-            driveTankWithAI(*tank_, *opponentTank_, CombatantId::Player, deltaTime);
+            if (!pauseMenuOpen_) driveTankWithAI(*tank_, *opponentTank_, CombatantId::Player, deltaTime);
         } else {
             // Whether the player's own tank may act *at all* right now --
             // covers turret/elevation/power/firing, not just driving.
@@ -1527,13 +1513,13 @@ void Application::mainLoop() {
 
             // Cycle which held power-up is armed for the next shot (see
             // PLAN.md's "Power-up crates"), skipping types not currently
-            // held. TighterAccuracy/MoreFuel are never armed -- they apply
-            // immediately on collection (see MatchState::collectPowerUp).
+            // held. ExtraShell/TighterAccuracy/MoreFuel are never armed --
+            // they apply immediately on collection (see
+            // MatchState::collectPowerUp).
             bool armKeyDown = glfwGetKey(window_, GLFW_KEY_V) == GLFW_PRESS;
-            if (armKeyDown && !prevArmPowerUpKeyDown_) {
-                static constexpr std::array<PowerUpType, 4> kArmableTypes = {
-                    PowerUpType::ExtraShell, PowerUpType::IncreasedDamage,
-                    PowerUpType::LargerSplash, PowerUpType::AimAssist,
+            if (armKeyDown && !prevArmPowerUpKeyDown_ && !pauseMenuOpen_) {
+                static constexpr std::array<PowerUpType, 3> kArmableTypes = {
+                    PowerUpType::IncreasedDamage, PowerUpType::LargerSplash, PowerUpType::AimAssist,
                 };
                 const auto& player = matchState_.combatant(CombatantId::Player);
                 size_t startIndex = 0;
@@ -1561,7 +1547,7 @@ void Application::mainLoop() {
         // this turn permits (see PLAN.md's "fire at any time" design
         // change). Only excluded during Resolving (a shell of yours is
         // already in flight) or when it's not your turn at all.
-        bool fireEnabled = playerTurnActive && (!matchEnabled_ || matchState_.phase() == Phase::Turn);
+        bool fireEnabled = playerTurnActive && !pauseMenuOpen_ && (!matchEnabled_ || matchState_.phase() == Phase::Turn);
         if (fireDown && !prevFireDown_ && fireEnabled) fireProjectile(*tank_, CombatantId::Player);
         prevFireDown_ = fireDown;
         }
@@ -1572,7 +1558,7 @@ void Application::mainLoop() {
         // meaningful either way, even if a preview run wouldn't normally
         // have a real key press to receive).
         bool restartKeyDown = glfwGetKey(window_, GLFW_KEY_N) == GLFW_PRESS;
-        if (restartKeyDown && !prevRestartKeyDown_ && matchEnabled_ && hasOpponent_ && matchState_.isGameOver())
+        if (restartKeyDown && !prevRestartKeyDown_ && !pauseMenuOpen_ && matchEnabled_ && hasOpponent_ && matchState_.isGameOver())
             restartMatch();
         prevRestartKeyDown_ = restartKeyDown;
 
@@ -1585,7 +1571,7 @@ void Application::mainLoop() {
         float turnAmount = glm::clamp(tank_->angularSpeed() / 0.9f, 0.0f, 1.0f);
         audio_->updateEngineSound(std::max(driveAmount, turnAmount), deltaTime);
 
-        driveTankWithAI(*opponentTank_, *tank_, CombatantId::Opponent, deltaTime);
+        if (!pauseMenuOpen_) driveTankWithAI(*opponentTank_, *tank_, CombatantId::Opponent, deltaTime);
 
         updateProjectilesAndCollisions(deltaTime);
 
@@ -1665,7 +1651,7 @@ void Application::mainLoop() {
                         break;
                     }
                     case CameraMode::Free:
-                        if (!cameraTransitioning_) camera_.update(*input_, deltaTime);
+                        if (!cameraTransitioning_ && !pauseMenuOpen_) camera_.update(*input_, deltaTime);
                         break;
                 }
                 rawDesiredEye = camera_.position();
@@ -1711,6 +1697,151 @@ void Application::mainLoop() {
         }
     }
     if (performanceReporting_) reportPerformance();
+}
+
+void Application::openPauseMenu() {
+    pauseMenuOpen_ = true;
+    pauseMenu_.page = PauseMenu::Page::Root;
+    pauseMenu_.focus = 0;
+    pauseMenu_.hovered = -1;
+    glfwSetInputMode(window_, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+}
+
+void Application::closePauseMenu() {
+    pauseMenuOpen_ = false;
+    glfwSetInputMode(window_, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    // The cursor jumps when re-captured; don't let that read as mouse look.
+    input_->resetMouse();
+}
+
+void Application::updatePauseMenu() {
+    auto extent = swapchain_->extent();
+    glm::vec2 viewport(extent.width, extent.height);
+    pauseMenu_.matchActive = matchEnabled_;
+    auto buttons = PauseMenu::layout(viewport, pauseMenu_);
+    if (buttons.empty()) return;
+    pauseMenu_.focus = std::clamp(pauseMenu_.focus, 0, int(buttons.size()) - 1);
+
+    // Cursor is in window coordinates; the menu lays out in logical pixels
+    // of the framebuffer-sized canvas (HudStyle::canvasScale), so map
+    // window -> framebuffer -> canvas.
+    int windowW, windowH;
+    glfwGetWindowSize(window_, &windowW, &windowH);
+    double mx, my;
+    glfwGetCursorPos(window_, &mx, &my);
+    glm::vec2 cursor{float(mx), float(my)};
+    if (windowW > 0 && windowH > 0) cursor *= viewport / glm::vec2{float(windowW), float(windowH)};
+    cursor /= HudStyle::canvasScale(viewport);
+    pauseMenu_.hovered = -1;
+    for (size_t i = 0; i < buttons.size(); ++i) if (buttons[i].rect.contains(cursor)) pauseMenu_.hovered = int(i);
+
+    bool up = glfwGetKey(window_, GLFW_KEY_UP) == GLFW_PRESS, down = glfwGetKey(window_, GLFW_KEY_DOWN) == GLFW_PRESS;
+    bool enter = glfwGetKey(window_, GLFW_KEY_ENTER) == GLFW_PRESS || glfwGetKey(window_, GLFW_KEY_KP_ENTER) == GLFW_PRESS;
+    bool mouse = glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+    int count = int(buttons.size());
+    if (up && !prevMenuUpDown_) pauseMenu_.focus = (pauseMenu_.focus + count - 1) % count;
+    if (down && !prevMenuDownDown_) pauseMenu_.focus = (pauseMenu_.focus + 1) % count;
+    int activated = -1;
+    if (enter && !prevMenuEnterDown_) activated = buttons[pauseMenu_.focus].item;
+    if (mouse && !prevMenuMouseDown_ && pauseMenu_.hovered >= 0) {
+        pauseMenu_.focus = pauseMenu_.hovered;
+        activated = buttons[pauseMenu_.hovered].item;
+    }
+    prevMenuUpDown_ = up;
+    prevMenuDownDown_ = down;
+    prevMenuEnterDown_ = enter;
+    prevMenuMouseDown_ = mouse;
+    if (activated >= 0) activatePauseMenuItem(activated);
+}
+
+void Application::activatePauseMenuItem(int item) {
+    auto open = [&](PauseMenu::Page page) { pauseMenu_.page = page; pauseMenu_.focus = 0; pauseMenu_.hovered = -1; };
+    switch (item) {
+        case PauseMenu::ItemControls: open(PauseMenu::Page::Controls); return;
+        case PauseMenu::ItemGraphics: open(PauseMenu::Page::Graphics); return;
+        case PauseMenu::ItemHelp: open(PauseMenu::Page::Help); return;
+        case PauseMenu::ItemQuit: glfwSetWindowShouldClose(window_, GLFW_TRUE); return;
+        case PauseMenu::ItemBack: open(PauseMenu::Page::Root); return;
+        default: break;
+    }
+    switch (PauseMenu::GraphicsRow(item - PauseMenu::ItemGraphicsRow)) {
+        case PauseMenu::GraphicsRow::Shadows: toggleShadows(); break;
+        case PauseMenu::GraphicsRow::TreeShadows: cycleTreeShadows(); break;
+        case PauseMenu::GraphicsRow::AmbientOcclusion: toggleAmbientOcclusion(); break;
+        case PauseMenu::GraphicsRow::TreeDetail: toggleTreeDetail(); break;
+        case PauseMenu::GraphicsRow::Reflections: toggleReflections(); break;
+        case PauseMenu::GraphicsRow::AntiAliasing: toggleAntiAliasing(); break;
+        case PauseMenu::GraphicsRow::Sound: toggleSound(); break;
+        case PauseMenu::GraphicsRow::Count: break;
+    }
+}
+
+PauseMenu::Graphics Application::graphicsOptions() const {
+    PauseMenu::Graphics g;
+    g.shadows = shadowsEnabled_;
+    g.treeShadowMode = treeShadowMode_;
+    g.ambientOcclusion = aoEnabled_;
+    g.fullTreeDetail = treeLodMode_ == TreeLodMode::Full;
+    g.reflections = reflectionRaysEnabled_;
+    g.antiAliasing = taaEnabled_;
+    g.sound = soundEnabled_;
+    return g;
+}
+
+void Application::toggleShadows() {
+    shadowsEnabled_ = !shadowsEnabled_;
+    shadowHistoryReset_ = true;
+    std::cout << "Shadows " << (shadowsEnabled_ ? "on" : "off") << " (F5 toggles)\n";
+}
+
+void Application::cycleTreeShadows() {
+    setTreeShadowMode((treeShadowMode_ + 1) % 3);
+    const char* names[] = {"legacy rays", "stable maps (PCF)", "soft maps (PCSS)"};
+    std::cout << "Tree shadows: " << names[treeShadowMode_] << " (F6 cycles)\n";
+    profiler_.clear();
+    performanceWarmup_ = 60;
+    gpuTimingInitialized_ = false;
+    gpuTimestampsReady_.fill(false);
+}
+
+void Application::toggleAmbientOcclusion() {
+    aoEnabled_ = !aoEnabled_;
+    shadowHistoryReset_ = true;
+    std::cout << "Ambient occlusion " << (aoEnabled_ ? "on" : "off") << " (F7 toggles)\n";
+}
+
+void Application::toggleTreeDetail() {
+    if (treeLodMode_ == TreeLodMode::Full) {
+        setTreeLodMode(treeLodResumeMode_);
+    } else {
+        treeLodResumeMode_ = treeLodMode_;
+        setTreeLodMode(TreeLodMode::Full);
+    }
+}
+
+void Application::toggleReflections() {
+    reflectionRaysEnabled_ = !reflectionRaysEnabled_;
+    profiler_.clear();
+    performanceWarmup_ = 60;
+    gpuTimingInitialized_ = false;
+    gpuTimestampsReady_.fill(false);
+    fpsWindowStart_ = glfwGetTime();
+    fpsWindowFrames_ = 0;
+    std::cout << "Reflection rays " << (reflectionRaysEnabled_ ? "on" : "off")
+              << " (F9 toggles; sky reflection retained)\n" << std::flush;
+}
+
+void Application::toggleAntiAliasing() {
+    taaEnabled_ = !taaEnabled_;
+    std::cout << "TAA " << (taaEnabled_ ? "on" : "off") << " (F11 toggles)\n";
+}
+
+void Application::toggleSound() {
+    // Enabling can fail (no audio device), so read the actual state back
+    // rather than assuming the flip took effect -- same as the terrain menu.
+    audio_->setEnabled(!soundEnabled_);
+    soundEnabled_ = audio_->enabled();
+    if (soundEnabled_) audio_->playShot();
 }
 
 void Application::reportPerformance() {
@@ -1919,6 +2050,16 @@ void Application::spawnBoxes() {
     std::mt19937 rng(worldSeed_ ^ 0x201u);
     std::uniform_real_distribution<float> yawDist(0.0f, 6.2831853f);
 
+    // Deal power-ups as a shuffled deck -- every type once, the remainder
+    // random -- so a fresh match always has each icon on the field rather
+    // than, say, three fuel cans and no aim assist. Only meaningful under
+    // --match, but assigned unconditionally: it's the same deterministic
+    // RNG stream either way, so free play's crate layout is unchanged.
+    std::vector<PowerUpType> deck(kAllPowerUpTypes.begin(), kAllPowerUpTypes.end());
+    std::uniform_int_distribution<size_t> typeDist(0, kAllPowerUpTypes.size() - 1);
+    while (deck.size() < static_cast<size_t>(kBoxCount)) deck.push_back(kAllPowerUpTypes[typeDist(rng)]);
+    std::shuffle(deck.begin(), deck.end(), rng);
+
     std::vector<glm::vec2> placed;
     for (int i = 0; i < kBoxCount; ++i) {
         bool found = false;
@@ -1932,6 +2073,7 @@ void Application::spawnBoxes() {
         box.position = glm::vec3(pos.x, terrain_->heightAt(pos.x, pos.y) + box.size * 0.5f, pos.y);
         box.up = terrain_->normalAt(pos.x, pos.y);
         box.yaw = yawDist(rng);
+        box.powerUp = deck[static_cast<size_t>(i)];
         boxes_.push_back(box);
     }
 }
@@ -2574,15 +2716,11 @@ void Application::destroyBox(Box& box) {
 }
 
 void Application::collectBox(Box& box, CombatantId collector) {
-    static constexpr std::array<PowerUpType, kPowerUpTypeCount> kAllTypes = {
-        PowerUpType::ExtraShell,      PowerUpType::IncreasedDamage, PowerUpType::LargerSplash,
-        PowerUpType::AimAssist,       PowerUpType::TighterAccuracy, PowerUpType::MoreFuel,
-    };
-    std::uniform_int_distribution<size_t> typeDist(0, kAllTypes.size() - 1);
-    matchState_.collectPowerUp(collector, kAllTypes[typeDist(powerUpRng_)]);
+    matchState_.collectPowerUp(collector, box.powerUp);
 
-    // Top up: same crate, relocated to a fresh valid spot -- immediately
-    // collectible again, rather than staying gone. Every other current
+    // Top up: same crate, relocated to a fresh valid spot with a fresh
+    // power-up (and so a fresh icon) -- immediately collectible again,
+    // rather than staying gone. Every other current
     // crate (this one's own old position included -- harmless, it's about
     // to move away from it anyway) counts as "placed" so the new spot
     // isn't right next to another crate.
@@ -2595,6 +2733,8 @@ void Application::collectBox(Box& box, CombatantId collector) {
         box.position = glm::vec3(pos.x, terrain_->heightAt(pos.x, pos.y) + box.size * 0.5f, pos.y);
         box.up = terrain_->normalAt(pos.x, pos.y);
     }
+    std::uniform_int_distribution<size_t> typeDist(0, kAllPowerUpTypes.size() - 1);
+    box.powerUp = kAllPowerUpTypes[typeDist(powerUpRng_)];
     // If no valid spot turns up this attempt, the crate just stays put --
     // it gets another chance to relocate next time it's collected.
 }
@@ -3112,6 +3252,13 @@ void Application::updateProjectilesAndCollisions(float deltaTime) {
         if (!shell.alive) continue;
         glm::vec3 prePosition = shell.position;
         shell.update(deltaTime);
+        // Past the orange boundary there is nothing left to hit, so the shot
+        // is over the moment it crosses -- otherwise an off-map shell would
+        // keep the turn in Resolving for up to its whole 12 s lifetime.
+        if (std::abs(shell.position.x) > boundaryHalfExtent_ || std::abs(shell.position.z) > boundaryHalfExtent_) {
+            shell.alive = false;
+            continue;
+        }
         shell.distanceSinceLastPuff += glm::length(shell.position - prePosition);
         if (shell.distanceSinceLastPuff >= kTrailSpacing) {
             shell.distanceSinceLastPuff -= kTrailSpacing;
@@ -4260,10 +4407,13 @@ void Application::drawFrame() {
         drawTankParts(*opponentTank_, opponentCamoMaterialSet_, opponentGearBatches, /*tankIndex=*/1,
                       opponentDestroyed, opponentTilt);
 
-    vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                             pipeline_->layout(), 1, 1, &crateMaterialSet_, 0, nullptr);
+    // Each crate binds the material carrying its own power-up icon under
+    // --match; free play's crates hold nothing and stay plain.
     for (const auto& box : boxes_) {
         if (!box.alive) continue;
+        size_t crateMaterial = matchEnabled_ ? static_cast<size_t>(box.powerUp) : kPlainCrateMaterial;
+        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                 pipeline_->layout(), 1, 1, &crateMaterialSets_[crateMaterial], 0, nullptr);
         Pipeline::PushConstants boxPc{};
         boxPc.model = box.worldMatrix();
         vkCmdPushConstants(frame.commandBuffer, pipeline_->layout(),
@@ -4588,9 +4738,8 @@ void Application::drawFrame() {
                                         opponentCombatState.fuelRemaining, opponentCombatState.fuelCapacity,
                                         opponentCombatState.shellsRemaining, opponentCombatState.shellsPerTurn};
         }
-        static constexpr std::array<std::pair<PowerUpType, const char*>, 4> kArmableLabels = {{
-            {PowerUpType::ExtraShell, "SHL"}, {PowerUpType::IncreasedDamage, "DMG"},
-            {PowerUpType::LargerSplash, "SPL"}, {PowerUpType::AimAssist, "AIM"},
+        static constexpr std::array<std::pair<PowerUpType, const char*>, 3> kArmableLabels = {{
+            {PowerUpType::IncreasedDamage, "DMG"}, {PowerUpType::LargerSplash, "SPL"}, {PowerUpType::AimAssist, "AIM"},
         }};
         const auto& player = matchState_.combatant(CombatantId::Player);
         for (auto [type, label] : kArmableLabels) {
@@ -4631,6 +4780,11 @@ void Application::drawFrame() {
     hudState.trajectoryClip = trajectoryPoints;
 
     CombatHud::draw(*hud_, {extent.width, extent.height}, hudState);
+    if (pauseMenuOpen_) {
+        pauseMenu_.matchActive = matchEnabled_;
+        pauseMenu_.graphics = graphicsOptions();
+        PauseMenu::draw(*hud_, {extent.width, extent.height}, pauseMenu_);
+    }
 
     vkCmdEndRendering(frame.commandBuffer);
     vkCmdWriteTimestamp2(frame.commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,

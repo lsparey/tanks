@@ -5,19 +5,11 @@
 #include <cmath>
 #include <optional>
 
+#include "PowerUp.h"
+
 // The two combatants in a duel. Player always starts the match; see
 // MatchState's constructor.
 enum class CombatantId { Player, Opponent };
-
-// Power-ups granted by collecting a crate (see PLAN.md's "Power-up
-// crates"). ExtraShell/IncreasedDamage/LargerSplash/AimAssist are held in
-// CombatantState::powerUps until armed and consumed (see
-// MatchState::armPowerUp/consumeArmedPowerUp); TighterAccuracy/MoreFuel
-// apply immediately and permanently on collection instead (see
-// collectPowerUp) -- there's no "this shot" meaning for a passive stat
-// boost to wait on.
-enum class PowerUpType { ExtraShell, IncreasedDamage, LargerSplash, AimAssist, TighterAccuracy, MoreFuel };
-inline constexpr size_t kPowerUpTypeCount = 6;
 
 // The state machine a turn moves through. Turn covers the whole active
 // combatant's turn -- driving (while fuel remains) and firing (while a
@@ -56,7 +48,10 @@ public:
     // plain floats rather than a Tank reference, keeping MatchState
     // decoupled from Tank exactly as it is everywhere else. Tuned by feel
     // for a first pass (a full 2*pi in-place pivot costs ~6.3 fuel out of
-    // the default 20-fuel tank) -- revisit once real matches are played.
+    // the default kDefaultFuelCapacity tank) -- revisit as real matches are
+    // played; the first such revision raised the tank from 20 to 26 after
+    // play showed turns running dry ~30% too early.
+    static constexpr float kDefaultFuelCapacity = 26.0f;
     static constexpr float kFuelPerMeter = 1.0f;
     static constexpr float kFuelPerRadian = 1.0f;
     static float movementFuelCost(float forwardSpeed, float angularSpeed, float deltaTime) {
@@ -85,8 +80,8 @@ public:
     struct CombatantState {
         bool alive = true;
         float health = 3.0f; // "full hits" units; destroyed at <= 0. See kMaxHealth.
-        float fuelRemaining = 20.0f;
-        float fuelCapacity = 20.0f;
+        float fuelRemaining = kDefaultFuelCapacity;
+        float fuelCapacity = kDefaultFuelCapacity;
         int shellsRemaining = 1;
         int shellsPerTurn = 1; // fixed at 1; ExtraShell instead tops up shellsRemaining for one turn
         // Power-up state -- see PowerUpType and MatchState::collectPowerUp/
@@ -98,7 +93,8 @@ public:
         float accuracyBonus = 0.0f;           // permanent; see dispersionDegrees
     };
 
-    explicit MatchState(float playerFuelCapacity = 20.0f, float opponentFuelCapacity = 20.0f);
+    explicit MatchState(float playerFuelCapacity = kDefaultFuelCapacity,
+                        float opponentFuelCapacity = kDefaultFuelCapacity);
 
     CombatantId activeCombatant() const { return active_; }
     Phase phase() const { return phase_; }
@@ -133,21 +129,23 @@ public:
 
     // Adds one `type` to the active combatant's holdings. MoreFuel/
     // TighterAccuracy apply immediately and permanently instead (see
-    // PowerUpType); the other four accumulate in powerUps[] until armed.
+    // PowerUpType) -- MoreFuel to both fuelCapacity and the current
+    // fuelRemaining, so the crate is usable in the turn it's picked up;
+    // ExtraShell applies immediately too (+1 shellsRemaining, lapsing at
+    // the turn boundary). Only IncreasedDamage/LargerSplash/AimAssist
+    // accumulate in powerUps[] until armed.
     void collectPowerUp(CombatantId id, PowerUpType type);
 
     // Arms `type` for the active combatant's next shot; no-op if none held.
-    // Only meaningful for the four inventory-based types.
+    // Only meaningful for the three inventory-based types.
     void armPowerUp(PowerUpType type);
 
     // Not phase-gated (always called immediately before recordShotFired,
     // which is itself gated). Resets the active combatant's this-shot
     // modifiers (damageMultiplier/splashRadiusMultiplier) to their
     // defaults, then, if something is armed and still held, consumes one
-    // and applies it: ExtraShell increments shellsRemaining immediately
-    // (an actual extra shot this turn, via notifyProjectilesSettled's
-    // existing "shells remain -> AimFire again" path); IncreasedDamage/
-    // LargerSplash set the multipliers above; AimAssist has no further
+    // and applies it: IncreasedDamage/LargerSplash set the multipliers
+    // above; AimAssist has no further
     // effect here -- the caller reads armedPowerUp directly to decide
     // whether to show a trajectory preview, and this clearing it back to
     // nullopt is what makes that preview disappear the instant a shot fires.

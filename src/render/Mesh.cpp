@@ -522,17 +522,29 @@ Mesh Mesh::cube(VulkanContext& ctx, CommandContext& commands, glm::vec3 color, f
     vertices.reserve(24);
     indices.reserve(36);
 
-    // Standard per-face 0..1 UV unwrap (corner order -> (0,0),(1,0),(1,1),
-    // (0,1)) -- doesn't correspond to any particular world axis per face,
-    // but that's fine for a texture without a required orientation (see
-    // CrateTextureGenerator); meshes that don't sample a real texture
-    // (bound to the shared plain white texture) are unaffected either way.
-    const glm::vec2 faceUVs[4] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 1.0f}};
+    // Per-face 0..1 UV unwrap with a fixed world orientation: on the four
+    // side faces v runs top (+Y) to bottom and u runs left to right as seen
+    // by someone standing outside looking at that face (no mirroring); the
+    // top and bottom faces use +X across and -Z up. This matters now that
+    // the crate texture carries a power-up icon (see
+    // CrateTextureGenerator::stampIcon) that must read the right way up on
+    // every side -- an earlier version used one arbitrary corner->UV order
+    // for all faces, which was fine for plain wood grain. Each entry lists
+    // the UV for the matching `corners[i]` above.
+    const glm::vec2 faceUVs[6][4] = {
+        {{1, 1}, {1, 0}, {0, 0}, {0, 1}},  // +X: u toward -Z
+        {{1, 1}, {1, 0}, {0, 0}, {0, 1}},  // -X: u toward +Z
+        {{0, 0}, {0, 1}, {1, 1}, {1, 0}},  // +Y (top): u toward +X, v toward +Z
+        {{1, 1}, {1, 0}, {0, 0}, {0, 1}},  // -Y (bottom): u toward -X, v toward +Z
+        {{0, 1}, {1, 1}, {1, 0}, {0, 0}},  // +Z: u toward +X
+        {{0, 1}, {1, 1}, {1, 0}, {0, 0}},  // -Z: u toward -X
+    };
 
-    for (const auto& face : faces) {
+    for (int f = 0; f < 6; ++f) {
+        const Face& face = faces[f];
         uint32_t base = static_cast<uint32_t>(vertices.size());
         for (int i = 0; i < 4; ++i) {
-            vertices.push_back({face.corners[i], face.normal, color, faceUVs[i]});
+            vertices.push_back({face.corners[i], face.normal, color, faceUVs[f][i]});
         }
         indices.insert(indices.end(), {base + 0, base + 1, base + 2, base + 0, base + 2, base + 3});
     }

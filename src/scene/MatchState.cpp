@@ -59,10 +59,19 @@ void MatchState::collectPowerUp(CombatantId id, PowerUpType type) {
     auto& c = combatants_[static_cast<size_t>(id)];
     switch (type) {
         case PowerUpType::MoreFuel:
+            // Both the tank and the gauge: a fuel crate is fuel you can use
+            // right now, not just a bigger tank next turn.
             c.fuelCapacity += 10.0f;
+            c.fuelRemaining += 10.0f;
             break;
         case PowerUpType::TighterAccuracy:
             c.accuracyBonus += 0.5f;
+            break;
+        case PowerUpType::ExtraShell:
+            // Straight into the tank, like fuel: an extra shot you can take
+            // this turn with no arming step. Unused, it lapses at the turn
+            // boundary when shellsRemaining resets to shellsPerTurn.
+            ++c.shellsRemaining;
             break;
         default:
             ++c.powerUps[static_cast<size_t>(type)];
@@ -86,9 +95,6 @@ void MatchState::consumeArmedPowerUp() {
     if (count <= 0) return;
     --count;
     switch (type) {
-        case PowerUpType::ExtraShell:
-            ++active.shellsRemaining;
-            break;
         case PowerUpType::IncreasedDamage:
             active.damageMultiplier = 1.5f;
             break;
@@ -96,6 +102,7 @@ void MatchState::consumeArmedPowerUp() {
             active.splashRadiusMultiplier = 1.5f;
             break;
         case PowerUpType::AimAssist:
+        case PowerUpType::ExtraShell:
         case PowerUpType::TighterAccuracy:
         case PowerUpType::MoreFuel:
             break;

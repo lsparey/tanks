@@ -1,12 +1,13 @@
 // Standalone SVG of the same CPU geometry used in game; illustrative state.
 #include "core/CombatHud.h"
+#include "core/PauseMenu.h"
 #include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
 
 int main(int argc,char** argv) {
-    if (argc<2) { std::cerr<<"Usage: hud_preview output.svg [width height] [help]\n"; return 1; }
+    if (argc<2) { std::cerr<<"Usage: hud_preview output.svg [width height] [help] [start|over|menu|controls|graphics|help-page]\n"; return 1; }
     float width=argc>2 ? std::stof(argv[2]) : 1280;
     float height=argc>3 ? std::stof(argv[3]) : 720;
     if (width<=0 || height<=0) return 1;
@@ -43,6 +44,17 @@ int main(int argc,char** argv) {
     if (banner=="over") { state.showMatchOverBanner=true; state.matchOverText="YOU WIN"; }
     HudGeometry hud;
     CombatHud::draw(hud,{width,height},state);
+    // Pause menu pages overlay the HUD exactly as in game.
+    PauseMenu::State menu;
+    menu.matchActive=true;
+    menu.hovered=1;
+    bool showMenu=true;
+    if (banner=="menu") menu.page=PauseMenu::Page::Root;
+    else if (banner=="controls") menu.page=PauseMenu::Page::Controls;
+    else if (banner=="graphics") menu.page=PauseMenu::Page::Graphics;
+    else if (banner=="help-page") menu.page=PauseMenu::Page::Help;
+    else showMenu=false;
+    if (showMenu) PauseMenu::draw(hud,{width,height},menu);
     std::ofstream out(argv[1]);
     out<<"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\""<<width<<"\" height=\""<<height<<"\">\n"
        <<"<rect width=\"100%\" height=\"100%\" fill=\"#47564c\"/>\n";

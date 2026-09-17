@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 #include <glm/glm.hpp>
 
@@ -166,6 +167,163 @@ std::vector<uint8_t> CrateTextureGenerator::generate(uint32_t size) {
             pixels[idx + 1] = static_cast<uint8_t>(glm::clamp(color.g, 0.0f, 1.0f) * 255.0f);
             pixels[idx + 2] = static_cast<uint8_t>(glm::clamp(color.b, 0.0f, 1.0f) * 255.0f);
             pixels[idx + 3] = 255;
+        }
+    }
+    return pixels;
+}
+
+namespace {
+
+// Signed-distance primitives in icon space: the face's centre is the origin
+// and a unit distance is kIconRadius of the face, so every icon is designed
+// inside roughly the unit disc and sits clear of the frame/nails.
+constexpr float kIconRadius = 0.30f;
+
+float sdCircle(glm::vec2 p, glm::vec2 c, float r) { return glm::length(p - c) - r; }
+float sdRoundedBox(glm::vec2 p, glm::vec2 c, glm::vec2 half, float r) {
+    glm::vec2 q = glm::abs(p - c) - half + glm::vec2(r);
+    return glm::length(glm::max(q, glm::vec2(0.0f))) + std::min(std::max(q.x, q.y), 0.0f) - r;
+}
+float sdSegment(glm::vec2 p, glm::vec2 a, glm::vec2 b, float thickness) {
+    glm::vec2 pa = p - a, ba = b - a;
+    float h = glm::clamp(glm::dot(pa, ba) / glm::dot(ba, ba), 0.0f, 1.0f);
+    return glm::length(pa - ba * h) - thickness;
+}
+float sdRing(glm::vec2 p, glm::vec2 c, float r, float thickness) {
+    return std::abs(glm::length(p - c) - r) - thickness;
+}
+// Filled triangle: for a convex shape the distance is the largest of the
+// signed distances to its edge lines (exact inside, an upper bound outside
+// near the corners -- adequate at the anti-aliasing widths used here).
+float sdTriangle(glm::vec2 p, glm::vec2 a, glm::vec2 b, glm::vec2 c) {
+    // Orient CCW so every inward-facing edge normal points the same way.
+    if ((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x) < 0.0f) std::swap(b, c);
+    float d = -1e9f;
+    for (auto [e0, e1] : {std::pair{a, b}, std::pair{b, c}, std::pair{c, a}}) {
+        glm::vec2 edge = e1 - e0;
+        glm::vec2 outward = glm::normalize(glm::vec2(edge.y, -edge.x));
+        d = std::max(d, glm::dot(p - e0, outward));
+    }
+    return d;
+}
+
+}  // namespace
+
+// Distance (negative inside) to the power-up's glyph. Each is a small
+// composition of the primitives above; shapes were chosen to read at a
+// glance from tank distance and to differ in silhouette, not just colour.
+float CrateTextureGenerator::iconDistance(PowerUpType type, glm::vec2 p) {
+    switch (type) {
+        case PowerUpType::ExtraShell: {
+            // Bullet-shaped shell (rounded nose, squared base with a driving
+            // band) with a "+" beside it.
+            glm::vec2 s(-0.28f, 0.05f);
+            float body = sdRoundedBox(p, s + glm::vec2(0.0f, 0.15f), glm::vec2(0.20f, 0.42f), 0.05f);
+            float nose = sdCircle(p, s + glm::vec2(0.0f, -0.30f), 0.20f);
+            float band = sdRoundedBox(p, s + glm::vec2(0.0f, 0.36f), glm::vec2(0.26f, 0.06f), 0.02f);
+            float shell = std::min({body, nose, band});
+            glm::vec2 c(0.48f, -0.30f);
+            float plus = std::min(sdRoundedBox(p, c, glm::vec2(0.27f, 0.07f), 0.02f),
+                                  sdRoundedBox(p, c, glm::vec2(0.07f, 0.27f), 0.02f));
+            return std::min(shell, plus);
+        }
+        case PowerUpType::IncreasedDamage: {
+            // Eight-point starburst: a blast.
+            float r = glm::length(p);
+            float a = std::atan2(p.y, p.x);
+            float spikes = 0.45f + 0.45f * (0.5f + 0.5f * std::cos(8.0f * a));
+            return r - spikes;
+        }
+        case PowerUpType::LargerSplash: {
+            // Expanding shockwave: a core plus two rings, the outer one heavier.
+            return std::min({sdCircle(p, glm::vec2(0.0f), 0.16f), sdRing(p, glm::vec2(0.0f), 0.50f, 0.06f),
+                             sdRing(p, glm::vec2(0.0f), 0.86f, 0.09f)});
+        }
+        case PowerUpType::AimAssist: {
+            // Ballistic arc ending in an arrowhead -- literally what the
+            // power-up draws on the HUD. A solid polyline rather than dots:
+            // at crate-on-the-horizon sizes a line leads the eye into the
+            // arrowhead, where detached dots read as a separate mark.
+            auto arc = [](float t) {
+                float x = -0.88f + 1.76f * t;
+                float k = 2.0f * t - 1.0f;
+                return glm::vec2(x, 0.42f - 0.85f * (1.0f - k * k));
+            };
+            constexpr int kSegments = 12;
+            constexpr float kLineEnd = 0.84f;  // the arrowhead covers the rest
+            float d = 1e9f;
+            for (int i = 0; i < kSegments; ++i) {
+                float t0 = kLineEnd * static_cast<float>(i) / kSegments;
+                float t1 = kLineEnd * static_cast<float>(i + 1) / kSegments;
+                d = std::min(d, sdSegment(p, arc(t0), arc(t1), 0.07f));
+            }
+            glm::vec2 tip = arc(1.0f);
+            glm::vec2 dir = glm::normalize(tip - arc(0.80f));
+            glm::vec2 perp(-dir.y, dir.x);
+            glm::vec2 back = tip - dir * 0.40f;
+            return std::min(d, sdTriangle(p, tip, back + perp * 0.21f, back - perp * 0.21f));
+        }
+        case PowerUpType::TighterAccuracy: {
+            // Crosshair: ring, centre dot and four ticks crossing the ring.
+            float d = std::min(sdRing(p, glm::vec2(0.0f), 0.60f, 0.08f), sdCircle(p, glm::vec2(0.0f), 0.14f));
+            for (glm::vec2 axis : {glm::vec2(1, 0), glm::vec2(0, 1)})
+                d = std::min({d, sdSegment(p, axis * 0.42f, axis * 0.92f, 0.08f),
+                              sdSegment(p, -axis * 0.42f, -axis * 0.92f, 0.08f)});
+            return d;
+        }
+        case PowerUpType::MoreFuel: {
+            // Jerry can: body with the pressed "X" ribs, top handle and spout.
+            glm::vec2 c(0.0f, 0.14f);
+            float body = sdRoundedBox(p, c, glm::vec2(0.52f, 0.52f), 0.09f);
+            float handle = sdRoundedBox(p, glm::vec2(-0.12f, -0.50f), glm::vec2(0.34f, 0.10f), 0.05f);
+            float spout = sdRoundedBox(p, glm::vec2(0.40f, -0.52f), glm::vec2(0.10f, 0.14f), 0.03f);
+            float d = std::min({body, handle, spout});
+            // Ribs are cut out of the body (wood shows through) rather than
+            // painted, so the can keeps a solid outline.
+            float rib = std::min(sdSegment(p, c + glm::vec2(-0.30f, -0.30f), c + glm::vec2(0.30f, 0.30f), 0.06f),
+                                 sdSegment(p, c + glm::vec2(-0.30f, 0.30f), c + glm::vec2(0.30f, -0.30f), 0.06f));
+            return std::max(d, -rib);
+        }
+    }
+    return 1e9f;
+}
+
+glm::vec3 CrateTextureGenerator::iconPaint(PowerUpType type) {
+    switch (type) {
+        case PowerUpType::ExtraShell: return {0.92f, 0.92f, 0.88f};      // white
+        case PowerUpType::IncreasedDamage: return {0.82f, 0.16f, 0.12f}; // red
+        case PowerUpType::LargerSplash: return {0.93f, 0.52f, 0.12f};    // orange
+        case PowerUpType::AimAssist: return {0.30f, 0.78f, 0.72f};       // teal (HUD accent)
+        case PowerUpType::TighterAccuracy: return {0.35f, 0.72f, 0.28f}; // green
+        case PowerUpType::MoreFuel: return {0.30f, 0.55f, 0.92f};        // blue (HUD fuel gauge)
+    }
+    return glm::vec3(1.0f);
+}
+
+std::vector<uint8_t> CrateTextureGenerator::stampIcon(const std::vector<uint8_t>& base, uint32_t size,
+                                                      PowerUpType type) {
+    std::vector<uint8_t> pixels = base;
+    const glm::vec3 paint = iconPaint(type);
+    // Anti-aliasing width of ~1.2 texels, expressed in icon units.
+    const float aa = 1.2f / (static_cast<float>(size) * kIconRadius);
+    for (uint32_t y = 0; y < size; ++y) {
+        for (uint32_t x = 0; x < size; ++x) {
+            float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(size);
+            float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(size);
+            glm::vec2 p = (glm::vec2(u, v) - glm::vec2(0.5f)) / kIconRadius;
+            float d = iconDistance(type, p);
+            if (d >= aa) continue;
+            float coverage = 1.0f - glm::smoothstep(-aa, aa, d);
+            // Spray-stencil wear: thin the paint over the grain's ridges so it
+            // sits on the wood rather than floating over it.
+            float wear = 0.78f + 0.22f * fbm(u * 38.0f + 5.3f, v * 38.0f + 2.1f, 2);
+            size_t idx = (static_cast<size_t>(y) * size + x) * 4;
+            glm::vec3 wood(pixels[idx] / 255.0f, pixels[idx + 1] / 255.0f, pixels[idx + 2] / 255.0f);
+            float lum = glm::dot(wood, glm::vec3(0.3f, 0.59f, 0.11f));
+            glm::vec3 color = glm::mix(wood, paint * (0.80f + 0.45f * lum), coverage * wear);
+            pixels[idx + 0] = static_cast<uint8_t>(glm::clamp(color.r, 0.0f, 1.0f) * 255.0f);
+            pixels[idx + 1] = static_cast<uint8_t>(glm::clamp(color.g, 0.0f, 1.0f) * 255.0f);
+            pixels[idx + 2] = static_cast<uint8_t>(glm::clamp(color.b, 0.0f, 1.0f) * 255.0f);
         }
     }
     return pixels;

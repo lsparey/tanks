@@ -224,6 +224,7 @@ as history, including terrain components this goal may replace.
 - [x] [Match flow and deterministic replay](#match-flow-and-deterministic-replay)
 - [x] [Menu-driven Freeroam / 1v1 Match selection](#menu-driven-freeroam--1v1-match-selection)
 - [x] [Front armor damage reduction](#front-armor-damage-reduction)
+- [x] [Escape pause menu](#escape-pause-menu)
 
 ### Tank and physics candidates
 
@@ -554,6 +555,7 @@ Work is planned in this order; later items depend on earlier ones.
 - [x] [Match flow and deterministic replay](#match-flow-and-deterministic-replay)
 - [x] [Menu-driven Freeroam / 1v1 Match selection](#menu-driven-freeroam--1v1-match-selection)
 - [x] [Front armor damage reduction](#front-armor-damage-reduction)
+- [x] [Escape pause menu](#escape-pause-menu)
 
 ### Match rules and turn state
 
@@ -871,9 +873,12 @@ until collected in the first pass.
   this shot or permanent); the HUD shows the inventory and the selected item.
 
 Status: completed. The three expiry categories map onto the six power-ups
-as: extra shell = this turn (tops up `shellsRemaining`, which
-`notifyProjectilesSettled`'s existing "shells remain -> AimFire again"
-path already turns into a real extra shot); increased damage, larger
+as: extra shell = this turn (tops up `shellsRemaining` the moment it's
+collected -- originally it went through the inventory/arm flow, which in
+play read as "I picked up the extra shell crate and didn't get an extra
+shot"; `notifyProjectilesSettled`'s existing "shells remain -> Turn again"
+path turns the top-up into a real extra shot, and the per-turn reset makes
+it lapse rather than bank); increased damage, larger
 splash, aim assist = this shot (`MatchState::consumeArmedPowerUp` resets
 `damageMultiplier`/`splashRadiusMultiplier` to defaults every call, so an
 unrenewed bonus provably expires after one shot); tighter accuracy, more
@@ -912,6 +917,19 @@ a visual comparison -- this implementation does not scale the explosion
 effect's visual size by damage dealt, only the recorded health change, so
 there is no separate visual signature to screenshot beyond what the number
 itself already covers.
+
+Follow-up (crate icons): the original "contents are not visible until
+collected" caveat no longer holds. Each `Box` now carries its `powerUp`,
+dealt at spawn as a shuffled deck (every type at least once across the
+eight crates, the remainder random) and re-rolled when `collectBox`
+relocates it, so the pickup grants exactly what the crate showed.
+`CrateTextureGenerator::stampIcon` spray-stencils a per-type icon (shell
+"+" white, starburst red, shockwave rings orange, trajectory arc with
+arrowhead teal, crosshair green, jerry can blue -- matching the HUD's own colour
+language where one exists) onto a copy of the shared wood texture; one
+material set per type, bound per crate at draw time. `Mesh::cube`'s UVs
+gained a fixed per-face orientation (upright, unmirrored on every side) so
+the icon reads correctly from any angle. Free play binds the plain crate.
 
 ### Opponent AI
 
@@ -1196,8 +1214,13 @@ returning) -- the setter call would have silently overwritten whatever the
 menu had just chosen. `selectTerrain` gained a fifth by-reference out-param
 (`bool& matchEnabled`), following the exact same shape its existing
 `valleyTerrain`/`landform`/`terrainResolution`/`refinementPasses` params
-already use, and its initial value seeds the menu's own default toggle
-state (so `--match --menu` together still pre-selects 1V1 MATCH).
+already use. The menu now opens with 1V1 MATCH pre-selected regardless of
+the flag's incoming value (it originally seeded the toggle, so a bare launch
+defaulted to FREEROAM) -- 1v1 is the game; Freeroam is the rendering/terrain
+sandbox, one click away. Under 1v1 the free camera is also removed from the
+`C` camera cycle (hull follow <-> gun aim only), since a free-flying camera
+would let a player scout the opponent and would fight the turn camera's
+choreography; the H controls overlay drops the free-camera lines to match.
 
 Two new full-width buttons ("FREEROAM"/"1V1 MATCH") were added by literally
 duplicating the existing terrain-mode buttons' pattern (struct array,
@@ -1269,6 +1292,29 @@ forcing one directly behind it dropped health by the full 1.0 (3.0 ->
 2.0) -- confirming the cone check engages correctly in both directions,
 not just that the code compiles. All 31 tests pass; free play is
 unaffected (the whole check lives inside `if (matchEnabled_)`).
+
+### Escape pause menu
+
+Escape no longer quits: it opens an in-game pause menu (`src/core/PauseMenu.h/
+.cpp`, drawn through the same `HudGeometry`/`HudCanvas` path as the combat
+HUD so `hud_preview` and `combat_hud_test` cover it) with four options --
+CONTROLS (the key-binding table, shared with the H overlay via
+`PauseMenu::controlLines` so the two can't drift), GRAPHICS (shadows, tree
+shadow mode, ambient occlusion, tree detail, reflections, TAA and sound --
+each row routes through the same member toggles the F5-F11 keys now call,
+so both paths do identical history/profiler bookkeeping), HELP (a
+how-to-play primer plus every crate stencil, rasterised from the very same
+signed-distance glyphs `CrateTextureGenerator` stamps onto the crates, with
+what each grants) and QUIT. Escape backs out of a sub-page or resumes.
+
+While open the world is genuinely frozen, not hidden: the frame's
+`deltaTime` is forced to zero and every dt-independent action (F-key
+toggles, firing, arming, restart, both AI drivers, camera mouse-look) is
+gated on `!pauseMenuOpen_`. The cursor is shown for the menu and re-captured
+on resume with `InputManager::resetMouse()` so the jump doesn't read as a
+look input. `HudGeometry::kMaxVertices` doubled to 262144: the stroke font
+costs ~250 vertices per glyph and the Help page over a full HUD exceeded
+the old cap.
 
 ### Gameplay recommendation
 

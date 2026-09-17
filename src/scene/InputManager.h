@@ -24,6 +24,10 @@ public:
     // update() calls until released.
     void holdKey(int glfwKey);
     void releaseKey(int glfwKey);
+    // Forget the last cursor position so the next update() reports a zero
+    // delta -- call after the cursor has been shown/hidden (e.g. around the
+    // pause menu), where its position jumps without the player moving it.
+    void resetMouse() { firstUpdate_ = true; }
 
 private:
     GLFWwindow* window_;

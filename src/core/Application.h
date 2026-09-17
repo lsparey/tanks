@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "FrameProfiler.h"
+#include "PauseMenu.h"
 
 #include "../audio/AudioEngine.h"
 #include "../render/AccelerationStructure.h"
@@ -169,6 +170,30 @@ private:
     glm::vec3 blendFromFront_{0.0f, 0.0f, -1.0f};
     bool showHudHelp_ = false;
     bool prevHudHelpKeyDown_ = false;
+    // Escape pause menu (see PauseMenu.h). While open the simulation runs
+    // with a zero timestep and every dt-independent game action (toggles,
+    // firing, arming, AI decisions, camera look) is gated off, so the world
+    // is genuinely frozen underneath the menu rather than merely hidden.
+    bool pauseMenuOpen_ = false;
+    PauseMenu::State pauseMenu_;
+    bool prevEscapeKeyDown_ = false;
+    bool prevMenuEnterDown_ = false, prevMenuUpDown_ = false, prevMenuDownDown_ = false;
+    bool prevMenuMouseDown_ = false;
+    void openPauseMenu();
+    void closePauseMenu();
+    void updatePauseMenu();
+    void activatePauseMenuItem(int item);
+    PauseMenu::Graphics graphicsOptions() const;
+    // Renderer/audio option toggles shared by the F-keys and the pause
+    // menu's Graphics page, so both paths do exactly the same bookkeeping
+    // (history resets, profiler restarts).
+    void toggleShadows();
+    void cycleTreeShadows();
+    void toggleAmbientOcclusion();
+    void toggleTreeDetail();
+    void toggleReflections();
+    void toggleAntiAliasing();
+    void toggleSound();
     bool prevScreenshotKeyDown_ = false;
     // F5 toggles sun shadows/AO off entirely (see basic.frag's
     // rawShadow/rawAO) -- lets a perf/quality comparison run without
@@ -248,7 +273,11 @@ private:
     std::unique_ptr<Texture> terrainFieldTexture_;
     std::unique_ptr<Texture> trackTexture_;
     std::unique_ptr<Texture> cloudTexture_;
-    std::unique_ptr<Texture> crateTexture_;
+    // One crate texture per power-up (stencilled icon, see
+    // CrateTextureGenerator::stampIcon) plus a plain one at index
+    // kPlainCrateMaterial for free play, where crates hold nothing.
+    static constexpr size_t kPlainCrateMaterial = kPowerUpTypeCount;
+    std::array<std::unique_ptr<Texture>, kPowerUpTypeCount + 1> crateTextures_;
     std::unique_ptr<Texture> whiteTexture_;
     std::unique_ptr<Texture> camoTexture_;
     std::unique_ptr<Texture> opponentCamoTexture_;
@@ -265,7 +294,7 @@ private:
     VkDescriptorSet terrainMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet trackMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet cloudMaterialSet_ = VK_NULL_HANDLE;
-    VkDescriptorSet crateMaterialSet_ = VK_NULL_HANDLE;
+    std::array<VkDescriptorSet, kPowerUpTypeCount + 1> crateMaterialSets_{};  // indexed like crateTextures_
     VkDescriptorSet whiteMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet camoMaterialSet_ = VK_NULL_HANDLE;
     VkDescriptorSet opponentCamoMaterialSet_ = VK_NULL_HANDLE;
@@ -507,9 +536,10 @@ private:
                           float waveAmplitude);
     void destroyBox(Box& box);
     // --match only (see the tank-vs-box overlap check in
-    // updateProjectilesAndCollisions): grants the player a random power-up
-    // (see MatchState::collectPowerUp) and relocates this same Box to a
-    // fresh valid spot instead of destroying it -- "top up as they are
+    // updateProjectilesAndCollisions): grants the collector the power-up
+    // the crate was showing (Box::powerUp, see MatchState::collectPowerUp),
+    // then relocates this same Box to a fresh valid spot with a freshly
+    // rolled power-up instead of destroying it -- "top up as they are
     // collected" (PLAN.md). Free play keeps destroyBox unchanged.
     void collectBox(Box& box, CombatantId collector);
     void updateTrackMarks(float deltaTime);

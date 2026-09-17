@@ -24,7 +24,8 @@ struct Projectile {
     // exceed even a generous lifetime -- see tests/ProjectileTest.cpp's
     // (elevation, power) table, which documents this rather than hiding it:
     // an extreme shot expiring mid-flight rather than visibly landing is an
-    // accepted limitation, not a bug.
+    // accepted limitation, not a bug. In practice the map boundary ends
+    // most long shots first (see Application::updateProjectilesAndCollisions).
     float lifetimeRemaining = 12.0f;
     bool alive = true;
     // Distance travelled since the last smoke-trail puff was dropped --

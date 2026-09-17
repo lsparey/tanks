@@ -5,6 +5,8 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include "PowerUp.h"
+
 // A static destructible target. Geometry is a single shared unit-cube mesh
 // (owned by whoever draws boxes); each Box just carries a
 // position/up/yaw/size/aliveness and positions the shared mesh via
@@ -24,6 +26,11 @@ struct Box {
     float yaw = 0.0f;
     float size;
     bool alive = true;
+    // What collecting this crate grants under --match (see
+    // Application::collectBox); decided at spawn/relocation rather than on
+    // pickup so the crate's stencilled icon can show it in advance. Free
+    // play ignores it (crates are purely destructible there).
+    PowerUpType powerUp = PowerUpType::ExtraShell;
 
     glm::mat4 worldMatrix() const {
         glm::vec3 upN = glm::normalize(up);

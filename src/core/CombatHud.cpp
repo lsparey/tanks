@@ -1,5 +1,8 @@
 #include "CombatHud.h"
 
+#include "HudCanvas.h"
+#include "PauseMenu.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -7,49 +10,8 @@
 #include <string>
 
 namespace CombatHud {
-namespace {
-const glm::vec3 scrim(.03f,.04f,.05f);
-const glm::vec3 white(.95f,.96f,.97f), grey(.62f,.66f,.70f);
-const glm::vec3 accent(.38f,.79f,.76f), warn(.96f,.56f,.36f);
-
-// Layout in logical pixels, converted once here to the renderer's +Y-up NDC.
-struct Canvas {
-    HudGeometry& hud;
-    glm::vec2 size;
-    glm::vec2 ndc(glm::vec2 p) const { return {2*p.x/size.x-1,1-2*p.y/size.y}; }
-    void rect(float x, float y, float w, float h, glm::vec3 color, float alpha=1) {
-        hud.addQuad(ndc({x+w/2,y+h/2}),{w/size.x,h/size.y},color,alpha);
-    }
-    void text(std::string_view value, float x, float y, float pixel=1.5f, glm::vec3 color=white) {
-        hud.addText(value,ndc({x,y}),{2*pixel/size.x,2*pixel/size.y},color);
-    }
-    void centered(std::string_view value, float x, float y, float pixel=1.5f, glm::vec3 color=white) {
-        text(value,x-(value.size()*6-1)*pixel/2,y,pixel,color);
-    }
-    void line(glm::vec2 a, glm::vec2 b, float width, glm::vec3 color) {
-        glm::vec2 d=b-a;
-        float length=glm::length(d);
-        if (length<.001f) return;
-        glm::vec2 n=glm::vec2(-d.y,d.x)*(width*.5f/length);
-        hud.addTriangle(ndc(a+n),ndc(a-n),ndc(b-n),color);
-        hud.addTriangle(ndc(a+n),ndc(b-n),ndc(b+n),color);
-    }
-    // Borderless translucent backing keeps text legible over bright terrain.
-    void chip(float x,float y,float w,float h,float alpha=.42f) { rect(x,y,w,h,scrim,alpha); }
-    void diamond(glm::vec2 p, float r, glm::vec3 color) {
-        line(p+glm::vec2(0,-r),p+glm::vec2(r,0),1.2f,color);
-        line(p+glm::vec2(r,0),p+glm::vec2(0,r),1.2f,color);
-        line(p+glm::vec2(0,r),p+glm::vec2(-r,0),1.2f,color);
-        line(p+glm::vec2(-r,0),p+glm::vec2(0,-r),1.2f,color);
-    }
-};
-
-std::string fixed(float value, int decimals=0) {
-    char buffer[32];
-    std::snprintf(buffer,sizeof(buffer),"%.*f",decimals,value);
-    return buffer;
-}
-}
+using namespace HudStyle;
+using Canvas = HudCanvas;
 
 glm::vec2 mapPosition(glm::vec3 position, float boundaryHalfExtent) {
     float half=std::max(boundaryHalfExtent,.001f);
@@ -64,8 +26,7 @@ float headingDegrees(glm::vec3 direction) {
 
 void draw(HudGeometry& hud, glm::vec2 viewportPixels, const State& s) {
     if (viewportPixels.x<=0 || viewportPixels.y<=0) return;
-    float scale=std::min({viewportPixels.x/1000.f,viewportPixels.y/700.f,1.5f});
-    Canvas c{hud,viewportPixels/scale};
+    Canvas c{hud,viewportPixels/canvasScale(viewportPixels)};
     float w=c.size.x,h=c.size.y;
     size_t remaining=std::count_if(s.targets.begin(),s.targets.end(),[](const Box& b){return b.alive;});
     size_t destroyed=s.targets.size()-remaining;
@@ -99,15 +60,54 @@ void draw(HudGeometry& hud, glm::vec2 viewportPixels, const State& s) {
         c.chip(w/2-labelW/2,96,labelW,26);
         c.centered(s.turnLabel,w/2,102,1.3f,accent);
     }
-    if (s.matchActive && s.opponentPresent) {
-        const auto& o=s.opponentCombat;
-        float ox=w-228,oy=100;
-        c.chip(ox,oy,208,62);
-        c.text("OPPONENT",ox+14,oy+7,1.3f,grey);
-        c.text("HP "+fixed(o.health,1)+"/"+fixed(o.healthMax,1),ox+14,oy+26,1.1f,o.alive?white:warn);
-        c.text("FUEL "+fixed(o.fuelRemaining)+"/"+fixed(o.fuelCapacity),ox+14,oy+42,1.1f,grey);
-        c.text("SHL "+std::to_string(o.shellsRemaining)+"/"+std::to_string(o.shellsPerTurn),ox+14,oy+58,1.1f,grey);
-    }
+    // Vitals panel shared by both combatants: chunked health, a fuel gauge
+    // and ammo pips, laid out [label|bar|value] normally or mirrored to
+    // [value|bar|label] for the opponent -- so the player's panel (bottom
+    // left) and the opponent's (top right) read as facing mirror images,
+    // beat-em-up style. Returns the panel height so the caller can stack
+    // other elements against it without duplicating the layout math.
+    constexpr float kPanelPadX=14,kPanelLabelW=42,kPanelValueW=64,kPanelGapCol=8,
+                    kPanelRowH=13,kPanelGapY=5,kPanelPadY=9,kPanelHeaderH=15;
+    auto combatantPanel=[&](float x,float y,float panelW,bool mirrored,std::string_view header,
+                             const State::CombatantHud& cs)->float {
+        float barW=panelW-kPanelPadX*2-kPanelLabelW-kPanelValueW-kPanelGapCol*2;
+        float headerH=header.empty() ? 0.f : kPanelHeaderH;
+        float panelH=headerH+kPanelPadY*2+kPanelRowH*3+kPanelGapY*2;
+        c.chip(x,y,panelW,panelH);
+        c.rect(x,y,panelW,1.5f,accent,.55f);          // dash-trim top edge
+        c.line({x,y+10},{x+10,y},1.2f,accent);          // angled corner cut
+        glm::vec3 valueColor=cs.alive?white:warn;
+        float ry=y+kPanelPadY;
+        if (!header.empty()) { c.text(header,x+kPanelPadX,y+5,1.15f,grey); ry=y+headerH+kPanelPadY; }
+
+        int healthSegments=std::max(1,int(std::round(cs.healthMax)));
+        float healthFrac=cs.healthMax>0 ? cs.health/cs.healthMax : 0.f;
+        float fuelFrac=cs.fuelCapacity>0 ? cs.fuelRemaining/cs.fuelCapacity : 0.f;
+        int shellTotal=std::clamp(std::max(cs.shellsRemaining,cs.shellsPerTurn),1,6);
+        glm::vec3 healthColor=healthFrac<=1.f/3.f ? warn : (healthFrac<=2.f/3.f ? amber : accent);
+        glm::vec3 fuelColor=fuelFrac<=.25f ? warn : fuelBlue;
+
+        float leftColX=x+kPanelPadX;
+        float leftColW=mirrored?kPanelValueW:kPanelLabelW;
+        float barX=leftColX+leftColW+kPanelGapCol;
+        float rightColX=barX+barW+kPanelGapCol;
+        auto label=[&](std::string_view text){ c.text(text,mirrored?rightColX:leftColX,ry+1,1.0f,grey); };
+        auto value=[&](std::string text){ c.text(text,mirrored?leftColX:rightColX,ry+1,.95f,valueColor); };
+
+        label("HULL"); value(fixed(cs.health,1)+"/"+fixed(cs.healthMax,1));
+        c.chunkedBar(barX,ry-2,barW,kPanelRowH-2,healthSegments,healthFrac,healthColor,mirrored);
+        ry+=kPanelRowH+kPanelGapY;
+
+        label("FUEL"); value(fixed(cs.fuelRemaining)+"/"+fixed(cs.fuelCapacity));
+        c.chunkedBar(barX,ry-2,barW,kPanelRowH-2,1,fuelFrac,fuelColor,mirrored);
+        ry+=kPanelRowH+kPanelGapY;
+
+        label("AMMO"); value(std::to_string(cs.shellsRemaining)+"/"+std::to_string(cs.shellsPerTurn));
+        c.pips(barX,ry-2,shellTotal,cs.shellsRemaining,mirrored,accent);
+
+        return panelH;
+    };
+    constexpr float kVitalsPanelW=320;
 
     // Big center-screen banner (match start / match over) -- placed well
     // above the reticle/turn-label cluster (which occupies roughly y 14 to
@@ -159,37 +159,46 @@ void draw(HudGeometry& hud, glm::vec2 viewportPixels, const State& s) {
         previousTrajectoryPoint = screenPoint;
     }
 
-    // Speed plus gun angles in one compact cluster; turret state also shows
-    // on the minimap aim line, so no vehicle diagram is needed. y stays
-    // h-80 (unchanged) for 0 or 1 extra lines -- the original two cases,
-    // preserved exactly so free play's HUD position never moves. A second
-    // extra line (match stats *and* inventory both showing) shifts the top
-    // up by one line's height instead, keeping the same bottom margin the
-    // single-extra-line case already had rather than growing past it.
+    // Speed plus gun angles in one compact cluster, centered at the bottom
+    // of the screen between the two vitals panels below -- a car-dash-style
+    // speedo sitting between the driver's and opponent's gauge clusters. y
+    // stays h-80 (unchanged) whether or not the inventory line below it is
+    // showing, so free play's HUD height never moves, only its x shifted
+    // from the left edge to centered.
     std::string speed=fixed(std::abs(s.speed),1);
-    int extraLines=(s.inventoryText.empty()?0:1)+(s.matchActive?1:0);
-    float y=h-80-16.f*std::max(0,extraLines-1);
-    c.chip(20,y,208,62.f+16.f*extraLines);
-    c.text(speed,34,y+7,2.6f,s.speed<-.05f ? warn : white);
-    c.text("M/S",34+speed.size()*6*2.6f+4,y+7+7*(2.6f-1.2f),1.2f,grey);
-    c.text("EL "+fixed(glm::degrees(s.gunElevation))+"  TRV "+fixed(std::remainder(glm::degrees(s.turretYaw),360.f)),34,y+32,1.1f,grey);
-    c.text("PWR "+fixed(s.shotPower*100.f)+"%",34,y+48,1.1f,grey);
-    float nextLineY=y+64;
-    if (s.matchActive) {
-        const auto& p=s.playerCombat;
-        c.text("HP "+fixed(p.health,1)+"/"+fixed(p.healthMax,1)+"  FUEL "+fixed(p.fuelRemaining)+"/"+fixed(p.fuelCapacity)+
-                   "  SHL "+std::to_string(p.shellsRemaining)+"/"+std::to_string(p.shellsPerTurn),
-               34,nextLineY,0.95f,p.alive?white:warn);
-        nextLineY+=16;
-    }
+    int extraLines=s.inventoryText.empty()?0:1;
+    float y=h-80;
+    float telemetryX=w/2-104;
+    c.chip(telemetryX,y,208,62.f+16.f*extraLines);
+    c.text(speed,telemetryX+14,y+7,2.6f,s.speed<-.05f ? warn : white);
+    c.text("M/S",telemetryX+14+speed.size()*6*2.6f+4,y+7+7*(2.6f-1.2f),1.2f,grey);
+    c.text("EL "+fixed(glm::degrees(s.gunElevation))+"  TRV "+fixed(std::remainder(glm::degrees(s.turretYaw),360.f)),telemetryX+14,y+32,1.1f,grey);
+    c.text("PWR "+fixed(s.shotPower*100.f)+"%",telemetryX+14,y+48,1.1f,grey);
     // Power-up inventory (see PLAN.md's "Power-up crates") -- only present
     // under --match with something held; pre-formatted by the caller so
     // this stays a dumb renderer with no MatchState/PowerUpType dependency.
-    if (!s.inventoryText.empty()) c.text(std::string(s.inventoryText),34,nextLineY,0.95f,accent);
+    if (!s.inventoryText.empty()) c.text(std::string(s.inventoryText),telemetryX+14,y+64,0.95f,accent);
+
+    // Both combatants' vitals panels sit flush along the bottom edge --
+    // player bottom-left, opponent bottom-right (mirrored), the telemetry
+    // cluster above centered between them. Both carry a header ("PLAYER"/
+    // "OPPONENT") now, so they're the same height and can share one
+    // bottom-anchored y instead of each computing its own.
+    if (s.matchActive) {
+        constexpr float kVitalsBottom=18.f;
+        float panelH=kPanelHeaderH+kPanelPadY*2+kPanelRowH*3+kPanelGapY*2;
+        float panelY=h-kVitalsBottom-panelH;
+        combatantPanel(20,panelY,kVitalsPanelW,false,"PLAYER",s.playerCombat);
+        if (s.opponentPresent) {
+            combatantPanel(w-kVitalsPanelW-20,panelY,kVitalsPanelW,true,"OPPONENT",s.opponentCombat);
+        }
+    }
 
     // Entire playable area, independent of camera position. The map shows
     // known static crate objectives, not invented enemy/spotting systems.
-    float mapSize=150,mapX=w-mapSize-30,mapY=h-mapSize-56;
+    // Anchored top-right (freeing up the bottom row for the vitals panels);
+    // the diagnostics/FPS chip below reads its own y off this one's bottom.
+    float mapSize=150,mapX=w-mapSize-30,mapY=20;
     c.chip(mapX-10,mapY-10,mapSize+20,mapSize+42);
     c.rect(mapX,mapY,mapSize,mapSize,scrim,.5f);
     c.rect(mapX,mapY,mapSize,1,grey,.4f);
@@ -205,7 +214,10 @@ void draw(HudGeometry& hud, glm::vec2 viewportPixels, const State& s) {
     glm::vec2 right(-direction.y,direction.x);
     c.hud.addTriangle(c.ndc(player+direction*6.f),c.ndc(player-direction*4.f-right*4.f),
                       c.ndc(player-direction*4.f+right*4.f),accent);
-    glm::vec2 aimDirection(-s.aimDirection.x,-s.aimDirection.z);
+    // Same +X east / -Z north convention as mapPosition and the heading
+    // arrow above -- an earlier version negated x too, mirroring the gun
+    // line east/west so it never lined up with the crate markers.
+    glm::vec2 aimDirection(s.aimDirection.x,-s.aimDirection.z);
     aimDirection/=std::max(glm::length(aimDirection),.001f);
     glm::vec2 gunEnd=glm::clamp(player+aimDirection*14.f,{mapX,mapY},{mapX+mapSize,mapY+mapSize});
     c.line(player,gunEnd,1.5f,white);
@@ -214,26 +226,36 @@ void draw(HudGeometry& hud, glm::vec2 viewportPixels, const State& s) {
 
     // FPS stays visible at all times; F3 expands it with the GPU frame time
     // (only measured while diagnostics are on) and the render toggles.
+    // Stacked below the minimap (now top-right) with a fixed 10px gap.
+    float diagY=mapY+mapSize+42;
     if (s.diagnostics) {
         bool gpu=s.gpuMs>0;
-        c.chip(w-206,20,186,gpu ? 72 : 58);
-        c.text("FPS "+fixed(s.fps),w-192,27,1.4f);
-        if (gpu) c.text("GPU "+fixed(s.gpuMs,1)+" MS",w-192,45,1.1f,grey);
-        float ly=gpu ? 59 : 45;
+        c.chip(w-206,diagY,186,gpu ? 72 : 58);
+        c.text("FPS "+fixed(s.fps),w-192,diagY+7,1.4f);
+        if (gpu) c.text("GPU "+fixed(s.gpuMs,1)+" MS",w-192,diagY+25,1.1f,grey);
+        float ly=diagY+(gpu ? 39 : 25);
         c.text(s.treeLod ? "F8 TREE LOD ON" : "F8 TREE LOD OFF",w-192,ly,1.1f,grey);
         c.text(s.reflectionRays ? "F9 REFLECTIONS ON" : "F9 REFLECTIONS OFF",w-192,ly+14,1.1f,grey);
     } else {
-        c.chip(w-116,20,96,20,.35f);
-        c.text("FPS "+fixed(s.fps),w-104,25,1.2f,grey);
+        c.chip(w-116,diagY,96,20,.35f);
+        c.text("FPS "+fixed(s.fps),w-104,diagY+5,1.2f,grey);
     }
     if (s.help) {
-        c.chip(20,68,300,254,.55f);
+        // Same table as the pause menu's Controls page (see
+        // PauseMenu::controlLines); free-camera lines are omitted under
+        // --match, where C never reaches the free camera.
+        auto lines=PauseMenu::controlLines();
+        size_t shown=0;
+        for (const auto& line : lines) if (!(s.matchActive && line.freeCameraOnly)) ++shown;
+        c.chip(20,68,300,44+15.f*shown,.55f);
         c.text("CONTROLS",34,80,1.5f);
-        const char* lines[]={"W/S       DRIVE / REVERSE","A/D       STEER","Q/E       TRAVERSE TURRET",
-            "R/F       GUN UP / DOWN","T/G       SHOT POWER +/-","LMB/SPACE FIRE SINGLE SHOT","C         CYCLE CAMERA",
-            "ARROWS    MOVE FREE CAMERA","SPACE/CTRL CAMERA UP / DOWN","MOUSE     LOOK IN FREE CAMERA",
-            "F3        DIAGNOSTICS","F12       SCREENSHOT","N         RESTART MATCH (WHEN OVER)","ESC       QUIT"};
-        for (size_t i=0;i<std::size(lines);++i) c.text(lines[i],34,104+i*15,1.2f,grey);
+        size_t row=0;
+        for (const auto& line : lines) {
+            if (s.matchActive && line.freeCameraOnly) continue;
+            c.text(line.key,34,104+row*15,1.2f,grey);
+            c.text(line.action,34+11*6*1.2f,104+row*15,1.2f,grey);
+            ++row;
+        }
     }
 }
 }

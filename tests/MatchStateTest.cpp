@@ -47,7 +47,7 @@ int main() {
     // of remaining fuel -- see PLAN.md's "fire at any time" design change).
     {
         MatchState m;
-        m.spendFuel(19.5f);
+        m.spendFuel(MatchState::kDefaultFuelCapacity - 0.5f);
         require(m.phase() == Phase::Turn, "Turn phase persists while fuel remains");
         require(m.combatant(CombatantId::Player).fuelRemaining == 0.5f, "Partial fuel spend recorded");
         m.spendFuel(0.5f);
@@ -328,21 +328,24 @@ int main() {
                 "Edge-distance splash hits do zero damage");
     }
 
-    // 15. collectPowerUp: the four inventory types accumulate in powerUps[];
-    // MoreFuel/TighterAccuracy apply immediately and permanently instead,
-    // never touching powerUps[].
+    // 15. collectPowerUp: the three inventory types accumulate in powerUps[];
+    // ExtraShell/MoreFuel/TighterAccuracy apply immediately instead, never
+    // touching powerUps[].
     {
         MatchState m;
-        for (PowerUpType type : {PowerUpType::ExtraShell, PowerUpType::IncreasedDamage,
-                                  PowerUpType::LargerSplash, PowerUpType::AimAssist}) {
+        for (PowerUpType type : {PowerUpType::IncreasedDamage, PowerUpType::LargerSplash, PowerUpType::AimAssist}) {
             m.collectPowerUp(CombatantId::Player, type);
             require(m.combatant(CombatantId::Player).powerUps[static_cast<size_t>(type)] == 1,
                     "Inventory power-up is held after collection");
         }
-        float fuelBefore = m.combatant(CombatantId::Player).fuelCapacity;
+        m.spendFuel(7.0f);  // part-way through a drive, so "remaining" != "capacity"
+        float capacityBefore = m.combatant(CombatantId::Player).fuelCapacity;
+        float remainingBefore = m.combatant(CombatantId::Player).fuelRemaining;
         m.collectPowerUp(CombatantId::Player, PowerUpType::MoreFuel);
-        require(m.combatant(CombatantId::Player).fuelCapacity == fuelBefore + 10.0f,
+        require(m.combatant(CombatantId::Player).fuelCapacity == capacityBefore + 10.0f,
                 "MoreFuel applies immediately to fuelCapacity");
+        require(m.combatant(CombatantId::Player).fuelRemaining == remainingBefore + 10.0f,
+                "MoreFuel also tops up the current tank, usable this turn");
         require(m.combatant(CombatantId::Player).powerUps[static_cast<size_t>(PowerUpType::MoreFuel)] == 0,
                 "MoreFuel is never held in inventory");
         require(m.combatant(CombatantId::Player).accuracyBonus == 0.0f, "No accuracy bonus yet");
@@ -381,16 +384,28 @@ int main() {
                 "Consuming with nothing armed changes nothing");
     }
     {
+        // ExtraShell: applied on pickup, no arming step -- an actual second
+        // shot this turn, and it lapses (not banked) at the turn boundary.
         MatchState m;
-        m.collectPowerUp(CombatantId::Player, PowerUpType::ExtraShell);
-        m.armPowerUp(PowerUpType::ExtraShell);
         int shellsBefore = m.combatant(CombatantId::Player).shellsRemaining;
-        m.consumeArmedPowerUp();
+        m.collectPowerUp(CombatantId::Player, PowerUpType::ExtraShell);
         require(m.combatant(CombatantId::Player).shellsRemaining == shellsBefore + 1,
-                "ExtraShell grants one more shell this turn");
+                "ExtraShell grants one more shell immediately on collection");
         require(m.combatant(CombatantId::Player).powerUps[static_cast<size_t>(PowerUpType::ExtraShell)] == 0,
-                "ExtraShell is consumed from inventory");
-        require(!m.combatant(CombatantId::Player).armedPowerUp.has_value(), "Consuming clears the armed selection");
+                "ExtraShell is never held in inventory");
+        m.armPowerUp(PowerUpType::ExtraShell);
+        require(!m.combatant(CombatantId::Player).armedPowerUp.has_value(), "ExtraShell cannot be armed");
+        m.recordShotFired();
+        m.notifyProjectilesSettled();
+        require(m.activeCombatant() == CombatantId::Player && m.phase() == Phase::Turn,
+                "Player keeps the turn for the extra shot");
+        m.recordShotFired();
+        m.notifyProjectilesSettled();
+        require(m.activeCombatant() == CombatantId::Opponent, "Turn passes once the extra shot is spent");
+        m.recordShotFired();
+        m.notifyProjectilesSettled();
+        require(m.combatant(CombatantId::Player).shellsRemaining == m.combatant(CombatantId::Player).shellsPerTurn,
+                "An unused extra shell would not carry over: shells reset to shellsPerTurn each turn");
     }
     {
         MatchState m;

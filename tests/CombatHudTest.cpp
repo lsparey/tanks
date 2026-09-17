@@ -1,4 +1,6 @@
 #include "core/CombatHud.h"
+#include "core/PauseMenu.h"
+#include "core/HudCanvas.h"
 
 #include <cmath>
 #include <stdexcept>
@@ -150,4 +152,63 @@ int main() {
     require(hud.vertices().empty(),"Minimized viewport emits no geometry");
     hud.addQuad({0,0},{.1,.1},{1,1,1});
     require(hud.vertices().front().color.a==1,"Existing menu quads remain opaque");
+
+    // Pause menu: every page draws complete, finite, in-viewport geometry at
+    // the smallest and an oversized viewport, its hit rectangles stay inside
+    // the logical canvas, and every button is reachable by focus index.
+    for (auto page : {PauseMenu::Page::Root,PauseMenu::Page::Controls,PauseMenu::Page::Graphics,PauseMenu::Page::Help}) {
+        for (bool match : {false,true}) {
+            PauseMenu::State menu;
+            menu.page=page;
+            menu.matchActive=match;
+            for (auto extent : {glm::vec2(640,480),glm::vec2(1280,720),glm::vec2(3440,1440),glm::vec2(720,1280)}) {
+                auto buttons=PauseMenu::layout(extent,menu);
+                require(!buttons.empty(),"Every pause menu page has something to activate");
+                glm::vec2 canvas=extent/HudStyle::canvasScale(extent);
+                for (const auto& b : buttons)
+                    require(b.rect.x>=0 && b.rect.y>=0 && b.rect.x+b.rect.w<=canvas.x && b.rect.y+b.rect.h<=canvas.y,
+                            "Pause menu buttons stay inside the canvas");
+                menu.focus=int(buttons.size())-1;
+                menu.hovered=0;
+                hud.begin();
+                PauseMenu::draw(hud,extent,menu);
+                require(!hud.vertices().empty() && hud.vertices().size()%3==0,"Pause menu draws complete triangles");
+                require(hud.vertices().size()<HudGeometry::kMaxVertices,"Pause menu fits upload capacity");
+                for (auto& v : hud.vertices()) {
+                    require(std::isfinite(v.position.x) && std::isfinite(v.position.y),"Finite pause menu geometry");
+                    require(std::abs(v.position.x)<=1.001f && std::abs(v.position.y)<=1.001f,"Pause menu stays in viewport");
+                    require(v.color.a>=0 && v.color.a<=1,"Valid pause menu opacity");
+                }
+            }
+        }
+    }
+    require(PauseMenu::layout({0,0},PauseMenu::State{}).empty(),"Minimized viewport has no pause menu buttons");
+
+    // Minimap gun line follows the same +X-east convention as mapPosition:
+    // aiming due east (+X) versus due west (-X) must move the line's
+    // geometry to opposite sides -- with everything else identical, the
+    // east-aimed frame's rightmost new vertex must lie further right.
+    {
+        CombatHud::State aim;
+        aim.boundaryHalfExtent=100;
+        aim.position={0,0,0};
+        aim.forward={0,0,1};
+        aim.aimClip={0,0,0,1};
+        auto rightmost=[&](glm::vec3 direction){
+            aim.aimDirection=direction;
+            hud.begin();
+            CombatHud::draw(hud,{1280,720},aim);
+            // The gun line is the only white geometry drawn from the
+            // player marker; approximate by taking the mean x of all white
+            // vertices in the bottom-right map region, which only the line
+            // changes between the two draws.
+            double sum=0; int n=0;
+            for (auto& v : hud.vertices()) {
+                bool white=v.color.r>.9f && v.color.g>.9f && v.color.b>.9f && v.color.a==1;
+                if (white && v.position.x>.5f && v.position.y>0) { sum+=v.position.x; ++n; }
+            }
+            return n ? sum/n : 0.0;
+        };
+        require(rightmost({1,0,0})>rightmost({-1,0,0}),"Minimap gun line points east when aiming +X");
+    }
 }

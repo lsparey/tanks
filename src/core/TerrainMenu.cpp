@@ -50,7 +50,10 @@ bool Application::selectTerrain(bool& valleyTerrain, MacroTerrain::Landform& lan
     // dropped into the empty gap between them (ending y=222) and the
     // LANDFORM row (starting y=410).
     for (int i = 0; i < 2; ++i) controls[9 + i] = {232, 250.f + i * 56, 560, 48};
-    int selected = 1, focus = 5, form = 0, matchModeSelected = matchEnabled ? 1 : 0;
+    // 1v1 Match is the default: the menu opens on it regardless of the CLI
+    // flag (which only automation runs set anyway). Freeroam is one click
+    // away for rendering/terrain work.
+    int selected = 1, focus = 5, form = 0, matchModeSelected = 1;
     std::string seed = std::to_string(worldSeed_);
     bool selectSeed = false, mouseWasDown = false;
     std::array<bool, GLFW_KEY_LAST + 1> keys{};
