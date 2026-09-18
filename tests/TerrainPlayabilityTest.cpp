@@ -102,6 +102,13 @@ int main() {
     auto ready = analyze(flat.surface, s);
     require(ready.status == Status::Ready && ready.components.size() == 1, "flat field is not playable");
     check(flat.surface, ready, s);
+    // The TerrainWater::Surface overload is a thin wrapper around the
+    // ground+functor overload -- exercise the latter directly (as legacy
+    // terrain's own search does, with a heightmap-only water test) and
+    // confirm it's byte-identical to going through the wrapper.
+    auto direct = analyze(flat.surface.ground(), [&](uint32_t t) { return flat.surface.triangleHasWater(t); }, s);
+    require(direct.flags == ready.flags && direct.route == ready.route && direct.status == ready.status &&
+            direct.spawn->position == ready.spawn->position, "ground+functor overload diverged from the wrapper");
     auto impossible = s; impossible.minimumConnectedArea = 1e9;
     require(analyze(flat.surface, impossible).status == Status::InsufficientArea, "area failure not reported");
     impossible = s; impossible.minimumRouteSpan = 1e9;

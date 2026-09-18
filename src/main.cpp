@@ -153,8 +153,8 @@ int main(int argc, char** argv) {
         bool automated = weaponPreview || drivePreview || shadowPreview || matchPreview ||
                          treeLodBenchmark || !view.empty() || parseScreenshotRequest(argc, argv).has_value();
         if (noMenu || automated) showTerrainMenu = false;
-        if (!valleyTerrain && terrainAttempts != 1)
-            throw std::runtime_error("--terrain-attempts above 1 requires --terrain advanced");
+        if (!valleyTerrain && !matchEnabled && terrainAttempts != 1)
+            throw std::runtime_error("--terrain-attempts above 1 with --terrain legacy requires --match");
         if (!valleyTerrain && landform)
             throw std::runtime_error("--landform requires --terrain advanced");
         if (!valleyTerrain && terrainResolution)

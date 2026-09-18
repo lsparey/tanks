@@ -374,10 +374,22 @@ private:
     glm::vec2 playerSpawnForward_{0.0f, 1.0f};
     glm::vec3 opponentSpawnPosition_{0.0f};
     glm::vec2 opponentSpawnForward_{0.0f, 1.0f};
+    // Set identically by both terrain branches in initialize() (advanced:
+    // from state().navigation->footprintRadius; legacy+match: from the
+    // transient TerrainPlayability::Result its own TerrainSelection::
+    // selectLegacy search produces, never stored in TerrainRuntime::State).
+    // Cached here so the two AI-obstacle call sites don't have to assume
+    // state().navigation is set, which it never is for legacy.
+    float opponentFootprintRadius_ = 0.0f;
     // opponentTank_ is always constructed (see initialize()) but only
-    // placed/drawn/collided when the advanced terrain generator produced a
-    // navigation result -- `--terrain legacy` has no playability/route
-    // system to derive a second spawn from, so it gets no opponent.
+    // placed/drawn/collided when a navigation/second-spawn result exists:
+    // unconditionally for the advanced terrain generator, or for legacy
+    // terrain only when matchEnabled_ requested one (legacy freeroam stays
+    // exactly as cheap/simple as it's always been -- no search runs at
+    // all). Legacy's search either succeeds before the window is shown or
+    // throws (see TerrainSelection::selectLegacy), so by the time the main
+    // loop runs, matchEnabled_ == true implies hasOpponent_ == true on
+    // both terrain types.
     bool hasOpponent_ = false;
     // Off by default; set via the constructor's matchEnabled parameter,
     // itself either the CLI --match flag or the menu's MATCH MODE choice

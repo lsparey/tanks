@@ -12,9 +12,6 @@
 
 namespace {
 
-// Ignore single-cell/tiny noise dips -- only real basins become ponds.
-constexpr int kMinRegionCells = 6;
-
 // Shared by every upload path. basic.frag decodes depth from this exact ramp.
 const glm::vec3 kWaterShallowColor(0.085f, 0.125f, 0.075f);
 const glm::vec3 kWaterDeepColor(0.012f, 0.022f, 0.018f);
@@ -59,71 +56,7 @@ std::vector<ClipVertex> clipTriangleBelowLevel(const ClipVertex& a, const ClipVe
 
 WaterGenerator::FloodField WaterGenerator::computeFloodField(const Terrain& terrain, float threshold,
                                                                float maxDepth) {
-    const HeightmapGenerator::Heightmap& hm = terrain.heightmap();
-    int n = hm.resolution;
-
-    FloodField field;
-    field.resolution = n;
-    field.worldSize = hm.worldSize;
-    field.maxDepth = maxDepth;
-    field.submerged.assign(static_cast<size_t>(n) * n, false);
-    field.waterLevel.assign(static_cast<size_t>(n) * n, 0.0f);
-
-    std::vector<bool> visited(static_cast<size_t>(n) * n, false);
-    std::vector<int> queue;
-
-    // 4-connected flood fill over every cell with height < threshold. Each
-    // connected component becomes one independent body of water: its water
-    // level is its own basin floor (the lowest point within it) plus
-    // maxDepth, capped at `threshold` so it never rises above the height
-    // that qualified it as "low" in the first place. A cell only actually
-    // ends up underwater if its own height is at or below that capped
-    // level -- a basin can be low and connected overall while still having
-    // shallower rim cells that a small maxDepth doesn't reach, and those
-    // should stay dry rather than show a sunken/clipped water patch.
-    for (int j = 0; j < n; ++j) {
-        for (int i = 0; i < n; ++i) {
-            int idx = j * n + i;
-            if (visited[idx] || hm.heights[idx] >= threshold) continue;
-
-            std::vector<int> component;
-            queue.clear();
-            queue.push_back(idx);
-            visited[idx] = true;
-            size_t head = 0;
-            while (head < queue.size()) {
-                int cur = queue[head++];
-                component.push_back(cur);
-                int ci = cur % n;
-                int cj = cur / n;
-                const int dx[4] = {1, -1, 0, 0};
-                const int dy[4] = {0, 0, 1, -1};
-                for (int d = 0; d < 4; ++d) {
-                    int ni = ci + dx[d];
-                    int nj = cj + dy[d];
-                    if (ni < 0 || ni >= n || nj < 0 || nj >= n) continue;
-                    int nIdx = nj * n + ni;
-                    if (visited[nIdx] || hm.heights[nIdx] >= threshold) continue;
-                    visited[nIdx] = true;
-                    queue.push_back(nIdx);
-                }
-            }
-
-            if (static_cast<int>(component.size()) < kMinRegionCells) continue;
-
-            float basinFloor = hm.heights[component[0]];
-            for (int c : component) basinFloor = std::min(basinFloor, hm.heights[c]);
-            float waterLevel = std::min(basinFloor + maxDepth, threshold);
-
-            for (int c : component) {
-                if (hm.heights[c] <= waterLevel) {
-                    field.submerged[c] = true;
-                    field.waterLevel[c] = waterLevel;
-                }
-            }
-        }
-    }
-    return field;
+    return HeightmapFlood::compute(terrain.heightmap(), threshold, maxDepth);
 }
 
 std::unique_ptr<Mesh> WaterGenerator::buildMesh(VulkanContext& ctx, CommandContext& commands,

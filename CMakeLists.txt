@@ -18,6 +18,7 @@ target_link_libraries(hud_preview PRIVATE combat_hud)
 
 add_library(terrain_generation STATIC
     src/scene/HeightmapGenerator.cpp
+    src/scene/HeightmapFlood.cpp
     src/scene/MacroTerrain.cpp
     src/scene/TerrainRefinement.cpp
     src/scene/HydraulicErosion.cpp
@@ -108,6 +109,9 @@ if(BUILD_TESTING)
     add_executable(terrain_selection_test tests/TerrainSelectionTest.cpp)
     target_link_libraries(terrain_selection_test PRIVATE terrain_generation)
     add_test(NAME terrain_selection COMMAND terrain_selection_test)
+    add_executable(heightmap_flood_test tests/HeightmapFloodTest.cpp)
+    target_link_libraries(heightmap_flood_test PRIVATE terrain_generation)
+    add_test(NAME heightmap_flood COMMAND heightmap_flood_test)
     add_executable(terrain_runtime_test tests/TerrainRuntimeTest.cpp)
     target_link_libraries(terrain_runtime_test PRIVATE terrain_generation)
     add_test(NAME terrain_runtime COMMAND terrain_runtime_test)

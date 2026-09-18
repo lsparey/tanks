@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <span>
 #include "TerrainWater.h"
 #include "CollisionSystem.h"
@@ -42,12 +43,21 @@ struct Result {
     size_t payloadBytes() const;
 };
 
-// Read-only conservative analysis of the water surface's own FINAL ground.
+// Read-only conservative analysis of any ground surface's own FINAL shape.
 // Every accepted whole navigation cell, expanded by the tank's rotational
-// envelope, is dry, within the boundary, slope-safe and clear of supplied
-// obstacle circles. Adjacent accepted cells give a continuous swept corridor.
-// No terrain grading, hidden fallback, regeneration loop or scenery placement.
-Result analyze(const TerrainWater::Surface&, const Settings& = {},
+// envelope, is dry (per triangleHasWater), within the boundary, slope-safe
+// and clear of supplied obstacle circles. Adjacent accepted cells give a
+// continuous swept corridor. No terrain grading, hidden fallback,
+// regeneration loop or scenery placement. Generalized over any water test
+// so terrain presets without a TerrainWater::Surface (see the overload
+// below) can still be analyzed -- e.g. legacy terrain's own bare heightmap
+// plus HeightmapFlood as its water test.
+Result analyze(const TerrainSurface& ground, const std::function<bool(uint32_t triangle)>& triangleHasWater,
+               const Settings& = {}, std::span<const CollisionSystem::CircleObstacle> obstacles = {});
+
+// Convenience overload for the combined-water (drained-valley) pipeline;
+// forwards to the overload above using water's own triangleHasWater.
+Result analyze(const TerrainWater::Surface& water, const Settings& = {},
                std::span<const CollisionSystem::CircleObstacle> obstacles = {});
 void validate(const Settings&);
 

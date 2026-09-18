@@ -6,6 +6,7 @@
 #include "../render/CommandContext.h"
 #include "../render/Mesh.h"
 #include "../render/VulkanContext.h"
+#include "HeightmapFlood.h"
 #include "LakeWater.h"
 #include "TerrainWater.h"
 
@@ -27,14 +28,10 @@ class WaterGenerator {
 public:
     // Per-cell result of the flood-fill analysis, kept around after mesh
     // generation so other systems (see isUnderwater) can query "is this
-    // world position underwater" without re-running the flood fill.
-    struct FloodField {
-        int resolution = 0;
-        float worldSize = 0.0f;
-        float maxDepth = 1.0f;           // as passed to computeFloodField; used to normalize color depth
-        std::vector<bool> submerged;     // true only for cells actually underwater
-        std::vector<float> waterLevel;   // meaningful only where submerged[i] is true
-    };
+    // world position underwater" without re-running the flood fill. Same
+    // type TerrainSelection's legacy seed search uses (see HeightmapFlood),
+    // since that has to stay Vulkan-free and run before any Terrain exists.
+    using FloodField = HeightmapFlood::Field;
 
     static FloodField computeFloodField(const Terrain& terrain, float threshold, float maxDepth);
 

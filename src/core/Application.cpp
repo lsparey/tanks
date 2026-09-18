@@ -413,8 +413,43 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
     std::cout << "Terrain playable resolution: " << (1 + (terrainSettings.resolution - 1) * (1 << refinementPasses)) << '\n';
     std::cout << "Terrain erosion resolution: " << terrainSettings.resolution
               << "; refinement: " << (refinementPasses == 2 ? "4x" : refinementPasses == 1 ? "2x" : "off") << '\n';
+    // Transient legacy-terrain playability result, only produced when
+    // matchEnabled_ requests a second spawn (see the terrainBuild IIFE's
+    // legacy branch below). Consumed a little further down in this same
+    // function, in the water/no-water block -- everything the rest of the
+    // run needs from it (spawns, footprint radius) is cached into member
+    // fields there, so it never needs to be a class member itself.
+    std::optional<TerrainPlayability::Result> legacyPlayability;
     auto terrainBuild = [&] {
-        if (!valleyTerrain) return TerrainGenerator::build(terrainSettings);
+        if (!valleyTerrain) {
+            if (!matchEnabled) return TerrainGenerator::build(terrainSettings);
+            // 1v1 match on legacy terrain needs a second spawn, which
+            // legacy's one-shot heightmap build never validates for --
+            // search seeds the same way the advanced path does below
+            // (TerrainSelection::select), but against legacy's own bare
+            // heightmap + flood water instead of combined water (see
+            // TerrainSelection::selectLegacy). No std::async/progress
+            // polling needed here, unlike the advanced branch: legacy
+            // generation is ~700x faster than erosion, so even
+            // kMaximumAttempts tries cost well under 100ms.
+            TerrainPlayability::Settings legacyPlayabilitySettings;
+            legacyPlayabilitySettings.hullWidth = tank_->hullWidth();
+            legacyPlayabilitySettings.hullLength = tank_->hullLength();
+            auto selected = TerrainSelection::selectLegacy(terrainSettings, legacyPlayabilitySettings,
+                kWaterThreshold, kWaterMaxDepth, {terrainAttempts}, [&](const auto& attempt) {
+                    std::cout << "Legacy terrain attempt " << attempt.index + 1 << "/" << terrainAttempts
+                              << ", seed " << attempt.seed << ": " << TerrainPlayability::statusName(attempt.playability)
+                              << (attempt.hasSecondarySpawn ? " (2nd spawn ok)" : "") << ", "
+                              << attempt.generationMs << " ms\n";
+                });
+            if (selected.status != TerrainSelection::Status::Accepted || !selected.accepted || !selected.playability)
+                throw std::runtime_error("legacy terrain selection could not find a second spawn in " +
+                                         std::to_string(terrainAttempts) + " attempt(s); choose another --seed, "
+                                         "increase --terrain-attempts (maximum 8), or turn off --match");
+            worldSeed_ = selected.accepted->settings.seed;
+            legacyPlayability = std::move(selected.playability);
+            return std::move(*selected.accepted);
+        }
         std::stop_source stop;
         std::atomic<uint32_t> completed{0};
         auto job = std::async(std::launch::async, [&] {
@@ -648,12 +683,37 @@ void Application::initialize(bool originalTankModel, bool animateTracks, bool we
         opponentSpawnPosition_ = opponentSpawn->position;
         opponentSpawnForward_ = opponentSpawn->forward;
         opponentTank_->placeAt(opponentSpawn->position, opponentSpawn->forward, *terrain_);
+        opponentFootprintRadius_ = float(terrain_->state().navigation->footprintRadius);
         hasOpponent_ = true;
         std::cout << "Opponent spawn: " << opponentSpawn->position.x << ", " << opponentSpawn->position.y << ", "
                   << opponentSpawn->position.z << "\n";
     } else {
         legacyWaterField_ = WaterGenerator::computeFloodField(*terrain_, kWaterThreshold, kWaterMaxDepth);
         waterMesh_ = WaterGenerator::buildMesh(*context_, *commands_, *terrain_, legacyWaterField_);
+        if (matchEnabled) {
+            if (!legacyPlayability) throw std::logic_error("match mode requires a resolved legacy spawn search");
+            const auto& spawn = *legacyPlayability->spawn;
+            spawnXZ_ = {spawn.position.x, spawn.position.z};
+            playerSpawnPosition_ = spawn.position;
+            playerSpawnForward_ = spawn.forward;
+            tank_->placeAt(spawn.position, spawn.forward, *terrain_);
+            std::cout << "Legacy terrain spawn: " << spawn.position.x << ", " << spawn.position.y << ", "
+                      << spawn.position.z << "; route " << legacyPlayability->routeLength << " m\n";
+            // selectLegacy already required this to succeed before accepting
+            // the candidate; the throw below matches the advanced branch's
+            // own defensive-but-practically-unreachable throw for the same
+            // theoretically-impossible case.
+            auto opponentSpawn = TerrainPlayability::secondarySpawn(*legacyPlayability, terrain_->state().ground);
+            if (!opponentSpawn) throw std::runtime_error("accepted legacy terrain route has no valid opponent spawn");
+            opponentSpawnXZ_ = {opponentSpawn->position.x, opponentSpawn->position.z};
+            opponentSpawnPosition_ = opponentSpawn->position;
+            opponentSpawnForward_ = opponentSpawn->forward;
+            opponentTank_->placeAt(opponentSpawn->position, opponentSpawn->forward, *terrain_);
+            opponentFootprintRadius_ = float(legacyPlayability->footprintRadius);
+            hasOpponent_ = true;
+            std::cout << "Legacy opponent spawn: " << opponentSpawn->position.x << ", " << opponentSpawn->position.y
+                      << ", " << opponentSpawn->position.z << "\n";
+        }
     }
     float deepestWater = -1.0f;
     const auto& heightmap = terrain_->heightmap();
@@ -1492,7 +1552,7 @@ void Application::mainLoop() {
             std::vector<CollisionSystem::CircleObstacle> playerObstacles = obstacles_;
             if (hasOpponent_) {
                 playerObstacles.push_back({{opponentTank_->position().x, opponentTank_->position().z},
-                                            float(terrain_->state().navigation->footprintRadius)});
+                                            opponentFootprintRadius_});
             }
             Tank::Controls playerControls = Tank::Controls::fromInput(*input_, driveEnabled);
             if (!playerTurnActive) {
@@ -2971,7 +3031,7 @@ void Application::driveTankWithAI(Tank& self, Tank& opponent, CombatantId selfId
     // The other tank is a moving obstacle too (see the symmetric addition
     // to the player's own obstacle list in mainLoop for the manual path).
     std::vector<CollisionSystem::CircleObstacle> selfObstacles = obstacles_;
-    selfObstacles.push_back({opponentXZ, float(terrain_->state().navigation->footprintRadius)});
+    selfObstacles.push_back({opponentXZ, opponentFootprintRadius_});
     self.update(controls, deltaTime, *terrain_, selfObstacles, boundaryHalfExtent_, selfWadeDepth);
 
     if (matchState_.phase() != Phase::Turn) {
@@ -3883,9 +3943,9 @@ void Application::drawFrame() {
     std::vector<InstanceBatch> grassBatches = appendGroups(grassGroups, true);
     performanceSample_.visibleProps = static_cast<double>(rasterInstances.size());
     auto gearBatches = appendGroups(tank_->gearTransforms());
-    // hasOpponent_ is false only for `--terrain legacy`, which never places
-    // opponentTank_ (see initialize()) -- skip it rather than draw a second
-    // tank sitting at whatever default pose an unplaced Tank happens to have.
+    // hasOpponent_ is false whenever opponentTank_ was never placed (see
+    // initialize()) -- skip it rather than draw a second tank sitting at
+    // whatever default pose an unplaced Tank happens to have.
     std::vector<InstanceBatch> opponentGearBatches;
     if (hasOpponent_) opponentGearBatches = appendGroups(opponentTank_->gearTransforms());
 

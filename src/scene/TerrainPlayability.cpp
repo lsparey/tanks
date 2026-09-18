@@ -56,11 +56,10 @@ size_t Result::payloadBytes() const {
         route.capacity() * sizeof(uint32_t);
 }
 
-Result analyze(const TerrainWater::Surface& water, const Settings& s,
-               std::span<const CollisionSystem::CircleObstacle> obstacles) {
+Result analyze(const TerrainSurface& ground, const std::function<bool(uint32_t)>& triangleHasWater,
+               const Settings& s, std::span<const CollisionSystem::CircleObstacle> obstacles) {
     auto start = std::chrono::steady_clock::now();
     validate(s);
-    const auto& ground = water.ground();
     int n = ground.heightmap().resolution, q = n - 1;
     if (n > 4097) throw std::invalid_argument("playability grid exceeds 4097 samples");
     for (const auto& o : obstacles)
@@ -86,7 +85,7 @@ Result analyze(const TerrainWater::Surface& water, const Settings& s,
         uint32_t cell = uint32_t(z) * q + x;
         auto indices = TerrainSurface::quadIndices(n, x, z);
         for (int t = 0; t < 2; ++t) {
-            if (water.triangleHasWater(2 * cell + t)) r.terrainFlags[cell] |= Water;
+            if (triangleHasWater(2 * cell + t)) r.terrainFlags[cell] |= Water;
             auto position = [&](uint32_t i) { return glm::dvec3(ground.position(i % n, i / n)); };
             auto a = position(indices[t * 3]);
             auto normal = glm::cross(position(indices[t * 3 + 1]) - a, position(indices[t * 3 + 2]) - a);
@@ -214,6 +213,11 @@ Result analyze(const TerrainWater::Surface& water, const Settings& s,
         (queue.capacity() + candidates.capacity() + order.capacity()) * sizeof(uint32_t);
     r.elapsedMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     return r;
+}
+
+Result analyze(const TerrainWater::Surface& water, const Settings& s,
+               std::span<const CollisionSystem::CircleObstacle> obstacles) {
+    return analyze(water.ground(), [&](uint32_t triangle) { return water.triangleHasWater(triangle); }, s, obstacles);
 }
 
 std::optional<Spawn> secondarySpawn(const Result& result, const TerrainSurface& ground) {

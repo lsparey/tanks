@@ -133,4 +133,57 @@ int main() {
     rejects([&] { select(invalid); });
     invalid = s; invalid.combinedWater = false;
     rejects([&] { select(invalid); });
+
+    // Legacy counterpart: no combined-water pipeline exists for
+    // TerrainGenerator::build to analyze itself, so selectLegacy() runs
+    // TerrainPlayability::analyze() against each candidate's bare heightmap
+    // directly (via HeightmapFlood), at real game scale (default 256
+    // resolution) since legacy generation is cheap regardless.
+    TerrainGenerator::Settings legacy;
+    legacy.preset = TerrainGenerator::Preset::Legacy;
+    legacy.seed = 7331;
+    TerrainPlayability::Settings legacyPlayability;
+    float waterThreshold = -1.9f, waterMaxDepth = 0.9f; // same constants Application.cpp uses
+
+    rejects([&] { selectLegacy(s, legacyPlayability, waterThreshold, waterMaxDepth); }); // wrong preset
+    rejects([&] { selectLegacy(legacy, legacyPlayability, waterThreshold, waterMaxDepth, {0}); });
+    rejects([&] { selectLegacy(legacy, legacyPlayability, waterThreshold, waterMaxDepth, {9}); });
+
+    uint32_t legacyCallbacks = 0;
+    auto legacySuccess = selectLegacy(legacy, legacyPlayability, waterThreshold, waterMaxDepth, {8},
+        [&](const LegacyAttempt& attempt) {
+            require(attempt.index == legacyCallbacks++, "legacy retry order is unstable");
+        });
+    require(legacySuccess.status == Status::Accepted && legacySuccess.accepted && legacySuccess.playability &&
+            legacySuccess.requestedSeed == legacy.seed && legacyCallbacks == legacySuccess.attempts.size(),
+            "legacy selection did not accept a playable seed within budget");
+    require(!legacySuccess.accepted->playability.has_value(),
+            "legacy BuildResult unexpectedly carries its own playability (should stay TerrainGenerator::build's own nullopt)");
+    require(legacySuccess.playability->status == TerrainPlayability::Status::Ready &&
+            TerrainPlayability::secondarySpawn(*legacySuccess.playability, legacySuccess.accepted->surface).has_value(),
+            "accepted legacy result lacks a valid second spawn");
+    require(legacySuccess.attempts.back().hasSecondarySpawn, "accepted attempt not marked as having a secondary spawn");
+
+    // Every regression seed should be recoverable within the maximum retry
+    // budget -- legacy generation is cheap enough that this whole sweep
+    // costs a fraction of one advanced-terrain erosion pass.
+    for (uint32_t seed : TerrainGenerator::kRegressionSeeds) {
+        auto recipe = legacy; recipe.seed = seed;
+        auto swept = selectLegacy(recipe, legacyPlayability, waterThreshold, waterMaxDepth, {8});
+        require(swept.status == Status::Accepted, "legacy regression seed could not find a second spawn within budget");
+    }
+
+    auto legacyImpossible = legacyPlayability; legacyImpossible.minimumConnectedArea = 1e12;
+    auto legacyExhausted = selectLegacy(legacy, legacyImpossible, waterThreshold, waterMaxDepth, {3});
+    require(legacyExhausted.status == Status::Exhausted && !legacyExhausted.accepted &&
+            !legacyExhausted.playability && legacyExhausted.attempts.size() == 3,
+            "impossible legacy area requirement did not exhaust cleanly");
+    for (const auto& attempt : legacyExhausted.attempts)
+        require(!attempt.hasSecondarySpawn, "exhausted legacy attempt falsely reported a secondary spawn");
+
+    std::stop_source legacyStop;
+    legacyStop.request_stop();
+    auto legacyCancelled = selectLegacy(legacy, legacyPlayability, waterThreshold, waterMaxDepth, {8}, {}, legacyStop.get_token());
+    require(legacyCancelled.status == Status::Cancelled && !legacyCancelled.accepted && legacyCancelled.attempts.empty(),
+            "pre-cancelled legacy request generated a map");
 }
